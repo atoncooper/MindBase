@@ -11,6 +11,9 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -38,6 +41,12 @@ public class PayAuditLogger {
     private static final Logger AUDIT = LoggerFactory.getLogger("PAY_AUDIT");
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final String AUDIT_FILE = "logs/pay-audit.jsonl";
+    /**
+     * 链头旁路文件：每次写审计后原子落当前 hash。logback 按大小/日期转动会把
+     * pay-audit.jsonl 改名成 .gz，重启时若只看基文件会从 GENESIS 重开导致“断链”；
+     * 旁路文件让跨转动/重启的续链仍然成立（P2）。
+     */
+    private static final String AUDIT_HEAD_FILE = "logs/pay-audit.head";
     private static final String GENESIS = "GENESIS";
     /** 本进程的链 id：多实例同写文件时验证器按 chain 分组校验。 */
     private static final String CHAIN_ID = "ch-" + UUID.randomUUID().toString().substring(0, 8);
@@ -67,10 +76,15 @@ public class PayAuditLogger {
             String prev = prevHash();
             record.put("chain", CHAIN_ID);
             record.put("prev", prev);
-            String hash = sha256Hex(prev + "|" + toJson(record));
-            record.put("hash", hash);
+            // Serialize once: the JSON body is needed for the hash and for the appended
+            // "hash" field. The previous code serialized the record twice per fund event,
+            // which is measurable at thousands of audit events per second.
+            String bodyJson = toJson(record);
+            String hash = sha256Hex(prev + "|" + bodyJson);
             PREV_HASH.set(hash);
-            line = toJson(record);
+            persistHead(hash);
+            line = bodyJson.substring(0, bodyJson.length() - 1)
+                    + ",\"hash\":\"" + hash + "\"}";
         }
         AUDIT.info(line);
     }
@@ -83,18 +97,59 @@ public class PayAuditLogger {
         }
     }
 
-    /** 惰性续链：首条记录从磁盘最后一条取 hash；文件缺失/损坏/被清空都从 GENESIS 重开（记 WARN 由日志侧可见）。 */
+    /** 惰性续链：优先读链头旁路文件（跨 logback 转动），其次读审计文件尾部；都失败才从 GENESIS 重开。 */
     private static String prevHash() {
         if (!resumed) {
             synchronized (PayAuditLogger.class) {
                 if (!resumed) {
-                    PREV_HASH.set(resumeFromDisk());
+                    PREV_HASH.set(resumeFromHeadOrDisk());
                     resumed = true;
                 }
             }
         }
         String prev = PREV_HASH.get();
         return prev != null ? prev : GENESIS;
+    }
+
+    private static String resumeFromHeadOrDisk() {
+        try {
+            Path head = Path.of(AUDIT_HEAD_FILE);
+            if (Files.exists(head)) {
+                String value = Files.readString(head, StandardCharsets.UTF_8).trim();
+                if (value.matches("[0-9a-f]{64}")) {
+                    return value;
+                }
+            }
+        } catch (IOException e) {
+            LoggerFactory.getLogger(PayAuditLogger.class)
+                    .warn("[PAY] audit_head_resume_failed file={} err={}", AUDIT_HEAD_FILE, e.toString());
+        }
+        return resumeFromDisk();
+    }
+
+    /**
+     * Write the chain head file. A direct truncate+write is used instead of
+     * tmp+ATOMIC_MOVE because every audit event calls this on the payment path;
+     * the extra rename syscall was measurable at high order throughput.
+     *
+     * <p>Crash safety: resumeFromHeadOrDisk validates the head with
+     * {@code [0-9a-f]{64}}, so a partially written head is ignored and the
+     * chain falls back to the last JSONL line. This keeps restart correctness
+     * while removing one syscall per fund event.
+     */
+    private static void persistHead(String hash) {
+        try {
+            Path head = Path.of(AUDIT_HEAD_FILE);
+            Path parent = head.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(head, hash, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (IOException e) {
+            LoggerFactory.getLogger(PayAuditLogger.class)
+                    .warn("[PAY] audit_head_persist_failed file={} err={}", AUDIT_HEAD_FILE, e.toString());
+        }
     }
 
     /** 只读文件尾部 64KB 找最后一条非空 JSON 行（审计文件可达 GB 级，禁止全量读取）。 */

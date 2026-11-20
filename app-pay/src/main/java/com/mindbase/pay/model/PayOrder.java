@@ -50,6 +50,19 @@ public class PayOrder {
      */
     private int version = 1;
 
+    /**
+     * 未支付订单槽位（1..maxOpenPerUser，仅 CREATED 期间占用；PAID/CLOSED 等终态为 NULL）。
+     * (uid, open_slot) 唯一索引把“每用户未支付订单上限”变成数据库原子约束，
+     * 并发建单不再依赖“先 count 再 insert”的非原子检查。见 V7 迁移。
+     */
+    private Integer openSlot;
+
+    /** 兜底任务（查单/超时/交付补偿/对账）最近一次处理该订单的时间：按它升序轮转，消除队头阻塞。 */
+    private LocalDateTime lastCheckedAt;
+
+    /** 交付补偿尝试次数（DeliveryRetryJob）：达到上限后不再反复占用扫描窗口，转人工/审计。 */
+    private int deliveryAttempts;
+
     private String channelTradeNo;
 
     /** 付款账户（买家支付宝登录号，查单/异步通知下发后落库，订单详情展示）。 */

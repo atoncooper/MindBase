@@ -432,8 +432,50 @@ upstreams:
       active:
         type: https
         https_verify_certificate: false
-        http_path: /health
+        # 存活探针不探测数据库/连接池：池饱和时不能把实例整站摘除（业务依赖健康走 /actuator/health）
+        http_path: /health/live
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: https
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+  # 非幂等资金写专用的 no-retry 上游（P1）：grant 带 requestId 幂等键，但网关重试仍会放大
+  # 并发/审计噪音；资金写路由显式 retries: 0，重试交给调用方（带同一 requestId 才安全）。
+  - id: upstream-app-pay-no-retry
+    name: app-pay-no-retry
+    type: roundrobin
+    scheme: https
+    pass_host: pass
+    retries: 0
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-pay:8002": 1
+    checks:
+      active:
+        type: https
         https_verify_certificate: false
+        http_path: /health/live
         timeout: 1
         interval: 5
         healthy:
@@ -704,7 +746,8 @@ routes:
     plugins:
       proxy-rewrite:
         headers:
-          remove: [X-Uid, X-Roles]
+          # 身份只以网关注入的 X-Uid 为准；同时不把用户 Bearer token 透传给支付服务（最小权限）
+          remove: [X-Uid, X-Roles, Authorization]
       forward-auth:
         uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -722,11 +765,14 @@ routes:
     upstream_id: upstream-app-pay
     plugins:
       limit-req:
-        rate: 10
-        burst: 20
+        # 公网请求经 OpenResty 边缘转发，APISIX 的 remote_addr 是边缘容器 IP，用它做 key 会退化成
+        # “全站共享 10r/s”，一个 IP 的垃圾请求即可压住全部合法回调。边缘会覆盖 X-Forwarded-For
+        # （proxy_set_header，不追加），因此按真实客户端 IP 限流；安全边界仍由渠道 RSA2 验签负责。
+        rate: 50
+        burst: 100
         rejected_code: 429
         key_type: var
-        key: remote_addr
+        key: http_x_forwarded_for
 
   # main app / ops -> app-pay internal。P1 密钥分权（最小权限）：
   #   - membership 读（app-cloud / app-ts 会员查询）: 共享 internal 或 pay_readonly
@@ -746,18 +792,27 @@ routes:
         whitelist:
           - internal
           - pay_readonly
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   - id: pay_internal_grant
     uri: /internal/pay/grant
     methods: [POST]
     priority: 100
-    upstream_id: upstream-app-pay
+    # 非幂等资金写：不重试（调用方带同一 requestId 时重试安全，由 app-pay 幂等占位表兜底）
+    upstream_id: upstream-app-pay-no-retry
     plugins:
       key-auth: {}
       consumer-restriction:
         type: consumer_name
         whitelist:
           - pay_ops
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   - id: pay_internal_orders
     uri: /internal/pay/orders/*
@@ -770,6 +825,10 @@ routes:
         type: consumer_name
         whitelist:
           - pay_ops
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   - id: pay_internal_refund_requests
     uri: /internal/pay/refund-requests
@@ -782,6 +841,10 @@ routes:
         type: consumer_name
         whitelist:
           - pay_ops
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   # 兜底：/internal/pay/* 其余路径（timeout/execute 等）仍走共享 key-auth
   - id: pay_internal
@@ -791,6 +854,10 @@ routes:
     upstream_id: upstream-app-pay
     plugins:
       key-auth: {}
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   # CORS preflight for /board/*: browsers strip Authorization on preflight,
   # so this route MUST NOT carry forward-auth (it would 401) — app-content board 面的

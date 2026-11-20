@@ -1,14 +1,18 @@
 package com.mindbase.pay.service;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Optional;
+
+import com.fasterxml.jackson.core.type.TypeReference;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mindbase.pay.common.PayAuditLogger;
+import com.mindbase.pay.common.TwoLevelCache;
 import com.mindbase.pay.mapper.PayMembershipEventMapper;
 import com.mindbase.pay.mapper.PayMembershipMapper;
 import com.mindbase.pay.model.PayMembership;
@@ -31,9 +35,16 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class MembershipService {
 
+    private static final String MEMBERSHIP_CACHE_PREFIX = "pay:cache:v1:membership:";
+    private static final Duration MEMBERSHIP_CACHE_TTL = Duration.ofSeconds(1);
+    private static final TypeReference<PayMembership> MEMBERSHIP_CACHE_TYPE =
+            new TypeReference<>() {
+            };
+
     private final PayMembershipMapper membershipMapper;
     private final PayMembershipEventMapper eventMapper;
     private final PayAuditLogger audit;
+    private final TwoLevelCache cache;
     private final Clock clock;
 
     /**
@@ -54,7 +65,7 @@ public class MembershipService {
 
     /**
      * Tier-aware overload: a null/blank tier keeps the existing row's tier (new rows default to VIP).
-     * @Transactional must be on this overload -- it is the direct entry point of PayInternalController.grant.
+     * @Transactional must be on this overload -- it is the direct entry point of GrantService.
      */
     @Transactional
     public PayMembership extend(
@@ -64,8 +75,55 @@ public class MembershipService {
         PayMembershipEvent.EventType explicitType,
         String reason,
         String tier) {
+        return extend(uid, days, orderNo, explicitType, reason, tier, null);
+    }
+
+    /**
+     * Idempotency-aware overload (ADMIN_GRANT): requestId is written to pay_membership_event.request_id
+     * (unique key). A duplicated grant retried by the gateway/proxy carries the same requestId and is
+     * deduplicated by GrantService before reaching here; this method only persists the key so the
+     * race backstop still works at the database layer.
+     */
+    @Transactional
+    public PayMembership extend(
+        long uid,
+        int days,
+        String orderNo,
+        PayMembershipEvent.EventType explicitType,
+        String reason,
+        String tier,
+        String requestId) {
+        return doExtend(membershipMapper.selectByUidForUpdate(uid), uid, days, orderNo,
+                explicitType, reason, tier, requestId);
+    }
+
+    /**
+     * DeliveryService already holds the membership row lock (FOR UPDATE) before calling
+     * delivery. Reusing that locked entity removes a second SELECT ... FOR UPDATE from
+     * every delivered order on the payment hot path.
+     */
+    @Transactional
+    public PayMembership extendLocked(
+        PayMembership locked,
+        long uid,
+        int days,
+        String orderNo,
+        PayMembershipEvent.EventType explicitType,
+        String reason,
+        String tier) {
+        return doExtend(locked, uid, days, orderNo, explicitType, reason, tier, null);
+    }
+
+    private PayMembership doExtend(
+        PayMembership membership,
+        long uid,
+        int days,
+        String orderNo,
+        PayMembershipEvent.EventType explicitType,
+        String reason,
+        String tier,
+        String requestId) {
         LocalDateTime now = LocalDateTime.now(clock);
-        PayMembership membership = membershipMapper.selectByUidForUpdate(uid);
 
         LocalDateTime expireBefore;
         PayMembershipEvent.EventType type;
@@ -96,9 +154,12 @@ public class MembershipService {
             membershipMapper.updateById(membership);
         }
 
-        insertEvent(membership, uid, type, orderNo, days, expireBefore, reason);
-        log.info("[PAY] membership_extend type={} days={} order_no={} tier={} expire_after={}",
-                type, days, orderNo, membership.getTier(), membership.getExpireAt());
+        insertEvent(membership, uid, type, orderNo, days, expireBefore, reason, requestId);
+        // Drop the read cache before returning; a concurrent reader may re-populate it
+        // from the DB after commit, which is safe (short TTL + write eviction).
+        cache.evict(MEMBERSHIP_CACHE_PREFIX + uid);
+        log.info("[PAY] membership_extend type={} days={} order_no={} tier={} expire_after={} request_id={}",
+                type, days, orderNo, membership.getTier(), membership.getExpireAt(), requestId);
         audit.audit("MEMBERSHIP_EXTENDED", "uid", uid, "type", type.name(), "days", days,
                 "order_no", orderNo, "tier", membership.getTier(),
                 "expire_after", membership.getExpireAt().toString());
@@ -129,7 +190,8 @@ public class MembershipService {
         membershipMapper.updateById(membership);
 
         insertEvent(membership, uid, PayMembershipEvent.EventType.REFUND_REVOKE,
-                orderNo, -days, expireBefore, reason);
+                orderNo, -days, expireBefore, reason, null);
+        cache.evict(MEMBERSHIP_CACHE_PREFIX + uid);
         log.info("[PAY] membership_revoked uid={} days={} order_no={} expire_after={}",
                 uid, days, orderNo, expireAfter);
         audit.audit("MEMBERSHIP_REVOKED", "uid", uid, "days", days, "order_no", orderNo,
@@ -179,7 +241,8 @@ public class MembershipService {
     }
 
     private void insertEvent(PayMembership membership, long uid, PayMembershipEvent.EventType type,
-                             String orderNo, int days, LocalDateTime expireBefore, String reason) {
+                             String orderNo, int days, LocalDateTime expireBefore, String reason,
+                             String requestId) {
         PayMembershipEvent event = new PayMembershipEvent();
         event.setUid(uid);
         event.setType(type);
@@ -188,13 +251,23 @@ public class MembershipService {
         event.setExpireBefore(expireBefore);
         event.setExpireAfter(membership.getExpireAt());
         event.setReason(reason);
+        event.setRequestId(requestId);
         eventMapper.insert(event);
     }
 
     @Transactional(readOnly = true)
     public Optional<PayMembership> findByUid(long uid) {
-        return Optional.ofNullable(membershipMapper.selectOne(
-                new LambdaQueryWrapper<PayMembership>().eq(PayMembership::getUid, uid)));
+        String cacheKey = MEMBERSHIP_CACHE_PREFIX + uid;
+        PayMembership cached = cache.get(cacheKey, MEMBERSHIP_CACHE_TYPE);
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+        PayMembership membership = membershipMapper.selectOne(
+                new LambdaQueryWrapper<PayMembership>().eq(PayMembership::getUid, uid));
+        if (membership != null) {
+            cache.put(cacheKey, membership, MEMBERSHIP_CACHE_TTL);
+        }
+        return Optional.ofNullable(membership);
     }
 
     public boolean isActive(PayMembership membership) {

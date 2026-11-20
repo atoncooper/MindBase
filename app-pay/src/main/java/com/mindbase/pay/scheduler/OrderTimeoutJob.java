@@ -56,9 +56,11 @@ public class OrderTimeoutJob implements AdaptiveJob {
                 return;
             }
             LocalDateTime now = LocalDateTime.now(clock);
+            // 公平调度：按 last_checked_at 升序轮转（查单失败的订单也排到队尾，不再反复占用窗口）
             List<PayOrder> expired = orderMapper.selectList(new LambdaQueryWrapper<PayOrder>()
                     .eq(PayOrder::getStatus, PayOrder.OrderStatus.CREATED)
                     .le(PayOrder::getExpiresAt, now)
+                    .orderByAsc(PayOrder::getLastCheckedAt)
                     .orderByAsc(PayOrder::getExpiresAt)
                     .last("LIMIT " + Math.max(1, props.job().scanLimit())));
             AtomicInteger workedCount = new AtomicInteger();
@@ -77,16 +79,27 @@ public class OrderTimeoutJob implements AdaptiveJob {
             }
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
             int worked = workedCount.get();
-            lastHadWork = worked > 0;
+            // 有到期订单就算“有工作”：渠道故障导致全部失败时不能退避到 600s，否则订单永远关不掉
+            lastHadWork = !expired.isEmpty();
             if (worked > 0) {
                 metrics.orderClosed("timeout");
             }
         } finally {
+            metrics.jobRan("order-timeout");
             MDC.clear();
         }
     }
 
     private boolean processOne(PayOrder order, LocalDateTime now) {
+        try {
+            return queryAndClose(order, now);
+        } finally {
+            // 失败也推进 last_checked_at：坏单排到队尾，避免阻塞后续到期订单
+            orderMapper.touchChecked(order.getOrderNo(), LocalDateTime.now(clock));
+        }
+    }
+
+    private boolean queryAndClose(PayOrder order, LocalDateTime now) {
         // 关单前向渠道做最后一次确认：有效期最后一刻扫码支付的，钱已收下是事实
         if (order.getChannel() != PayOrder.PayChannel.MOCK) {
             PayChannelAdapter adapter = channelRouter.requireAdapter(order.getChannel());

@@ -1,0 +1,140 @@
+# app-pay standalone test environment configuration
+# ============================================================
+# Loaded by docker compose via:
+#   --spring.config.additional-location=file:/app/config-test.yaml
+# It is layered on top of application.yaml (same keys override; other
+# production defaults remain).
+#
+# No environment variable placeholders: all values are written directly
+# in this file. After editing, restart the test container:
+#   docker compose -f docker-compose.test.yml restart app-pay-test
+#
+# Test-only: isolated database app_pay_test, MOCK channel, /test/pay/*
+# enabled, no APISIX/app-task, risk controls disabled for load tests.
+# Do not reference this file in production deployments.
+#
+# [Performance tuning] relationship between threads/connections/buffers:
+#   - server.tomcat.threads.max: HTTP request worker threads. Must not
+#     exceed what the DB pool can serve, otherwise workers queue on DB.
+#   - pay.rdbms.pool-size: Hikari DB connection limit. Startup assertion:
+#     pay.job.executor-workers <= pool-size - 2.
+#   - accept-count / max-connections: TCP queue and connection limits.
+#   - max-http-form-post-size / max-swallow-size / max-http-request-header-size:
+#     request body/header buffer limits.
+#   - Load-test client threads are configured in
+#     src/test/resources/pay-test.properties (perf.threads).
+# ============================================================
+
+server:
+  # listen inside the container; host binds 127.0.0.1 only
+  address: 0.0.0.0
+
+  # ---- Tomcat / threads / connections (main load-test knobs) ----
+  tomcat:
+    # expose Tomcat MBeans so actuator/Prometheus reports thread/connection metrics
+    mbeanregistry:
+      enabled: true
+    threads:
+      max: 200
+      min-spare: 20
+    # wait queue length; once Tomcat threads are exhausted, requests queue
+    # here and are rejected when the queue is also full
+    accept-count: 100
+    # maximum connections (including idle keep-alive connections)
+    max-connections: 8192
+    # idle timeout after a connection is established
+    connection-timeout: 20s
+    # POST form body limit (Alipay callback is form-urlencoded; buffer-related)
+    max-http-form-post-size: 2MB
+    # request body read/discard limit (prevents large bodies from using memory)
+    max-swallow-size: 2MB
+
+  # request header size limit (buffer-related)
+  max-http-request-header-size: 16KB
+  # HTTP compression (disabled for load tests to avoid CPU noise in latency)
+  compression:
+    enabled: false
+
+  ssl:
+    enabled: true
+    certificate: /certs/pay.crt
+    certificate-private-key: /certs/pay.key
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  # shared L2 cache for read-only catalog data; L1 is inside the app JVM
+  data:
+    redis:
+      host: app-pay-test-redis
+      port: 6379
+      timeout: 1s
+      connect-timeout: 1s
+
+pay:
+  cache:
+    # test environment has Redis L2; production leaves this false unless Redis is deployed
+    redis-enabled: true
+    l1-ttl-seconds: 5
+    max-local-entries: 1000
+
+  rdbms:
+    # isolated test database (service name defined in docker-compose.test.yml)
+    url: jdbc:mysql://app-pay-test-mysql:3306/app_pay_test?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&connectTimeout=3000&socketTimeout=15000&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
+    username: app_pay_test
+    password: app-pay-test
+    # Hikari pool size (shared by Tomcat threads; startup assertion:
+    # executor-workers <= pool-size - 2).
+    # Load-test note: 50 write threads with pool-size=20 showed pendingMax=29
+    # and acquireAvg~19ms, i.e. the pool was the bottleneck. 50 lets the same
+    # concurrency run without queuing; tune 40/60 from MySQL CPU + pendingMax.
+    pool-size: 50
+
+  # ---- fallback job threads/batch (usually unchanged during load tests) ----
+  job:
+    executor-workers: 8
+    executor-queue-capacity: 10000
+    scheduler-pool-size: 4
+    scan-limit: 200
+
+  mock:
+    # test environment uses the MOCK channel; no Alipay dependency
+    enabled: true
+
+  test:
+    # /test/pay/* (create order / mock pay / query / QR / concurrent burst)
+    enabled: true
+    token: pay-test-token
+    require-token: true
+
+  internal:
+    # /internal/pay/* server-side key + timeout executor token
+    # (the test environment has no app-task)
+    executor-token: pay-test-executor-token
+    api-key: pay-test-internal-key
+
+  apptask:
+    # no APISIX/app-task: disable timer registration; payment detection uses
+    # /test/pay/mock-pay plus fallback polling
+    register-enabled: false
+
+  risk:
+    # disable risk controls for load tests so create/confirm loops are not
+    # blocked by cooldown/gates/rate limits
+    order-cooldown-seconds: 0
+    global-orders-per-minute: 0
+    max-paid-orders-per-day: 0
+    max-paid-amount-per-day-cents: 0
+
+  order:
+    # relax the open-order slot cap for load tests (still protected by the
+    # database unique constraint on (uid, open_slot))
+    max-open-per-user: 50
+
+  alipay:
+    enabled: false
+
+  refund:
+    enabled: true
+    max-days-back: 365
+    require-approval: false

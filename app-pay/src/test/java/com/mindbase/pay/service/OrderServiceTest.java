@@ -22,11 +22,13 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.lang.reflect.Field;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -149,6 +151,8 @@ class OrderServiceTest {
         assertThat(order.getTier()).isEqualTo("VIP");
         assertThat(order.getStatus()).isEqualTo(PayOrder.OrderStatus.CREATED);
         assertThat(order.getExpiresAt()).isEqualTo(NOW.plusMinutes(30));
+        // 未支付订单上限由 (uid, open_slot) 唯一索引原子占位
+        assertThat(order.getOpenSlot()).isEqualTo(1);
         assertThat(outcome.payParams()).containsEntry("type", "mock");
         verify(orderMapper).insert(order);
         verify(timerClient).registerOrderTimeoutAfterCommit(
@@ -375,17 +379,19 @@ class OrderServiceTest {
     }
 
     @Test
-    void openOrderLimitRejectsWith429() {
+    void openOrderLimitRejectsWith429WhenAllSlotsTaken() {
+        // 未支付上限由 (uid, open_slot) 唯一索引原子保证：10 个槽位全部冲突 -> 429（并发也无法绕过）
         when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
         when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
-        when(orderMapper.selectCount(any(Wrapper.class))).thenReturn(10L);
+        when(orderMapper.insert(any(PayOrder.class)))
+                .thenThrow(new DuplicateKeyException("Duplicate entry '10086-1' for key 'pay_order.uk_pay_order_uid_slot'"));
 
         assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
                 PayOrder.PayChannel.MOCK, null))
                 .isInstanceOf(ApiException.class)
                 .extracting(e -> ((ApiException) e).getStatus())
                 .isEqualTo(429);
-        verify(orderMapper, never()).insert(any(PayOrder.class));
+        verify(orderMapper, times(10)).insert(any(PayOrder.class));
     }
 
     @Test
@@ -483,6 +489,80 @@ class OrderServiceTest {
                 .extracting(e -> ((ApiException) e).getStatus())
                 .isEqualTo(409);
         verify(orderMapper, never()).closeOrder(anyString(), any(), anyString());
+    }
+
+    // ── P0/P1 回归：槽位重试、precreate 缓存、渠道并发闸门 ──
+
+    @Test
+    void slotConflictFallsThroughToNextOpenSlot() {
+        // 槽位 1 已被同 uid 的另一张未支付订单占用：自动尝试槽位 2（并发建单不再靠 count 检查）
+        stubMockChannel();
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(productService.expireAtFrom(any(LocalDateTime.class))).thenReturn(NOW.plusMinutes(30));
+        when(orderMapper.insert(any(PayOrder.class)))
+                .thenThrow(new DuplicateKeyException(
+                        "Duplicate entry '10086-1' for key 'pay_order.uk_pay_order_uid_slot'"))
+                .thenReturn(1);
+
+        OrderService.CreatedOrder outcome = service.createOrder(10086L, "VIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null);
+
+        assertThat(outcome.order().getOpenSlot()).isEqualTo(2);
+        verify(orderMapper, times(2)).insert(any(PayOrder.class));
+    }
+
+    @Test
+    void paymentParamsAreCachedPerOrder() {
+        // /pay/orders/{no}/qr 每次请求都会调用 paymentParams：同一订单 5 分钟内只应打一次渠道
+        PayOrder order = new PayOrder();
+        order.setOrderNo("PO-CACHE");
+        order.setChannel(PayOrder.PayChannel.ALIPAY);
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.ALIPAY)).thenReturn(alipayAdapter);
+        Map<String, Object> params = Map.of("type", "alipay_qr", "qrCode", "https://qr.alipay.com/x");
+        when(alipayAdapter.createPayment(order)).thenReturn(params);
+
+        assertThat(service.paymentParams(order)).isEqualTo(params);
+        assertThat(service.paymentParams(order)).isEqualTo(params);
+
+        verify(alipayAdapter, times(1)).createPayment(order);
+    }
+
+    @Test
+    void mockPaymentParamsAreNotCached() {
+        // MOCK 渠道不产生出网调用，直接走适配器（避免缓存引入额外状态）
+        PayOrder order = new PayOrder();
+        order.setOrderNo("PO-MOCK");
+        order.setChannel(PayOrder.PayChannel.MOCK);
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
+        when(mockAdapter.createPayment(order)).thenReturn(Map.of("type", "mock"));
+
+        service.paymentParams(order);
+        service.paymentParams(order);
+
+        verify(mockAdapter, times(2)).createPayment(order);
+    }
+
+    @Test
+    void saturatedChannelPermitsFailFastWith429() throws Exception {
+        // 渠道变慢/被刷时，出网并发闸门必须快速拒绝而不是让 Tomcat 线程排队
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
+
+        Field field = OrderService.class.getDeclaredField("channelPermits");
+        field.setAccessible(true);
+        Semaphore permits = (Semaphore) field.get(service);
+        int drained = permits.drainPermits();
+        try {
+            long start = System.currentTimeMillis();
+            assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
+                    PayOrder.PayChannel.MOCK, null))
+                    .isInstanceOf(ApiException.class)
+                    .extracting(e -> ((ApiException) e).getStatus())
+                    .isEqualTo(429);
+            // 许可证获取超时 2s，必须远小于“无限等待”
+            assertThat(System.currentTimeMillis() - start).isLessThan(5_000L);
+        } finally {
+            permits.release(drained > 0 ? drained : 32);
+        }
     }
 
     @Test

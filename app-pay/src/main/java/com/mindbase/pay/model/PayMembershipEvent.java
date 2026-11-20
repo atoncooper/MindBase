@@ -33,5 +33,8 @@ public class PayMembershipEvent {
 
     private String reason;
 
+    /** 运营补偿幂等键：同一 request_id 只落一条事件、只生效一次（唯一索引兜底并发重放）。 */
+    private String requestId;
+
     private LocalDateTime createdAt = com.mindbase.pay.common.PayTime.now();
 }

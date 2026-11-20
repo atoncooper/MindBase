@@ -22,11 +22,16 @@ class MembershipServiceTxTest {
         Method sixArg = MembershipService.class.getMethod("extend",
                 long.class, int.class, String.class, PayMembershipEvent.EventType.class,
                 String.class, String.class);
+        Method sevenArg = MembershipService.class.getMethod("extend",
+                long.class, int.class, String.class, PayMembershipEvent.EventType.class,
+                String.class, String.class, String.class);
 
         assertThat(fiveArg.isAnnotationPresent(Transactional.class))
                 .as("5-arg extend must be @Transactional").isTrue();
         assertThat(sixArg.isAnnotationPresent(Transactional.class))
-                .as("6-arg extend must be @Transactional (the direct entry point for grant)").isTrue();
+                .as("6-arg extend must be @Transactional").isTrue();
+        assertThat(sevenArg.isAnnotationPresent(Transactional.class))
+                .as("7-arg extend (grant idempotency key) must be @Transactional").isTrue();
     }
 
     @Test

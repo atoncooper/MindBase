@@ -61,10 +61,13 @@ public class ChannelQueryJob implements AdaptiveJob {
             }
             LocalDateTime now = LocalDateTime.now(clock);
             // Still within the payment window (expires_at > now) -> hits the composite index (status, expires_at)
+            // 公平调度：按 last_checked_at 升序（NULL 优先）轮转，处理过的订单排到队尾，
+            // 避免“最老 200 条被反复查询、新单永远轮不到”的队头阻塞（V7 索引 status,last_checked_at）
             List<PayOrder> pending = orderMapper.selectList(new LambdaQueryWrapper<PayOrder>()
                     .eq(PayOrder::getStatus, PayOrder.OrderStatus.CREATED)
                     .gt(PayOrder::getExpiresAt, now.minusMinutes(10))
                     .lt(PayOrder::getCreatedAt, now.minusSeconds(60))
+                    .orderByAsc(PayOrder::getLastCheckedAt)
                     .orderByAsc(PayOrder::getCreatedAt)
                     .last("LIMIT " + Math.max(1, props.job().scanLimit())));
             AtomicInteger workedCount = new AtomicInteger();
@@ -83,12 +86,22 @@ public class ChannelQueryJob implements AdaptiveJob {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
             lastHadWork = workedCount.get() > 0;
         } finally {
+            metrics.jobRan("channel-query");
             MDC.clear();
         }
     }
 
     /** @return true if this order advanced the local state (paid/closed) */
     private boolean processOne(PayOrder order) {
+        try {
+            return queryAndAdvance(order);
+        } finally {
+            // 无论成功/失败都记录检查时间：失败订单也排到队尾，避免毒丸订单占住扫描窗口
+            orderMapper.touchChecked(order.getOrderNo(), LocalDateTime.now(clock));
+        }
+    }
+
+    private boolean queryAndAdvance(PayOrder order) {
         if (order.getChannel() == PayOrder.PayChannel.MOCK) {
             return false; // the mock channel has no remote side to query
         }

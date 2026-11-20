@@ -93,7 +93,16 @@ public final class PayDtos {
     public record GrantRequest(@Positive long uid,
                                @Min(1) @Max(3650) int durationDays,
                                @NotBlank @Size(max = 200) String reason,
-                               @Size(max = 20) String tier) {
+                               @Size(max = 20) String tier,
+                               /**
+                                * 幂等键（可选）：同一 requestId 只生效一次。运营后台/网关重试/人工重放
+                                * 必须复用同一个值；为空时按非幂等处理（仅用于内部手工调试）。
+                                */
+                               @Size(max = 64) String requestId) {
+        /** 兼容旧调用方（无 requestId）：按非幂等处理。 */
+        public GrantRequest(long uid, int durationDays, String reason, String tier) {
+            this(uid, durationDays, reason, tier, null);
+        }
     }
 
     /**

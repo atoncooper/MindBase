@@ -6,7 +6,7 @@ import com.mindbase.pay.model.PayMembership;
 import com.mindbase.pay.model.PayMembershipEvent;
 import com.mindbase.pay.model.PayOrder;
 import com.mindbase.pay.model.PayRefundApproval;
-import com.mindbase.pay.service.GrantQuotaService;
+import com.mindbase.pay.service.GrantService;
 import com.mindbase.pay.service.MembershipService;
 import com.mindbase.pay.service.RefundService;
 import jakarta.validation.Valid;
@@ -46,7 +46,7 @@ public class PayInternalController {
 
     private final MembershipService membershipService;
     private final RefundService refundService;
-    private final GrantQuotaService grantQuotaService;
+    private final GrantService grantService;
 
     /** A non-member returns active=false instead of 404, so the main app needs no null checks. */
     @GetMapping("/membership/{uid}")
@@ -66,12 +66,13 @@ public class PayInternalController {
             // 400 contract error (previously an IllegalArgumentException was swallowed into a 500, polluting 5xx monitoring)
             throw ApiException.badRequest("INVALID_TIER", "tier must be VIP or SVIP");
         }
-        // ADMIN_GRANT 日额度熔断：超限 429 + 审计，防内部密钥泄漏后批量补偿薅会员
-        grantQuotaService.checkDailyQuota(req.durationDays());
-        log.info("[PAY] admin_grant uid={} days={} tier={} reason={}",
-                req.uid(), req.durationDays(), tier, req.reason());
-        PayMembership membership = membershipService.extend(req.uid(), req.durationDays(), null,
-                PayMembershipEvent.EventType.ADMIN_GRANT, req.reason(), tier);
+        // 幂等（requestId）+ 日额度原子熔断 + 会员扩展：同一事务，超限 429、重放不重复加天数
+        log.info("[PAY] admin_grant uid={} days={} tier={} request_id={} reason={}",
+                req.uid(), req.durationDays(), tier,
+                com.mindbase.pay.common.LogSanitizer.safe(req.requestId(), 64),
+                com.mindbase.pay.common.LogSanitizer.safe(req.reason(), 200));
+        PayMembership membership = grantService.grant(req.uid(), req.durationDays(),
+                req.reason(), tier, req.requestId());
         return MembershipView.from(membership, membershipService.isActive(membership));
     }
 
@@ -89,7 +90,9 @@ public class PayInternalController {
         boolean revokeMembership = req.revokeMembership() == null || req.revokeMembership();
         boolean confirm = Boolean.TRUE.equals(req.confirm());
         log.info("[PAY] admin_refund order_no={} revoke_membership={} confirm={} operator={} reason={}",
-                orderNo, revokeMembership, confirm, req.operator(), req.reason());
+                orderNo, revokeMembership, confirm,
+                com.mindbase.pay.common.LogSanitizer.safe(req.operator()),
+                com.mindbase.pay.common.LogSanitizer.safe(req.reason(), 200));
         PayOrder order = refundService.refundByOps(orderNo, req.reason(), revokeMembership,
                 req.operator(), confirm);
         return OrderView.from(order);
@@ -100,7 +103,8 @@ public class PayInternalController {
     public OrderView rejectRefund(@PathVariable @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
                                           message = "invalid orderNo") String orderNo,
                                   @Valid @RequestBody RejectRefundRequest req) {
-        log.info("[PAY] admin_refund_reject order_no={} operator={}", orderNo, req.operator());
+        log.info("[PAY] admin_refund_reject order_no={} operator={}", orderNo,
+                com.mindbase.pay.common.LogSanitizer.safe(req.operator()));
         PayOrder order = refundService.rejectRefundRequest(orderNo, req.operator());
         return OrderView.from(order);
     }

@@ -13,6 +13,7 @@
             channel_trade_no = #{tradeNo},
             paid_at          = #{paidAt},
             updated_at       = #{paidAt},
+            open_slot        = NULL,
             version          = version + 1
         WHERE order_no = #{orderNo}
           AND status = 'CREATED'
@@ -28,10 +29,19 @@
             paid_at          = #{paidAt},
             updated_at       = #{paidAt},
             fail_reason      = NULL,
+            open_slot        = NULL,
             version          = version + 1
         WHERE order_no = #{orderNo}
           AND status = 'CLOSED'
     </update>
+
+    <!-- Serialize delivery for the same order (concurrent duplicate callbacks). -->
+    <select id="selectByOrderNoForUpdate" resultType="com.mindbase.pay.model.PayOrder">
+        SELECT *
+        FROM pay_order
+        WHERE order_no = #{orderNo}
+        FOR UPDATE
+    </select>
 
     <update id="markDelivered">
         UPDATE pay_order
@@ -60,6 +70,7 @@
             closed_at   = #{now},
             updated_at  = #{now},
             fail_reason = #{reason},
+            open_slot   = NULL,
             version     = version + 1
         WHERE order_no = #{orderNo}
           AND status = 'CREATED'
@@ -71,6 +82,7 @@
             closed_at   = #{now},
             updated_at  = #{now},
             fail_reason = 'PAY_TIMEOUT',
+            open_slot   = NULL,
             version     = version + 1
         WHERE status = 'CREATED'
           AND expires_at &lt; #{now}
@@ -87,6 +99,7 @@
             closed_at   = #{now},
             updated_at  = #{now},
             fail_reason = 'PAY_TIMEOUT',
+            open_slot   = NULL,
             version     = version + 1
         WHERE order_no = #{orderNo}
           AND status = 'CREATED'
@@ -128,6 +141,21 @@
             version            = version + 1
         WHERE order_no = #{orderNo}
           AND status = 'REFUNDING'
+    </update>
+
+    <!-- 兜底任务公平调度：记录最近一次处理时间（不参与状态机，失败也更新，保证轮转） -->
+    <update id="touchChecked">
+        UPDATE pay_order
+        SET last_checked_at = #{now}
+        WHERE order_no = #{orderNo}
+    </update>
+
+    <!-- 交付补偿失败：尝试次数 + 1，并记录检查时间；达到上限后 DeliveryRetryJob 不再选中该单 -->
+    <update id="incrementDeliveryAttempts">
+        UPDATE pay_order
+        SET delivery_attempts = delivery_attempts + 1,
+            last_checked_at   = #{now}
+        WHERE order_no = #{orderNo}
     </update>
 
     <!-- 支付频次风控：uid + paid_at 过滤走 idx_pay_order_uid_status 前缀，量级小 -->

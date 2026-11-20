@@ -30,7 +30,7 @@ public final class TestPayProperties {
                 "http://apptask-test", "secret-key", false, "http://app-pay:8002", 2, 1000);
         private PayProperties.Job job = new PayProperties.Job(
                 8, 10000, 120, 600, 60, 300, 60, 4, 900, 3600, 24, 200);
-        private PayProperties.Internal internal = new PayProperties.Internal("");
+        private PayProperties.Internal internal = new PayProperties.Internal("", "test-internal-key");
         private PayProperties.Refund refund = new PayProperties.Refund(true, 365, false);
         private PayProperties.Grant grant = new PayProperties.Grant(true, 50, 1000);
         private PayProperties.Risk risk = new PayProperties.Risk(5, 500_000, 0, 0);

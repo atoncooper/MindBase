@@ -135,7 +135,8 @@ upstreams:
       active:
         type: https
         https_verify_certificate: false
-        http_path: /health
+        # 存活探针不探测数据库/连接池（池饱和时不能把实例整站摘除）
+        http_path: /health/live
         timeout: 1
         interval: 5
         healthy:
@@ -154,6 +155,41 @@ upstreams:
         unhealthy:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
+
+  # 非幂等资金写（grant）专用：不重试，重试交给调用方携带同一 requestId
+  - id: upstream-app-pay-no-retry
+    name: app-pay-no-retry
+    type: roundrobin
+    scheme: https
+    tls:
+      verify: false
+    pass_host: pass
+    retries: 0
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "192.168.138.1:8002": 1
+    checks:
+      active:
+        type: https
+        https_verify_certificate: false
+        http_path: /health/live
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
 
   # app-content（note 面 · 统一端口 8004（HTTPS））—— 笔记面（Go；本机 go run ./app-go/app-content）
   - id: upstream-app-content-note
@@ -588,7 +624,8 @@ routes:
     plugins:
       proxy-rewrite:
         headers:
-          remove: [X-Uid, X-Roles]
+          # 身份只以网关注入的 X-Uid 为准；不把用户 Bearer token 透传给支付服务
+          remove: [X-Uid, X-Roles, Authorization]
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -605,11 +642,12 @@ routes:
     upstream_id: upstream-app-pay
     plugins:
       limit-req:
-        rate: 10
-        burst: 20
+        # 边缘覆盖 X-Forwarded-For；按真实客户端 IP 限流（remote_addr 是边缘 IP，会退化为全站共享桶）
+        rate: 50
+        burst: 100
         rejected_code: 429
         key_type: var
-        key: remote_addr
+        key: http_x_forwarded_for
 
   # main app / ops -> app-pay internal。P1 密钥分权（最小权限）：
   #   - membership 读（app-cloud / app-ts 会员查询）: 共享 internal 或 pay_readonly
@@ -629,18 +667,27 @@ routes:
         whitelist:
           - internal
           - pay_readonly
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   - id: pay_internal_grant
     uri: /internal/pay/grant
     methods: [POST]
     priority: 100
-    upstream_id: upstream-app-pay
+    # 非幂等资金写：网关不重试（调用方用同一 requestId 重试才安全）
+    upstream_id: upstream-app-pay-no-retry
     plugins:
       key-auth: {}
       consumer-restriction:
         type: consumer_name
         whitelist:
           - pay_ops
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   - id: pay_internal_orders
     uri: /internal/pay/orders/*
@@ -653,6 +700,10 @@ routes:
         type: consumer_name
         whitelist:
           - pay_ops
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   - id: pay_internal_refund_requests
     uri: /internal/pay/refund-requests
@@ -665,6 +716,10 @@ routes:
         type: consumer_name
         whitelist:
           - pay_ops
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
   # 兜底：/internal/pay/* 其余路径（timeout/execute 等）仍走共享 key-auth
   - id: pay_internal
@@ -674,6 +729,10 @@ routes:
     upstream_id: upstream-app-pay
     plugins:
       key-auth: {}
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "__PAY_INTERNAL_KEY__"
 
 
   # 用户端认证端点 (/auth, /auth/*) -> app-user（auth 监听口 8006；全栈认证权威；

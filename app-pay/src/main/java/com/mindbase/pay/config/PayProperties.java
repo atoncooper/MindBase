@@ -77,10 +77,14 @@ public record PayProperties(Rdbms rdbms, Mock mock, Order order, Alipay alipay, 
     }
 
     /**
-     * Minimal authentication for internal endpoints: the executor callback token (&gt; blank then the query parameter token is
-     * enforced; the token is issued via the registered executor_url query string, so app-task can POST as-is without modification).
+     * 内部端点鉴权（纵深防御，P0）：
+     * - apiKey：/internal/pay/* 的服务端二次校验头 X-Internal-Key。APISIX key-auth 之外再加一道，
+     *   服务不信任“只要在容器网络里就能调用”。APISIX 在 proxy-rewrite 注入；未配置时 fail-closed（503）。
+     *   默认回落到 APISIX_CONSUMER_KEY，与 app-content / app-cloud 的 M2M 约定一致。
+     * - executorToken：超时执行器回调 token（app-task 直接 POST executor_url，不经 APISIX，
+     *   因此该路径豁免 X-Internal-Key，仅校验 query token；docker profile 启动自检要求非空）。
      */
-    public record Internal(String executorToken) {
+    public record Internal(String executorToken, String apiKey) {
     }
 
     /**

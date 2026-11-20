@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -42,13 +43,20 @@ public class TimeoutExecutionQueue {
     private final LinkedBlockingQueue<Pending> queue;
     private final TimeoutExecutionService service;
     private final List<Thread> workers = new ArrayList<>();
+    /**
+     * 在途命令上限（worker × 4）：容量 10000 的队列可以很深，但“已受理且等待结果”的请求必须有界，
+     * 否则网关侧（甚至 8 worker 的排队）会堆积出 30s 的同步等待。超限直接 503，让 app-task 退避。
+     */
+    private final Semaphore inFlight;
     private volatile boolean running = true;
 
     public TimeoutExecutionQueue(TimeoutExecutionService service, PayProperties props) {
         this.service = service;
         PayProperties.Job job = props.job();
+        int workerCount = Math.max(1, job.executorWorkers());
         this.queue = new LinkedBlockingQueue<>(Math.max(1, job.executorQueueCapacity()));
-        for (int i = 0; i < Math.max(1, job.executorWorkers()); i++) {
+        this.inFlight = new Semaphore(workerCount * 4);
+        for (int i = 0; i < workerCount; i++) {
             workers.add(new Thread(this::drainLoop, "pay-timeout-worker-" + i));
         }
     }
@@ -60,12 +68,27 @@ public class TimeoutExecutionQueue {
                 workers.size(), queue.size() + queue.remainingCapacity());
     }
 
-    /** Enqueue and wait for this command to finish (synchronous semantics, so app-task's completed stays truthful). */
-    public ExecuteResult submit(TimeoutCommand cmd) {
-        CompletableFuture<ExecuteResult> future = new CompletableFuture<>();
-        if (!queue.offer(new Pending(cmd, future))) {
+    /**
+     * 异步入队：调用方（DeferredResult）不再用 Tomcat 线程同步等待，避免 executor 端点把
+     * 200 个请求线程全部挂 30s（连带 /health 与其他支付接口一起饿死）。
+     * 队列/在途上限满 → QueueFullException → 503，由调用方退避重试。
+     */
+    public CompletableFuture<ExecuteResult> submitAsync(TimeoutCommand cmd) {
+        if (!inFlight.tryAcquire()) {
             throw new QueueFullException();
         }
+        CompletableFuture<ExecuteResult> future = new CompletableFuture<>();
+        if (!queue.offer(new Pending(cmd, future))) {
+            inFlight.release();
+            throw new QueueFullException();
+        }
+        future.whenComplete((r, e) -> inFlight.release());
+        return future;
+    }
+
+    /** Enqueue and wait for this command to finish (synchronous semantics, kept for tests/back-compat). */
+    public ExecuteResult submit(TimeoutCommand cmd) {
+        CompletableFuture<ExecuteResult> future = submitAsync(cmd);
         try {
             return future.get(30, TimeUnit.SECONDS); // fallback for a stuck worker: on timeout throw as an exception -> 5xx -> caller retries
         } catch (InterruptedException e) {

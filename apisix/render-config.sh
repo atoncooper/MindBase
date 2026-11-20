@@ -47,9 +47,13 @@ escape_sed() {
 
 pay_readonly=${PAY_READONLY_KEY:-$(random_key)}
 pay_ops=${PAY_OPS_KEY:-$(random_key)}
+# app-pay 服务端二次校验 key（X-Internal-Key）：未单独配置时回落到共享内部 key，
+# 与 app-pay 的 ${PAY_INTERNAL_KEY:${APISIX_CONSUMER_KEY:}} 默认值保持一致。
+pay_internal=${PAY_INTERNAL_KEY:-${APISIX_CONSUMER_KEY:-}}
 
 sed \
   -e "s|__APISIX_CONSUMER_KEY__|$(escape_sed "$APISIX_CONSUMER_KEY")|g" \
+  -e "s|__PAY_INTERNAL_KEY__|$(escape_sed "$pay_internal")|g" \
   -e "s|__PAY_READONLY_KEY__|$(escape_sed "$pay_readonly")|g" \
   -e "s|__PAY_OPS_KEY__|$(escape_sed "$pay_ops")|g" \
   "$tpl" > "$out"
@@ -80,7 +84,7 @@ if grep -q '__APISIX_TLS_CERT_PEM__' "$out"; then
   fi
 fi
 
-if grep -q '__APISIX_CONSUMER_KEY__\|__PAY_READONLY_KEY__\|__PAY_OPS_KEY__\|__APISIX_TLS_' "$out"; then
+if grep -q '__APISIX_CONSUMER_KEY__\|__PAY_READONLY_KEY__\|__PAY_OPS_KEY__\|__PAY_INTERNAL_KEY__\|__APISIX_TLS_' "$out"; then
   echo "[apisix-config] placeholder left after render; check template" >&2
   exit 1
 fi

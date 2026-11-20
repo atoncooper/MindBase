@@ -30,6 +30,16 @@ public class HealthController {
     private final PayProperties payProperties;
     private final DataSource dataSource;
 
+    /**
+     * 纯存活探针（不碰数据库/连接池）：给网关/编排做“进程是否活着”的判断。
+     * 业务依赖探测走 /health 或 /actuator/health/readiness —— 共享连接池饱和时
+     * 不能因为 /health 拿不到连接就被网关摘除（会放大成整站 503）。
+     */
+    @GetMapping("/health/live")
+    public ResponseEntity<Map<String, String>> live() {
+        return ResponseEntity.ok(Map.of("service", "app-pay", "status", "UP"));
+    }
+
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> health() {
         Map<String, String> body = new LinkedHashMap<>();

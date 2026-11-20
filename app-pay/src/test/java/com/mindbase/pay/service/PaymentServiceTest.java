@@ -12,27 +12,30 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.time.Clock;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** Payment callback idempotency: conditional-update outcome, amount comparison, notification after close, duplicate notification. */
+/**
+ * Payment callback idempotency + 唯一交付入口语义：条件更新结果、金额比较、关单后补付、
+ * 重复通知自愈，以及 TIER_BLOCKED（重复购买/降档）统一自动退款。
+ */
 @ExtendWith(MockitoExtension.class)
 class PaymentServiceTest {
 
@@ -45,8 +48,6 @@ class PaymentServiceTest {
     @Mock
     private RefundService refundService;
     @Mock
-    private MembershipService membershipService;
-    @Mock
     private PayAuditLogger audit;
     @Mock
     private PayMetrics metrics;
@@ -57,19 +58,10 @@ class PaymentServiceTest {
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
         service = new PaymentService(orderMapper, callbackLogMapper, deliveryService, refundService,
-                membershipService, audit, metrics, clock, new TransactionTemplate(mock(PlatformTransactionManager.class)));
-    }
-
-    @Test
-    void missingAmountIsRejectedNotSilentlyAccepted() {
-        when(orderMapper.selectOne(any(Wrapper.class)))
-                .thenReturn(order(PayOrder.OrderStatus.CREATED));
-
-        assertThatThrownBy(() -> service.handleChannelPaid("PO1", PayOrder.PayChannel.ALIPAY,
-                "ALI-1", null, "{}", PayCallbackLog.SignatureResult.VALID, null, null))
-                .isInstanceOf(com.mindbase.pay.common.ApiException.class)
-                .hasMessageContaining("amount");
-        verify(orderMapper, never()).markPaid(anyString(), anyString(), any());
+                audit, metrics, clock, new TransactionTemplate(mock(PlatformTransactionManager.class)));
+        // 默认交付成功；个别用例覆盖为 TIER_BLOCKED / 异常
+        lenient().when(deliveryService.deliverOrder(any(PayOrder.class)))
+                .thenReturn(DeliveryService.DeliveryResult.DELIVERED);
     }
 
     private PayOrder order(PayOrder.OrderStatus status) {
@@ -83,6 +75,20 @@ class PaymentServiceTest {
     }
 
     @Test
+    void missingAmountIsRejectedNotSilentlyAccepted() {
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(order(PayOrder.OrderStatus.CREATED));
+
+        assertThatThrownBy(() -> service.handleChannelPaid("PO1", PayOrder.PayChannel.ALIPAY,
+                "ALI-1", null, "{}", PayCallbackLog.SignatureResult.VALID, null, null))
+                .isInstanceOf(com.mindbase.pay.common.ApiException.class)
+                .hasMessageContaining("amount");
+        verify(orderMapper, never()).markPaid(anyString(), anyString(), any());
+        // 金额缺失也是资金差异事件，必须进同一指标
+        verify(metrics).callbackAmountMismatch();
+    }
+
+    @Test
     void markPaidWinsThenDelivers() {
         when(orderMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(order(PayOrder.OrderStatus.CREATED));
@@ -91,7 +97,6 @@ class PaymentServiceTest {
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
                 1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
-        // After successful delivery the in-memory object is filled with DELIVERED, no re-query needed
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService).deliverOrder(any(PayOrder.class));
         verify(callbackLogMapper, times(1)).insert(any(PayCallbackLog.class));
@@ -99,11 +104,10 @@ class PaymentServiceTest {
 
     @Test
     void duplicateWhilePaidTriggersHealingDelivery() {
-        // Duplicate callback = self-healing trigger: when delivery was interrupted (stuck in PAID), the resend immediately retries delivery
+        // 重复回调 = 自愈触发器：上次交付中断（停在 PAID）时，重复通知立即补交付
         when(orderMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(order(PayOrder.OrderStatus.PAID))
-                .thenReturn(order(PayOrder.OrderStatus.PAID))
-                .thenReturn(order(PayOrder.OrderStatus.DELIVERED));
+                .thenReturn(order(PayOrder.OrderStatus.PAID));
         when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(0);
 
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
@@ -123,7 +127,7 @@ class PaymentServiceTest {
                 1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
-        verify(deliveryService, never()).deliverOrder(any(com.mindbase.pay.model.PayOrder.class));
+        verify(deliveryService, never()).deliverOrder(any(PayOrder.class));
     }
 
     @Test
@@ -131,14 +135,13 @@ class PaymentServiceTest {
         when(orderMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(order(PayOrder.OrderStatus.CLOSED))
                 .thenReturn(order(PayOrder.OrderStatus.CLOSED))
-                .thenReturn(order(PayOrder.OrderStatus.DELIVERED));
+                .thenReturn(order(PayOrder.OrderStatus.CLOSED));
         when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(0);
         when(orderMapper.markPaidAfterClose(eq("PO1"), anyString(), any())).thenReturn(1);
 
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
                 1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
-        // The money was received: payment after close automatically reopens and delivers the order; the M4 refund path handles the reverse
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService).deliverOrder(any(PayOrder.class));
         verify(callbackLogMapper, times(1)).insert(any(PayCallbackLog.class));
@@ -154,13 +157,12 @@ class PaymentServiceTest {
                 .isInstanceOf(com.mindbase.pay.common.ApiException.class)
                 .hasMessageContaining("amount does not match");
         verify(orderMapper, never()).markPaid(anyString(), anyString(), any());
-        verify(deliveryService, never()).deliverOrder(any(com.mindbase.pay.model.PayOrder.class));
+        verify(deliveryService, never()).deliverOrder(any(PayOrder.class));
+        verify(metrics).callbackAmountMismatch();
     }
 
     @Test
     void duplicateWhileRefundingIsAckedWithoutDelivery() {
-        // REFUNDING is owned by the refund flow: a duplicate paid notification is acked as a duplicate
-        // (no delivery, no exception -> the channel stops retrying)
         PayOrder refunding = order(PayOrder.OrderStatus.REFUNDING);
         when(orderMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(refunding)
@@ -176,31 +178,45 @@ class PaymentServiceTest {
     }
 
     @Test
-    void duplicatePurchaseAutoRefundFailureFreezesOrderNotDelivered() {
-        // "Second wall": when auto-refund fails for a duplicate-purchase order, the order is frozen as
-        // REFUND_HOLD -- the delivery compensation path (retry job / self-heal) only picks PAID orders,
-        // so the freeze must be real, and the exception prevents acking success
+    void tierBlockedOrderIsAutoRefundedByDeliveryEntry() {
+        // 唯一交付入口判定重复购买 → 冻结 + 本类统一自动退款；不再依赖“首次回调路径才做墙”
         PayOrder vipOrder = order(PayOrder.OrderStatus.CREATED);
         vipOrder.setTier("VIP");
         when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(vipOrder);
         when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(1);
-        when(membershipService.activeTierRank(10086L)).thenReturn(2); // SVIP 现役
+        when(deliveryService.deliverOrder(any(PayOrder.class)))
+                .thenReturn(DeliveryService.DeliveryResult.TIER_BLOCKED);
+        when(refundService.refund(eq("PO1"), anyString(), eq(false)))
+                .thenReturn(order(PayOrder.OrderStatus.REFUNDED));
+
+        service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
+
+        verify(refundService).refund(eq("PO1"), anyString(), eq(false));
+        verify(metrics).autoRefund();
+    }
+
+    @Test
+    void autoRefundFailureFreezesOrderNotDelivered() {
+        PayOrder vipOrder = order(PayOrder.OrderStatus.CREATED);
+        vipOrder.setTier("VIP");
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(vipOrder);
+        when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(1);
+        when(deliveryService.deliverOrder(any(PayOrder.class)))
+                .thenReturn(DeliveryService.DeliveryResult.TIER_BLOCKED);
         when(refundService.refund(eq("PO1"), anyString(), eq(false)))
                 .thenThrow(new RuntimeException("channel down"));
-        when(orderMapper.markRefundHold(eq("PO1"), any())).thenReturn(1);
 
         assertThatThrownBy(() -> service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
                 1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null))
                 .isInstanceOf(com.mindbase.pay.common.ApiException.class)
                 .hasMessageContaining("frozen");
 
-        verify(deliveryService, never()).deliverOrder(any(PayOrder.class));
-        verify(orderMapper).markRefundHold(eq("PO1"), any());
+        verify(metrics).autoRefundFailed();
     }
 
     @Test
-    void upgradeOrderDeliversWithoutSecondWall() {
-        // 升级换购单：同档按设计交付（差价已折算），第二道墙豁免
+    void upgradeOrderDeliversWithoutTierWall() {
         PayOrder order = order(PayOrder.OrderStatus.CREATED);
         order.setTier("SVIP");
         order.setUpgradeFromOrderNo("PO-BASE");
@@ -213,6 +229,44 @@ class PaymentServiceTest {
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService).deliverOrder(any(PayOrder.class));
         verify(refundService, never()).refund(anyString(), anyString(), anyBoolean());
+    }
+
+    @Test
+    void skippedDeliveryReloadsFreshStatus() {
+        // 并发方已经交付/退款（markDelivered 未命中）：返回数据库最新状态，而不是乐观地把内存对象标成 DELIVERED
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(order(PayOrder.OrderStatus.CREATED))
+                .thenReturn(order(PayOrder.OrderStatus.DELIVERED));
+        when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(1);
+        when(deliveryService.deliverOrder(any(PayOrder.class)))
+                .thenReturn(DeliveryService.DeliveryResult.SKIPPED);
+
+        PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
+
+        assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
+    }
+
+    @Test
+    void selfHealDuplicatePaidTierBlockedAlsoAutoRefunds() {
+        // 重复回调自愈路径（已 PAID）同样走唯一交付入口：违规单必须冻结并自动退款，不能借自愈路径交付
+        PayOrder paid = order(PayOrder.OrderStatus.PAID);
+        paid.setTier("VIP");
+        PayOrder refunded = order(PayOrder.OrderStatus.REFUNDED);
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(paid)
+                .thenReturn(paid)
+                .thenReturn(refunded);
+        when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(0);
+        when(deliveryService.deliverOrder(any(PayOrder.class)))
+                .thenReturn(DeliveryService.DeliveryResult.TIER_BLOCKED);
+        when(refundService.refund(eq("PO1"), anyString(), eq(false))).thenReturn(refunded);
+
+        PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
+
+        assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.REFUNDED);
+        verify(refundService).refund(eq("PO1"), anyString(), eq(false));
     }
 
     @Test

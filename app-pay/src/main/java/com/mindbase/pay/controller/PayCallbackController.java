@@ -3,6 +3,7 @@ package com.mindbase.pay.controller;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindbase.pay.common.ApiException;
+import com.mindbase.pay.common.LogSanitizer;
 import com.mindbase.pay.common.PayAuditLogger;
 import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.model.PayCallbackLog;
@@ -44,7 +45,9 @@ public class PayCallbackController {
             produces = MediaType.TEXT_PLAIN_VALUE)
     public String alipayNotify(@RequestParam Map<String, String> params) {
         String outTradeNo = params.get("out_trade_no");
-        log.info("[PAY] alipay_notify out_trade_no={} trade_status={}", outTradeNo, params.get("trade_status"));
+        // 外部 form 值可能带换行/控制字符：验签前先清洗，防日志行伪造
+        log.info("[PAY] alipay_notify out_trade_no={} trade_status={}",
+                LogSanitizer.safe(outTradeNo), LogSanitizer.safe(params.get("trade_status"), 32));
 
         AlipayChannelAdapter.AlipayNotifyResult result = alipayAdapter.verifyNotify(params);
         if (result.status() == AlipayChannelAdapter.AlipayNotifyResult.Status.INVALID) {
@@ -67,24 +70,28 @@ public class PayCallbackController {
         } catch (ApiException e) {
             if ("AMOUNT_MISMATCH".equals(e.getCode()) || "AMOUNT_MISSING".equals(e.getCode())) {
                 // Permanent discrepancy (amount mismatch/missing): ack success to stop the channel's
-                // pointless retry storm; an ERROR log + audit + rejection metric are already emitted and
-                // manual reconciliation is required
+                // pointless retry storm; ERROR log + audit + metric emitted in PaymentService
+                // (also covers order-query/read-sync paths), manual reconciliation required
                 log.error("[PAY] alipay_notify_amount_rejected out_trade_no={} code={} -- acked to stop retries",
-                        outTradeNo, e.getCode());
+                        LogSanitizer.safe(outTradeNo), e.getCode());
                 return "success";
             }
             if ("ORDER_NOT_FOUND".equals(e.getCode())) {
                 // Permanent unknown order: the notify_url points at the wrong environment / the order never
                 // existed here. Retrying for 24h changes nothing -- ack success (already audited as
                 // ORDER_NOT_FOUND + callback log by PaymentService) and require manual investigation
-                log.error("[PAY] alipay_notify_unknown_order out_trade_no={} -- acked to stop retries", outTradeNo);
+                metrics.callbackUnknownOrder();
+                log.error("[PAY] alipay_notify_unknown_order out_trade_no={} -- acked to stop retries",
+                        LogSanitizer.safe(outTradeNo));
                 return "success";
             }
-            log.error("[PAY] alipay_notify_handle_failed out_trade_no={} code={}", outTradeNo, e.getCode());
+            log.error("[PAY] alipay_notify_handle_failed out_trade_no={} code={}",
+                    LogSanitizer.safe(outTradeNo), e.getCode());
             return "fail";
         } catch (Exception e) {
             // Processing failed (transient fault): ack fail so the channel retries; idempotency and close/repair logic keep retries safe
-            log.error("[PAY] alipay_notify_handle_failed out_trade_no={} err={}", outTradeNo, e.toString());
+            log.error("[PAY] alipay_notify_handle_failed out_trade_no={} err={}",
+                    LogSanitizer.safe(outTradeNo), e.toString());
             return "fail";
         }
     }

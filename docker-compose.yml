@@ -991,6 +991,8 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
+      # app-pay /internal/* 的 X-Internal-Key（渲染进路由）；未配置时渲染脚本回落到 APISIX_CONSUMER_KEY
+      - PAY_INTERNAL_KEY=${PAY_INTERNAL_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
@@ -1233,7 +1235,7 @@ services:
     # MySQL is TLS-only, so the JDBC URL must request SSL.
     command:
       - --spring.profiles.active=docker
-      - --pay.rdbms.url=jdbc:mysql://app-pay-mysql:3306/app_pay?sslMode=REQUIRED&useSSL=true&requireSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=true
+      - --pay.rdbms.url=jdbc:mysql://app-pay-mysql:3306/app_pay?sslMode=REQUIRED&useSSL=true&requireSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=true&connectTimeout=3000&socketTimeout=15000
     ports:
       # 仅回环：app-pay 不允许绕过 APISIX 鉴权直达
       - "127.0.0.1:${APP_PAY_PORT:-8002}:8002"
