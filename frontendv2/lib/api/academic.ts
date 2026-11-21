@@ -2,7 +2,7 @@
  * 学术科研 API - 科研工作台（plan/1.0.17 Phase 2）.
  *
  * 后端契约：app-ts src/transport/http/routes/academic.ts（经 APISIX → app-ts）。
- * 鉴权由网关注入 X-Uid，前端只带 bili_session 的 Bearer 头；所有 JSON 均为
+ * 鉴权由网关注入 X-Uid，前端只带 session_token 的 Bearer 头；所有 JSON 均为
  * camelCase，错误体统一 { detail }（沿用 ./client 的 sanitizeError）。
  *
  * 本文件是唯一允许出现 /academic 端点的地方：组件只 import academicApi 与类型，

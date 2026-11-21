@@ -251,6 +251,25 @@ func (r *FileRepo) ListTrash(db *gorm.DB, uid int64) ([]model.CloudFile, error) 
 	return rows, err
 }
 
+// ListTrashPage returns one bounded trash page plus the total. The previous
+// unbounded query loaded every soft-deleted row into memory; a large trash can
+// otherwise dominate a replica under concurrent opens.
+func (r *FileRepo) ListTrashPage(db *gorm.DB, uid int64, page, pageSize int) ([]model.CloudFile, int64, error) {
+	var total int64
+	if err := db.Model(&model.CloudFile{}).
+		Where("uid = ? AND deleted_at IS NOT NULL", uid).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []model.CloudFile
+	err := db.Where("uid = ? AND deleted_at IS NOT NULL", uid).
+		Order("deleted_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&rows).Error
+	return rows, total, err
+}
+
 // ListByUUIDs returns the active files of one user for the given upload_uuids
 // (semantic result hydration: "does this hit still exist for this owner?").
 func (r *FileRepo) ListByUUIDs(db *gorm.DB, uid int64, uploadUUIDs []string) ([]model.CloudFile, error) {

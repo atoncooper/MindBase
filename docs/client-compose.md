@@ -18,7 +18,7 @@
 | Mongo | WiredTiger 默认（随宿主内存膨胀） | 缓存压到 256MB |
 | Redis | 256MB | 128MB |
 | MinIO | 含控制台 + 9001 端口 | `MINIO_BROWSER=off`，不映射宿主端口 |
-| APISIX | worker = CPU 核数 | 固定 1 worker（`apisix/config.client.yaml`） |
+| APISIX | worker = CPU 核数 | 共用标准 `apisix/config.yaml`（worker=auto，`mem_limit 512m`） |
 | 数据面端口 | 部分对公网（mysql/redis/mongo） | 全部 `127.0.0.1`，对外只留 nginx 80/443 |
 | 日志 | 无轮转约束 | json-file 10MB × 3 全服务轮转 |
 | 典型常驻内存 | ~7–9GB | **~2.5–3GB**（上限合计 ~5.7GB） |
@@ -102,7 +102,7 @@ APP_CLOUD_KG_BASE_URL=http://app-kg:8014
 | etcd | ✂️ **已砍** | 只有 Milvus 用它 → Milvus 2.6 内嵌 etcd（见下节），省一个容器 ~100MB |
 | Higress | ✂️ 默认不启 | AI 请求直连供应商（`--profile ai` 可回网关模式） |
 | app-pay / app-task / neo4j+app-kg 两套 MySQL | ✂️ 默认不启 | 单人用不到支付/定时任务/KG（`--profile` 按需开） |
-| **APISIX** | ❌ 必须留 | 唯一路由权威：apisix.yaml 1139 行 ~35 条路由，承载 forward-auth（bili_session → X-Uid）+ key-auth（/internal/* M2M）。砍它 = 把全部路由+鉴权语义移植进 nginx（双份维护，登录/聊天必炸），省的 ~100MB 不值 |
+| **APISIX** | ❌ 必须留 | 唯一路由权威：apisix.yaml 1139 行 ~35 条路由，承载 forward-auth（session_token → X-Uid）+ key-auth（/internal/* M2M）。砍它 = 把全部路由+鉴权语义移植进 nginx（双份维护，登录/聊天必炸），省的 ~100MB 不值 |
 | **nginx** | ❌ 必须留 | RSS 仅 ~15MB，却承载：`/minio-proxy` 预签名媒体代理、`/cloud-stream` 视频流缓存（X-Accel-Redirect internal 跳转，APISIX 无法复制其 internal-only 语义）、`/cloud/` 5GB 直传（绕开网关 body-limit）、页面/XHR 双用途分发、TLS。砍掉后这些流量全部改道 Node/网关，内存不降反升且功能必坏 |
 | **Redis** | ❌ 必须留 | 承载 MinIO 事件 → 向量化管道（云盘自动向量化）、app-user（auth 路由）验证码/限流、board 读缓存；仅 ~130MB，砍掉 = 改代码 |
 | **MinIO** | ❌ 必须留 | Milvus 对象存储 + 云盘 + skills + 壁纸的存储本体（功能承载者，非纯中间件） |
@@ -191,6 +191,6 @@ Redis 不建议迁移（captcha/事件桥，短暂态）。
 - WSL2 全局内存上限可在 `%UserProfile%\.wslconfig` 里限：`[wsl2]` `memory=6GB`，
   配合本文件的 per-container 上限形成双保险。
 - 宿主 80/443 若被 IIS 等占用，改 `NGINX_HTTP_PORT`/`NGINX_HTTPS_PORT`。
-- 本文件与根 compose 的 **APISIX 路由面（apisix/apisix.yaml.template，启动时渲染）完全共用**；config 用
-  客户端变体 `apisix/config.client.yaml`（与服务端 config.yaml 唯一差异是 worker 数），
-  改路由只需维护一份。
+- 本文件与根 compose 的 **APISIX 配置完全共用**：路由模板 `apisix/apisix.yaml.template` + 进程配置
+  `apisix/config.yaml`（启动时渲染），不再维护 client/dev 变体；cert-gen 会同时签发 APISIX 9443 内部
+  TLS leaf。改路由/网关配置只需维护一份。

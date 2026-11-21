@@ -10,7 +10,7 @@
 # SAN covers every name used by callers (regenerate when adding a caller domain/IP):
 #   localhost / 127.0.0.1 / ::1           —— local browser and direct debugging
 #   app-pay / app-pay-test                —— service names inside the docker network (APISIX, app-task)
-#   192.168.138.1                         —— VM development host IP (apisix.dev.yaml upstream)
+#   192.168.138.1                         —— VM development host IP (local reverse-proxy/debug)
 #
 # Re-running overwrites the old certificate; after switching CA, redistribute the old ca.crt held by callers.
 # Do not use this script in production: mount a certificate issued by a real CA and configure PAY_TLS_CERT/PAY_TLS_KEY.

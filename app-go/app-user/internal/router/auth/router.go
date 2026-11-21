@@ -90,7 +90,7 @@ func New(d Deps) *gin.Engine {
 
 // registerInternalAuth mounts the APISIX forward-auth endpoint:
 //
-//	GET /internal/auth/verify   (Authorization: Bearer <bili_session>)
+//	GET /internal/auth/verify   (Authorization: Bearer <session_token>)
 //
 // Semantics ("lenient verify"):
 //   - no credentials       → 200 WITHOUT identity headers (public endpoints

@@ -52,10 +52,10 @@ if (typeof window !== "undefined") {
     });
 }
 
-// Authorization header built from the bili_session token in localStorage.
+// Authorization header built from the session token in localStorage.
 export function getAuthHeaders(): Record<string, string> {
     if (typeof window === "undefined") return {};
-    const token = localStorage.getItem("bili_session");
+    const token = localStorage.getItem("session_token");
     if (!token) return {};
     return { Authorization: `Bearer ${token}` };
 }
@@ -134,10 +134,10 @@ export async function request<T>(
     // Domain endpoints that overload 401 must opt out via preserveAuthOn401.
     if (response.status === 401 && !preserveAuthOn401) {
         if (typeof window !== "undefined") {
-            const token = localStorage.getItem("bili_session");
+            const token = localStorage.getItem("session_token");
             if (token) {
-                localStorage.removeItem("bili_session");
-                localStorage.removeItem("bili_user");
+                localStorage.removeItem("session_token");
+                localStorage.removeItem("auth_user");
                 emitAppToast("error", "登录已过期，请重新登录");
                 window.dispatchEvent(new Event("auth:unauthorized"));
                 throw new Error(sanitizeError({ status: 401 }));

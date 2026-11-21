@@ -2,7 +2,7 @@
  * Knowledge API - 知识库构建 / 同步 / 统计 / 视频向量管理.
  *
  * 网关路由三分（Python 退役后无 catch_all 兜底）：
- *  - build / build/status / folders/sync → app-user（bili_user）
+ *  - build / build/status / folders/sync → app-user（用户域）
  *  - stats / folders/status / pages/vectorized / clear / video/{bvid} → app-ts（vec_knowledge_ts）
  *  - /knowledge/kg/* → app-ts（kg_ts，见 kg.ts）
  */

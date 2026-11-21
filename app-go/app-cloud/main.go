@@ -22,12 +22,14 @@ import (
 	_ "time/tzdata" // embed IANA tz database so Asia/Shanghai works in distroless
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/infra/cache/factory"
 	"app-cloud/internal/infra/db"
 	"app-cloud/internal/infra/milvusstore"
 	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/joblock"
 	"app-cloud/internal/logger"
+	"app-cloud/internal/model"
 	pipelinepkg "app-cloud/internal/pipeline"
 	"app-cloud/internal/repo"
 	"app-cloud/internal/router"
@@ -132,7 +134,53 @@ func main() {
 
 	// Services.
 	pending := service.NewPendingUploads(rdb, cfg.Upload.UploadMetaTTL)
-	quotaSvc := service.NewQuotaService(cfg, db.DB, pending)
+	tierCache, err := factory.New[int64, string](factory.Config{
+		Backend:    factory.Local,
+		MaxEntries: service.MembershipCacheMaxEntries,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init tier cache: %v\n", err)
+		return
+	}
+	folderCache, err := factory.New[int64, []model.CloudFolder](factory.Config{
+		Backend:    factory.Local,
+		MaxEntries: cfg.Folder.CacheMaxEntries,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init folder cache: %v\n", err)
+		return
+	}
+	folderRepo := repo.NewFolderRepo()
+	folderSvc := service.NewFolderService(cfg, db.DB, folderRepo, folderCache)
+	fileListCache, err := factory.New[string, service.FilePage](factory.Config{
+		Backend:    factory.Local,
+		MaxEntries: 50_000,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init file list cache: %v\n", err)
+		return
+	}
+	fileSearchCache, err := factory.New[string, []model.CloudFile](factory.Config{
+		Backend:    factory.Local,
+		MaxEntries: 50_000,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init file search cache: %v\n", err)
+		return
+	}
+	fileDetailCache, err := factory.New[string, service.CachedFile](factory.Config{
+		Backend:    factory.Local,
+		MaxEntries: 50_000,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init file detail cache: %v\n", err)
+		return
+	}
+	fileRepo := repo.NewFileRepo()
+	fileQuerySvc := service.NewFileQueryService(db.DB, fileRepo, fileListCache, fileSearchCache, fileDetailCache)
+	hlsSvc := service.NewHLSService(cfg, db.DB, fileRepo, mc, rdb)
+	go hlsSvc.Start(ctx)
+	quotaSvc := service.NewQuotaService(cfg, db.DB, pending, tierCache)
 	uploadSvc := service.NewUploadService(cfg, db.DB, mc, rdb, quotaSvc, pending)
 	// Sharded upload-deadline sweeper: claims due uploads and auto-cleans
 	// A-type orphans (MinIO has object, DB has no row) in batches.
@@ -199,6 +247,9 @@ func main() {
 	// /reprocess): uploads must NOT auto-enqueue pipeline tasks.
 	purgeSvc := service.NewPurgeService(db.DB, mc, mongoStore, pipe)
 	purgeSvc.SetGraphWriter(kgClient)
+	// Purging a cloud-drive video must also drop its HLS playlists/segments,
+	// Redis status and any still-valid playback tokens.
+	purgeSvc.SetHLS(hlsSvc)
 	shareSvc := service.NewShareService(db.DB, mc, cfg.Minio.PresignExpire)
 	// 1.0.16 — "save to my drive" references (ledger rows over the original
 	// objects; reuses the share service's resolve + presign policy).
@@ -235,22 +286,25 @@ func main() {
 	}
 
 	handler := router.New(router.Deps{
-		Reconciler: reconciler,
-		Cfg:        cfg,
-		DB:         db.DB,
-		Minio:      mc,
-		Quota:      quotaSvc,
-		Upload:     uploadSvc,
-		Process:    pipe,
-		Purge:      purgeSvc,
-		Mongo:      mongoStore,
-		Files:      repo.NewFileRepo(),
-		Folders:    repo.NewFolderRepo(),
-		Share:      shareSvc,
-		Ref:        refSvc,
-		Attestor:   attestor,
-		Summary:    summarySvc,
-		Search:     searchSvc,
+		Reconciler:    reconciler,
+		Cfg:           cfg,
+		DB:            db.DB,
+		Minio:         mc,
+		Quota:         quotaSvc,
+		Upload:        uploadSvc,
+		Process:       pipe,
+		Purge:         purgeSvc,
+		Mongo:         mongoStore,
+		Files:         fileRepo,
+		Folders:       folderRepo,
+		FolderService: folderSvc,
+		FileQuery:     fileQuerySvc,
+		HLS:           hlsSvc,
+		Share:         shareSvc,
+		Ref:           refSvc,
+		Attestor:      attestor,
+		Summary:       summarySvc,
+		Search:        searchSvc,
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}

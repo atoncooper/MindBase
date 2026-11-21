@@ -168,6 +168,7 @@ func schemaDDL() []string {
 			updated_at datetime     null,
 			deleted_at datetime     null,
 			index ix_cloud_folders_uid (uid),
+			index ix_cloud_folders_uid_deleted (uid, deleted_at),
 			constraint cloud_folders_ibfk_1 foreign key (uid) references users (uid),
 			constraint cloud_folders_ibfk_2 foreign key (parent_id) references cloud_folders (id)
 		)`,
@@ -200,6 +201,10 @@ func schemaDDL() []string {
 			deleted_at         datetime     null,
 			index ix_cloud_files_uid (uid),
 			index ix_cloud_files_upload_uuid (upload_uuid),
+			-- list-page index: uid + active + folder + created_at (covers count/page queries)
+			index ix_cloud_files_uid_deleted_folder_created (uid, deleted_at, folder_id, created_at, id),
+			-- trash-page index: uid + deleted_at (covers non-null filter/order)
+			index ix_cloud_files_uid_deleted (uid, deleted_at),
 			constraint uq_cloud_files_uuid unique (upload_uuid),
 			constraint cloud_files_ibfk_1 foreign key (uid) references users (uid),
 			constraint cloud_files_ibfk_2 foreign key (folder_id) references cloud_folders (id)

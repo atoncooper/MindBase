@@ -15,6 +15,7 @@ import (
 	"app-cloud/internal/dto"
 	"app-cloud/internal/model"
 	"app-cloud/internal/router"
+	"app-cloud/internal/service"
 )
 
 // asJSON marshals v and decodes it back into a generic object for inspection.
@@ -127,10 +128,26 @@ func TestFileWireShape(t *testing.T) {
 		t.Fatalf("nextOffset must be null on the last page: %v", preview["nextOffset"])
 	}
 
-	raw := asJSON(t, dto.RawFileResponse{URL: "http://x", ViewMode: "pdf"})
-	assertKeys(t, raw, "url", "content", "mimeType", "fileName", "fileSize", "viewMode")
+	raw := asJSON(t, dto.RawFileResponse{URL: "http://x", ViewMode: "pdf", ExpiresIn: 3600})
+	assertKeys(t, raw, "url", "content", "mimeType", "fileName", "fileSize", "viewMode", "expiresIn")
 	if raw["content"] != nil {
 		t.Fatalf("content must be null when not inlined: %v", raw["content"])
+	}
+
+	hls := asJSON(t, service.HLSPlayback{Ready: true, Status: "ready", PlaylistURL: "/hls/1/u/index.m3u8", ExpiresIn: 3600})
+	assertKeys(t, hls, "ready", "status", "playlistUrl", "expiresIn")
+
+	// Non-ready answers add progress/attempts/retryable; the ready shape above
+	// must stay minimal (frontend polls it on every packaging tick).
+	failedHLS := asJSON(t, service.HLSPlayback{Ready: false, Status: "failed", Progress: 25, Attempts: 2, Retryable: true})
+	assertKeys(t, failedHLS, "ready", "status", "progress", "attempts", "retryable")
+
+	// ABR ready answers may also carry a poster under the same versioned prefix.
+	withPoster := asJSON(t, service.HLSPlayback{Ready: true, Status: "ready",
+		PlaylistURL: "/hls/1/u/vabc/master.m3u8", PosterURL: "/hls/1/u/vabc/cover.jpg", ExpiresIn: 3600})
+	assertKeys(t, withPoster, "ready", "status", "playlistUrl", "posterUrl", "expiresIn")
+	if failedHLS["retryable"] != true {
+		t.Fatalf("failed HLS must advertise retryable: %v", failedHLS)
 	}
 
 	status := asJSON(t, dto.VideoStatusResponse{})

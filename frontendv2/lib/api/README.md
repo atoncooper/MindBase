@@ -3,7 +3,7 @@
 > 本目录是前端**唯一**允许发起后端调用的入口（按域分模块，统一客户端在
 > `client.ts`）。组件内禁止直接 `fetch`。所有请求经 APISIX 网关
 > （浏览器 → nginx → APISIX → 各服务），身份一律走 `Authorization: Bearer
-> <bili_session>`，`X-Uid`/`X-Roles` 由网关注入——**任何模块都不传 uid 参数**。
+> <session_token>`，`X-Uid`/`X-Roles` 由网关注入——**任何模块都不传 uid 参数**。
 
 ## 域 → 后端服务映射（Python backend 退役后，无 catch_all 兜底）
 

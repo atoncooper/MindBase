@@ -110,7 +110,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 - 仓库**没有**统一在线 Swagger：app-ts 是 Fastify + tsx 直跑，未暴露 OpenAPI 文档端点。
 - `api/openapi.yaml` 是 Python 时代的历史规格（已退役），仅作存档，不代表当前服务；请勿据此联调。
 - 当前契约以「各服务路由源码 + 本文 + 各服务 README / 专项文档」为准。
-- 变更流程：改路由 → 同步 APISIX（`apisix.yaml` 与 `apisix.dev.yaml`）→（如需）OpenResty 分发 → 同步前端 `lib/api/` 模块与类型 → 同步文档。
+- 变更流程：改路由 → 同步 APISIX（`apisix/apisix.yaml.template`，唯一标准模板）→（如需）OpenResty 分发 → 同步前端 `lib/api/` 模块与类型 → 同步文档。
 
 ---
 

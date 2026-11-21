@@ -160,12 +160,13 @@ type DocumentPreviewResponse struct {
 // RawFileResponse is the GET /cloud/video/{uuid}/raw payload (presigned URL,
 // optionally with inline text content for text-like files).
 type RawFileResponse struct {
-	URL      string  `json:"url"`
-	Content  *string `json:"content"`
-	MimeType string  `json:"mimeType"`
-	FileName string  `json:"fileName"`
-	FileSize int64   `json:"fileSize"`
-	ViewMode string  `json:"viewMode"`
+	URL       string  `json:"url"`
+	Content   *string `json:"content"`
+	MimeType  string  `json:"mimeType"`
+	FileName  string  `json:"fileName"`
+	FileSize  int64   `json:"fileSize"`
+	ViewMode  string  `json:"viewMode"`
+	ExpiresIn int     `json:"expiresIn"` // presigned URL lifetime in seconds
 }
 
 // SearchFilesResponse is the GET /cloud/search payload (name search).

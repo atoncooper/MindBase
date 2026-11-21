@@ -503,6 +503,9 @@ create table cloud_folders
 create index ix_cloud_folders_uid
     on cloud_folders (uid);
 
+create index ix_cloud_folders_uid_deleted
+    on cloud_folders (uid, deleted_at);
+
 create table cloud_files
 (
     id                 int auto_increment
@@ -545,6 +548,12 @@ create index ix_cloud_files_uid
 
 create index ix_cloud_files_upload_uuid
     on cloud_files (upload_uuid);
+
+create index ix_cloud_files_uid_deleted_folder_created
+    on cloud_files (uid, deleted_at, folder_id, created_at, id);
+
+create index ix_cloud_files_uid_deleted
+    on cloud_files (uid, deleted_at);
 
 create table cloud_upload_chunks
 (

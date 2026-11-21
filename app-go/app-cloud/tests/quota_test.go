@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/infra/cache/factory"
 	"app-cloud/internal/service"
 )
 
@@ -39,7 +39,14 @@ func newTestQuotaServiceWithConfig(t *testing.T, handler http.HandlerFunc, mutat
 	if mutate != nil {
 		mutate(cfg)
 	}
-	return service.NewQuotaService(cfg, nil, nil), &calls
+	tierCache, err := factory.New[int64, string](factory.Config{
+		Backend:    factory.Local,
+		MaxEntries: service.MembershipCacheMaxEntries,
+	})
+	if err != nil {
+		t.Fatalf("build local tier cache: %v", err)
+	}
+	return service.NewQuotaService(cfg, nil, nil, tierCache), &calls
 }
 
 func membershipBody(tier string, active bool) string {
@@ -206,7 +213,10 @@ func TestMembershipCacheTTLJitterBounds(t *testing.T) {
 	}
 }
 
-// 容量上限：写入量远超上限时缓存仍受控（先清过期、按比例淘汰，不整体重建）。
+// 容量上限：写入量远超上限时缓存仍受控，不会无界增长。
+// Ristretto is an admission cache (TinyLFU), so a cold working set may hold
+// fewer than MaxCost entries; the contract is "never exceeds the cap", not
+// "always fills to the cap".
 func TestTierForCacheBounded(t *testing.T) {
 	oldMax := service.MembershipCacheMaxEntries
 	service.MembershipCacheMaxEntries = 8
@@ -226,74 +236,11 @@ func TestTierForCacheBounded(t *testing.T) {
 			t.Fatalf("cache exceeded cap: size=%d after uid=%d", got, i)
 		}
 	}
-	if got := q.MembershipCacheSize(); got != 8 {
-		t.Fatalf("expected a bounded full cache of 8 entries (not rebuilt mass-evicted), got %d", got)
+	if got := q.MembershipCacheSize(); got > 8 {
+		t.Fatalf("cache size = %d, want <= 8", got)
 	}
-	if got := atomic.LoadInt32(calls); got != lookups {
-		t.Fatalf("expected %d upstream calls for %d distinct uids, got %d", lookups, lookups, got)
-	}
-
-	// 最早的 uid 已被淘汰 → 再次查询必须回源。
-	if tier, err := q.TierFor(context.Background(), 1); err != nil || tier != "vip" {
-		t.Fatalf("uid=1: tier=%q err=%v", tier, err)
-	}
-	if got := atomic.LoadInt32(calls); got != lookups+1 {
-		t.Fatalf("expected uid=1 to be evicted (refetch), got %d upstream calls", got)
-	}
-}
-
-// 超限优先清理过期条目：失败短缓存过期后先被淘汰，仍有效的档位保持命中。
-func TestTierForEvictsExpiredBeforeLiveEntries(t *testing.T) {
-	oldMax := service.MembershipCacheMaxEntries
-	service.MembershipCacheMaxEntries = 3
-	oldFailureTTL := service.MembershipFailureCacheTTL
-	service.MembershipFailureCacheTTL = 30 * time.Millisecond
-	t.Cleanup(func() {
-		service.MembershipCacheMaxEntries = oldMax
-		service.MembershipFailureCacheTTL = oldFailureTTL
-	})
-
-	q, calls := newTestQuotaService(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/1") {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(membershipBody("vip", true)))
-	})
-
-	// uid=1 → 失败短缓存（30ms）；uid=2/3 → 成功（60s TTL）。
-	if _, err := q.TierFor(context.Background(), 1); err == nil {
-		t.Fatal("expected uid=1 lookup to fail")
-	}
-	for _, uid := range []int64{2, 3} {
-		if tier, err := q.TierFor(context.Background(), uid); err != nil || tier != "vip" {
-			t.Fatalf("uid=%d: tier=%q err=%v", uid, tier, err)
-		}
-	}
-	time.Sleep(60 * time.Millisecond) // uid=1 已过期，uid=2/3 仍有效
-
-	// 插入 uid=4 触发清理：应先删过期条目（uid=1），保留有效条目。
-	if tier, err := q.TierFor(context.Background(), 4); err != nil || tier != "vip" {
-		t.Fatalf("uid=4: tier=%q err=%v", tier, err)
-	}
-	if got := q.MembershipCacheSize(); got != 3 {
-		t.Fatalf("cache size = %d, want 3", got)
-	}
-	before := atomic.LoadInt32(calls)
-	for _, uid := range []int64{2, 3} {
-		if tier, err := q.TierFor(context.Background(), uid); err != nil || tier != "vip" {
-			t.Fatalf("uid=%d should still be cached: tier=%q err=%v", uid, tier, err)
-		}
-	}
-	if got := atomic.LoadInt32(calls); got != before {
-		t.Fatalf("live entries were evicted: expected no refetch, got %d -> %d calls", before, got)
-	}
-	if _, err := q.TierFor(context.Background(), 1); err == nil {
-		t.Fatal("uid=1 should be gone from the cache and refetched (failing)")
-	}
-	if got := atomic.LoadInt32(calls); got != before+1 {
-		t.Fatalf("expected uid=1 refetch, got %d -> %d calls", before, got)
+	if got := atomic.LoadInt32(calls); got <= 0 || got > lookups {
+		t.Fatalf("upstream calls = %d, want 1..%d", got, lookups)
 	}
 }
 

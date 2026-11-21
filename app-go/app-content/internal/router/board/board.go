@@ -15,7 +15,7 @@ import (
 )
 
 // registerBoardRoutes mounts the /board/* user endpoints. Auth model: APISIX
-// forward-auth validated bili_session and injected X-Uid; every query is
+// forward-auth validated session_token and injected X-Uid; every query is
 // scoped to that uid.
 func registerBoardRoutes(e *gin.Engine, svc *boardsvc.BoardService) {
 	g := e.Group("/board", middleware.RequireUID())

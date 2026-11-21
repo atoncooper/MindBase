@@ -116,7 +116,7 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 | app-ts 数据层 | Mongo / gRPC 客户端只在 `repository/mongo/`、`repository/app-kg/` 等「按后端服务归位」的实现目录与组合根出现，禁止 import 进 services / routes / agent |
 | Go 服务 | `router → service → repo`；router 只做参数解析 + 鉴权 + 调用 |
 | 管理台 | app-admin 只读用户 / 分享元数据 + 写审核列 + 代理沙箱管理；不下载、不导出文件内容 |
-| 网关 | APISIX 无 catch_all：新增端点必须显式加路由（模板 `apisix/apisix.yaml.template`；dev 用 `apisix.dev.yaml.template`；渲染脚本 `apisix/render-config.sh`，产物 gitignore） |
+| 网关 | APISIX 无 catch_all：新增端点必须显式加路由（唯一标准模板 `apisix/apisix.yaml.template`；渲染脚本 `apisix/render-config.sh`，产物 gitignore） |
 | 数据归属 | 每个域唯一写者；跨服务只读须在注释中标明（见 [architecture.md](architecture.md)） |
 
 ---

@@ -1,4 +1,4 @@
-# APISIX standalone routes - DOCKER variant (normalized)
+# APISIX standalone routes - standard template (Docker / production / client)
 # ========================================================
 # TEMPLATE (rendered at container start by apisix/render-config.sh).
 # Secrets are NOT stored here: __APISIX_CONSUMER_KEY__ / __PAY_READONLY_KEY__ /
@@ -6,8 +6,9 @@
 # apisix.yaml lives only inside the container (or on disk during local dev) and
 # is gitignored. Rotate a key = change the env value + restart apisix.
 #
-# Docker deployment: upstreams use service names app-ts:8000 / app-task:8001 etc.
-# (same mind-base-net). For local VM dev, use apisix.dev.yaml instead.
+# Upstreams use compose service names (app-ts:8000 / app-task:8001 ...) on
+# mind-base-net. This is the ONLY route template: client/dev deployments mount
+# the same file and the same config.yaml; there are no per-environment variants.
 #
 # ⚠️ Standalone mode: dashboard / Admin API writes do NOT persist. Edit THIS
 #    file and restart APISIX. Do NOT configure via the dashboard UI - changes
@@ -15,7 +16,7 @@
 #
 # Auth model:
 #   - User endpoints (/task-quiz/chat, /task-quiz/register, /tasks, /tasks/*):
-#       forward-auth -> backend /internal/auth/verify (validates bili_session,
+#       forward-auth -> backend /internal/auth/verify (validates session_token,
 #       injects X-Uid). Backend/app-task read uid from X-Uid header.
 #   - User pay endpoints (/pay/*): forward-auth -> X-Uid -> app-pay (same model).
 #   - app-pay service-to-service (/internal/pay/*): key-auth. M2 channel callbacks
@@ -88,7 +89,8 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-cloud —— 云盘服务（Go；nginx /cloud/ 直连为主路径，此 upstream 仅兜底路由用）
+  # app-cloud —— 云盘服务（Go；/cloud/* 业务 API 经 OpenResty -> APISIX；
+  # 上传字节 /cloud/upload/、公开分享 /cloud/s/ 由 OpenResty 直连 app-cloud）。
   - id: upstream-app-cloud
     name: app-cloud
     type: roundrobin
@@ -548,7 +550,7 @@ upstreams:
 # Routes
 # ============================================================
 routes:
-  # User <-> main app task-quiz agent chat (SSE; forward-auth verifies bili_session)
+  # User <-> main app task-quiz agent chat (SSE; forward-auth verifies session_token)
   - id: task_quiz_chat
     uri: /task-quiz/chat
     methods: [POST]
@@ -565,7 +567,7 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User -> main app task-quiz register form (forward-auth verifies bili_session)
+  # User -> main app task-quiz register form (forward-auth verifies session_token)
   - id: task_quiz_register
     uri: /task-quiz/register
     methods: [POST]
@@ -869,7 +871,7 @@ routes:
     upstream_id: upstream-app-content-board
 
   # User -> app-content（board 面）mind-map/whiteboard CRUD (forward-auth verifies
-  # bili_session, injects X-Uid; app-content enforces per-uid ownership).
+  # session_token, injects X-Uid; app-content enforces per-uid ownership).
   # request-id plugin: assigns X-Request-Id (honors client-supplied value,
   # echoes in response) so gateway + app-content logs share one trace id.
   # Rollout note: other routes generate their own ids per-service; extending
@@ -984,8 +986,9 @@ routes:
         key_type: var
         key: remote_addr
 
-  # /cloud/* -> app-cloud（兜底路由：nginx /cloud/ 直连已绕过 APISIX，此路由
-  # 保证任何直连 APISIX 的调用者也不会落回 backend 的已下线 cloud router）
+  # /cloud/* -> app-cloud（用户面路由；云盘 API 经 OpenResty 的
+  # /mindbase/api/v1/cloud/ location 转发到 APISIX。上传字节与 /cloud/s/ 公开分享
+  # 是 OpenResty 直连例外，不经过本路由）。
   - id: cloud_user
     uris: [/cloud, /cloud/*]
     priority: 50
@@ -1187,7 +1190,7 @@ routes:
   # + /chat/search -> app-ts（视频分P向量化管线 + 知识库管理面，迁移自 Python
   # VectorPageService/knowledge router。向量真账本 = app-ts Mongo vec_pages/vec_tasks；
   # 收藏夹 scope 经 app-user（bili 面）internal 只读端点。/knowledge/build* 与
-  # /knowledge/folders/sync 仍归 app-user（bili_user），uri 列表显式不相交。
+  # /knowledge/folders/sync 仍归 app-user（用户域），uri 列表显式不相交。
   # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
   - id: vec_knowledge_ts
     uris: [/vec, /vec/*, /knowledge/stats, /knowledge/folders/status, /knowledge/pages/vectorized, /knowledge/clear, /knowledge/video, /knowledge/video/*, /chat/search, /blindspot, /blindspot/*, /skills, /skills/*]

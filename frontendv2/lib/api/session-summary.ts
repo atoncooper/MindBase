@@ -47,8 +47,8 @@ export const sessionSummaryApi = {
 
         if (resp.status === 401) {
             if (typeof window !== "undefined") {
-                localStorage.removeItem("bili_session");
-                localStorage.removeItem("bili_user");
+                localStorage.removeItem("session_token");
+                localStorage.removeItem("auth_user");
                 window.dispatchEvent(new Event("auth:unauthorized"));
             }
             handlers.onError?.("会话已过期，请重新登录");

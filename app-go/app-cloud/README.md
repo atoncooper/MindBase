@@ -60,11 +60,42 @@ docker compose up -d app-cloud
 
 配置入口 `default.yaml`（`APPCLOUD__` env 覆盖；`quota.*` tier→容量、`pipeline.workers` 池大小）。
 
+## HLS（异步打包，播放不经过 app-cloud）
+
+- 上传完成后 app-cloud 将任务放入 Redis 队列，后台 worker 用 ffmpeg 生成
+  `hls/{uid}/{uploadUuid}/{version}/index.m3u8 + seg-*.ts` 写入 MinIO；
+- 入队幂等（`SET NX` 去重 + ready 跳过）；worker 用 `BLMOVE queue → processing`
+  加每文件租约消费，崩溃可被 janitor 重新入队，瞬时失败按指数退避重试
+  （`hls.max_attempts`，ffmpeg 失败不自动重试）；
+- 每次转换写新版本目录，全部对象上传完成后才切换 status，正在播放的旧版本
+  在令牌过期后才回收，不会出现新旧分片混播；
+- `GET /cloud/video/{uuid}/hls` 校验属主和打包状态，未 ready 时返回
+  `status/progress/attempts/retryable`；成功时设置 **HttpOnly hls_token cookie**
+  并返回 `/hls/{uid}/{uploadUuid}/{version}/index.m3u8`。失败可
+  `POST /cloud/video/{uuid}/hls/retry` 手动重试；
+- 播放链路是 **浏览器 -> OpenResty -> MinIO**，OpenResty 用 cookie 查 Redis
+  校验 token（token 绑定版本路径），按 MinIO 对象路径缓存；字节不经过 app-cloud；
+- 转换前用 **ffprobe 预探测**：无视频流/图片/损坏文件直接标 `unsupported`/失败；
+  H.264+AAC 走 remux，H.264+其他音频只重编音频，其他编码整段转码；
+- **ABR**：按 `hls.rendition_heights`（默认 360/720/1080，不超过源高度）生成多档
+  `{height}p/index.m3u8` + `master.m3u8`，BANDWIDTH 由实际分片字节数推导；
+- **缩略图**：同一次任务生成 `cover.jpg`（播放器 poster）与最多 10 张
+  `thumbs/thumb-*.jpg`（列表/进度条预览）；
+- 播放令牌绑定会话：`hls_token`（Redis 能力令牌）+ `hls_ctx`（稳定浏览器绑定
+  cookie，多标签共享，换 token 不失效），Lua 两个都校验；
+- 软删除即吊销播放令牌；物理删除（回收站 purge / sweeper）删除 HLS 对象、
+  Redis 状态与令牌；
+- MinIO 匿名读只对 `hls/*` 且仅允许 `hls.allowed_source_cidrs`（默认 RFC1918
+  私网，即 OpenResty 所在网络）来源，旧的无条件策略在启动时被替换；
+- 配置全部在 `default.yaml` 的 `hls:` 段（YAML 为唯一来源，**不读取**
+  `APPCLOUD__HLS__*` 环境变量）；生产镜像包含 ffmpeg/ffprobe。
+
 ## 文档
 
 - 服务详解：[docs/app-cloud.md](../../docs/app-cloud.md)（架构图 / 上传生命周期 / 配额记账模型 / 红线）
 - 多实例设计：[plan/1.0.13-AppCloud-MultiReplica](../../plan/1.0.13-AppCloud-MultiReplica/1.0.13-AppCloud-MultiReplica.md)
 - 分布式演进：[plan/1.0.14-AppCloud-Distributed](../../plan/1.0.14-AppCloud-Distributed/1.0.14-AppCloud-Distributed.md)（存储层 HA 路线 / 一致性矩阵 / 触发条件）
+- 压测脚本（JMeter）：[jmeter/README.md](jmeter/README.md)
 - 规范：AGENTS.md §2.14
 
 

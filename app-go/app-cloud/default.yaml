@@ -37,8 +37,8 @@ timezone: Asia/Shanghai
 
 rdbms:
   url: ""                    # inject via APPCLOUD__RDBMS__URL (shared bilirag MySQL dsn)
-  max_open_conns: 10
-  max_idle_conns: 5
+  max_open_conns: 30
+  max_idle_conns: 15
   conn_max_lifetime: 1800
 
 redis:
@@ -83,6 +83,9 @@ upload:
   # Upload deadline sweeper (sharded ZSET queue): init schedules a deadline,
   # heartbeat/resume renews it, settlement removes it. Due members are
   # claimed in batches and reconciled MinIO vs DB.
+  # per-uid in-flight upload cap (0 disables). Prevents one user from
+  # occupying the DB/Redis/MinIO pipeline with unbounded parallel uploads.
+  max_concurrent_per_user: 5
   sweep_interval_seconds: 5
   sweep_batch: 200
   sweep_visibility_seconds: 60
@@ -146,6 +149,37 @@ quota:
   membership_base_url: https://apisix:9443/internal/pay  # key-auth protected
   membership_api_key: ""     # inject via APISIX_CONSUMER_KEY (.env)
   membership_cache_ttl: 60   # seconds
+
+folder:
+  # Per-user folder-tree L1 cache: avoid two DB reads + UpdateCounts on every
+  # GET /cloud/folders. Writes invalidate the affected uid; file mutations
+  # invalidate on the main write paths and otherwise converge within the TTL.
+  cache_ttl: 15              # seconds; env APPCLOUD__FOLDER__CACHE_TTL
+  cache_max_entries: 50000   # env APPCLOUD__FOLDER__CACHE_MAX_ENTRIES
+
+hls:
+  # Async ffmpeg packaging for uploaded videos. Playback bytes stay on
+  # browser -> OpenResty -> MinIO; app-cloud only packages and signs.
+  #
+  # This whole block is read from YAML only (no APPCLOUD__HLS__* env override):
+  # packaging tuning is deployment configuration, not a secret. Edit this file
+  # (or a mounted override) and restart app-cloud.
+  enabled: true
+  ffmpeg: ffmpeg             # ffmpeg binary (must include libx264 + aac)
+  probe: ffprobe             # ffprobe binary used for the stream preflight
+  segment_seconds: 10
+  workers: 5                 # concurrent packaging jobs per replica
+  token_ttl_seconds: 3600    # playback token + hls_ctx cookie lifetime
+  timeout_seconds: 1800      # per-job ffmpeg/probe budget
+  prefix: hls                # MinIO object prefix
+  max_attempts: 3            # transient retries (download/upload/MinIO errors)
+  abr: true                  # multi-rendition master playlist
+  thumbnails: true           # cover.jpg + preview frames + sprite sheet
+  rendition_heights: [360, 720, 1080]   # ABR ladder, capped at source height
+  # Anonymous read on the HLS prefix is scoped to the edge's private network;
+  # set ["0.0.0.0/0"] only if MinIO is reachable from outside the cluster.
+  allowed_source_cidrs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1/32"]
+
 
 trash:
   purge_after_days: 30       # soft-deleted files physically purged after N days

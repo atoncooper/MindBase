@@ -125,7 +125,7 @@ profile 汇总：
 | `/academic` `/academic/*` | app-ts（`academic_ts`，priority 55） | forward-auth（科研工作台 REST；uid 由网关注入） |
 | `/internal/sandbox/*` | app-sandbox | key-auth（app-ts 执行面；管理面 `/internal/admin/*` 不经网关） |
 
-forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify` 宽验证 `Authorization: Bearer <bili_session>`：无凭证放行（公有端点），无效 401，有效则经 proxy-rewrite **剥离客户端伪造的头**后注入 `X-Uid`/`X-Roles`。**下游服务信任网关注入的头，不自验会话；`/cloud/*` 也已改为经 APISIX forward-auth（不再由 edge 做 auth_request）。**
+forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify` 宽验证 `Authorization: Bearer <session_token>`：无凭证放行（公有端点），无效 401，有效则经 proxy-rewrite **剥离客户端伪造的头**后注入 `X-Uid`/`X-Roles`。**下游服务信任网关注入的头，不自验会话；`/cloud/*` 也已改为经 APISIX forward-auth（不再由 edge 做 auth_request）。**
 
 ---
 

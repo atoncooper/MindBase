@@ -97,6 +97,25 @@ var (
 		Name: "appcloud_joblock_acquire_total",
 		Help: "Background-job lease attempts by job and outcome (held = another replica owns the tick).",
 	}, []string{"job", "result"}) // acquired | held | error
+
+	// HLS asynchronous packaging (ffmpeg worker; playback bytes bypass app-cloud).
+	HLSJobs = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "appcloud_hls_jobs_total",
+		Help: "HLS packaging outcomes: ready | failed | unsupported | retry | requeued.",
+	}, []string{"result"})
+	HLSProcessing = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "appcloud_hls_processing_seconds",
+		Help:    "Wall-clock duration of one HLS packaging attempt (download + ffmpeg + upload).",
+		Buckets: []float64{5, 15, 30, 60, 120, 300, 600, 1200, 1800},
+	})
+	HLSQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "appcloud_hls_queue_depth",
+		Help: "HLS jobs waiting in the ready queue or backing off in the retry ZSET.",
+	})
+	HLSTokensMinted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "appcloud_hls_tokens_minted_total",
+		Help: "HLS playback tokens minted (each is bound to a session cookie).",
+	})
 )
 
 // Handler serves the Prometheus exposition format (default registry:

@@ -3,7 +3,7 @@
  *
  * 后端契约：app-ts src/transport/http/routes/sandbox.ts（经 APISIX chat_ts →
  * app-ts，再由 app-ts 代理 app-sandbox /v1/executions*）。鉴权由网关注入
- * X-Uid，前端只带 bili_session 的 Bearer 头；错误体统一 { detail }（沿用
+ * X-Uid，前端只带 session_token 的 Bearer 头；错误体统一 { detail }（沿用
  * ./client 的 sanitizeError）。
  *
  * 本文件是唯一允许出现 /chat/sandbox 端点的地方：组件只 import sandboxApi

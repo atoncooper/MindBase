@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,10 +11,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/infra/cache"
 	"app-cloud/internal/metrics"
 	"app-cloud/internal/repo"
 
@@ -28,7 +29,6 @@ import (
 //     不整体重建 map（避免瞬间把所有用户打回回源）。
 const (
 	membershipTTLJitterRatio = 0.15
-	membershipEvictRatioDiv  = 10
 	// defaultMembershipCacheMaxEntries 是进程内档位缓存的默认条数上限。
 	defaultMembershipCacheMaxEntries = 100_000
 )
@@ -49,28 +49,8 @@ type QuotaService struct {
 	repo    *repo.FileRepo
 	pending *PendingUploads
 
-	mu    sync.Mutex
-	cache map[int64]quotaCacheEntry
-	// flights 是 per-uid 的手动单飞表：同 uid 并发 miss 共用一个回源结果。
-	flights map[int64]*membershipFlight
-	http    *http.Client
-}
-
-type quotaCacheEntry struct {
-	tier      string
-	active    bool
-	expiresAt time.Time
-	// err 非空表示这是一次失败回源的结果：短 TTL 缓存，命中时直接返回
-	// free + 该错误（fail-closed），不再回源。
-	err error
-}
-
-// membershipFlight 是一次进行中的回源：leader 回源，等待者 <-done 后读取结果。
-// 字段在 close(done) 之前写入，channel 关闭建立 happens-before，无需额外锁。
-type membershipFlight struct {
-	done chan struct{}
-	tier string
-	err  error
+	tierCache cache.LoadingCache[int64, string]
+	http      *http.Client
 }
 
 type membershipView struct {
@@ -82,80 +62,39 @@ type membershipView struct {
 	ExpireAt json.RawMessage `json:"expireAt"`
 }
 
-func NewQuotaService(cfg *config.Config, db *gorm.DB, pending *PendingUploads) *QuotaService {
+func NewQuotaService(cfg *config.Config, db *gorm.DB, pending *PendingUploads,
+	tierCache cache.LoadingCache[int64, string]) *QuotaService {
+	if tierCache == nil {
+		panic("service: quota tier cache is required")
+	}
 	return &QuotaService{
-		cfg:     cfg,
-		db:      db,
-		repo:    repo.NewFileRepo(),
-		pending: pending,
-		cache:   make(map[int64]quotaCacheEntry),
-		flights: make(map[int64]*membershipFlight),
-		http:    &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment}},
+		cfg:       cfg,
+		db:        db,
+		repo:      repo.NewFileRepo(),
+		pending:   pending,
+		tierCache: tierCache,
+		http:      &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment}},
 	}
 }
 
 // TierFor returns the membership tier for uid ("free" when inactive/unknown).
 //
-// 缓存加固（对齐 app-ts/src/utils/membership.ts 的消费侧策略）：
-//   - per-uid 手动单飞：同一 uid 的并发 miss 只回源一次，等待者共享结果；
-//   - TTL ±15% 抖动：错峰过期，避免整批用户同时回源（缓存雪崩）；
-//   - 失败结果短 TTL 缓存：命中时返回 free + 缓存的错误，不再回源（缓存击穿
-//     保护）；支付服务恢复后最快一个失败 TTL 回到权威档位；
-//   - 容量上限：超限先清过期条目，仍超再按比例淘汰，不整体重建 map。
-//
-// fail-closed 语义不变：回源失败仍返回 free + 错误，绝不因支付故障放量。
+// The cache contract (implemented by infra/cache/local today, optionally
+// infra/cache/redis later) owns the L1 storage, TTL and per-key single-flight.
+// The service owns only the domain rules: TTL jitter, failure TTL, fail-closed
+// normalization and app-pay lookup.
 func (s *QuotaService) TierFor(ctx context.Context, uid int64) (string, error) {
-	now := time.Now()
-	s.mu.Lock()
-	if e, ok := s.cache[uid]; ok && now.Before(e.expiresAt) {
-		s.mu.Unlock()
-		if e.err != nil {
-			return "free", e.err
-		}
-		return s.tierOrDefault(e), nil
-	}
-	// 单飞：已有同 uid 的回源在进行 → 等它，不再发第二个请求。
-	if f, ok := s.flights[uid]; ok {
-		s.mu.Unlock()
-		<-f.done
-		return f.tier, f.err
-	}
-	if s.flights == nil {
-		s.flights = make(map[int64]*membershipFlight)
-	}
-	flight := &membershipFlight{done: make(chan struct{})}
-	s.flights[uid] = flight
-	s.mu.Unlock()
-
-	tier, lookupErr := s.lookupAndCache(ctx, uid)
-
-	// 先写单飞结果、再关 channel（close 建立 happens-before，等待者可见）。
-	flight.tier, flight.err = tier, lookupErr
-	s.mu.Lock()
-	delete(s.flights, uid)
-	s.mu.Unlock()
-	close(flight.done)
-	return tier, lookupErr
-}
-
-// lookupAndCache 执行一次回源并写缓存（成功长 TTL / 失败短 TTL），返回对外结果。
-func (s *QuotaService) lookupAndCache(ctx context.Context, uid int64) (string, error) {
-	view, err := s.fetchMembership(ctx, uid)
-	now := time.Now()
-	if err != nil {
-		// fail-closed: keep serving with the free tier quota rather than
-		// blocking uploads on a pay-service outage.
-		lookupErr := fmt.Errorf("membership lookup failed (fail-closed to free): %w", err)
-		s.storeLocked(uid, quotaCacheEntry{expiresAt: now.Add(MembershipFailureCacheTTL), err: lookupErr})
-		return "free", lookupErr
-	}
-	entry := quotaCacheEntry{
-		tier:      deref(view.Tier),
-		active:    view.Active,
-		expiresAt: now.Add(s.membershipTTL()),
-	}
-	s.storeLocked(uid, entry)
-	return s.tierOrDefault(entry), nil
+	return s.tierCache.GetOrLoad(ctx, uid, s.membershipTTL(), MembershipFailureCacheTTL,
+		func(ctx context.Context, key int64) (string, error) {
+			view, err := s.fetchMembership(ctx, key)
+			if err != nil {
+				// fail-closed: keep serving with the free tier quota rather than
+				// blocking uploads on a pay-service outage. The loader value is
+				// retained in the cache so short-TTL failure hits return free too.
+				return "free", fmt.Errorf("membership lookup failed (fail-closed to free): %w", err)
+			}
+			return s.tierOrDefault(deref(view.Tier), view.Active), nil
+		})
 }
 
 // membershipTTL 返回本次成功结果的缓存 TTL（config TTL × ±15% 抖动）。
@@ -168,58 +107,9 @@ func (s *QuotaService) membershipTTL() time.Duration {
 	return MembershipCacheTTLWithJitter(base)
 }
 
-// storeLocked 写缓存前先做容量清理，保证写入后不超过容量上限。
-// 覆盖已有 uid 不增长 map，无需腾位置（避免误淘汰无关条目）。
-func (s *QuotaService) storeLocked(uid int64, entry quotaCacheEntry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.cache[uid]; !exists {
-		s.evictLocked(time.Now())
-	}
-	s.cache[uid] = entry
-}
-
-// evictLocked 保证写入新条目前缓存有余量：
-//  1. 先删过期条目（尽量保留仍在 TTL 内的档位）；
-//  2. 仍超限时按约 1/10 的比例淘汰一部分（Go map 迭代顺序随机 → 近似随机淘汰）；
-//     绝不整体重建 map，避免瞬间把所有用户打回回源（缓存击穿）。
-func (s *QuotaService) evictLocked(now time.Time) {
-	limit := MembershipCacheMaxEntries
-	if limit <= 0 {
-		limit = defaultMembershipCacheMaxEntries
-	}
-	if len(s.cache) < limit {
-		return
-	}
-	for uid, e := range s.cache {
-		if !now.Before(e.expiresAt) {
-			delete(s.cache, uid)
-		}
-	}
-	if len(s.cache) < limit {
-		return
-	}
-	remove := len(s.cache) / membershipEvictRatioDiv
-	if remove < 1 {
-		remove = 1
-	}
-	target := len(s.cache) - remove
-	if target > limit-1 {
-		target = limit - 1
-	}
-	for uid := range s.cache {
-		if len(s.cache) <= target {
-			break
-		}
-		delete(s.cache, uid)
-	}
-}
-
 // MembershipCacheSize 返回当前缓存的会员档位条目数（可观测性 / 单测用）。
 func (s *QuotaService) MembershipCacheSize() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.cache)
+	return s.tierCache.Len()
 }
 
 // MembershipCacheTTLWithJitter 返回带 ±15% 抖动的成功结果缓存 TTL。
@@ -232,11 +122,11 @@ func MembershipCacheTTLWithJitter(base time.Duration) time.Duration {
 	return time.Duration(float64(base) * factor)
 }
 
-func (s *QuotaService) tierOrDefault(e quotaCacheEntry) string {
-	if !e.active {
+func (s *QuotaService) tierOrDefault(tier string, active bool) string {
+	if !active {
 		return "free"
 	}
-	switch strings.ToUpper(strings.TrimSpace(e.tier)) {
+	switch strings.ToUpper(strings.TrimSpace(tier)) {
 	case "SVIP":
 		return "svip"
 	case "VIP":
@@ -314,7 +204,7 @@ func (s *QuotaService) ReserveUpload(ctx context.Context, uid int64, uploadUUID 
 	if err != nil {
 		return fmt.Errorf("usage query failed: %w", err)
 	}
-	ok, pending, err := s.pending.Reserve(ctx, uid, uploadUUID, fileSize, quota, used)
+	status, pending, err := s.pending.Reserve(ctx, uid, uploadUUID, fileSize, quota, used, s.cfg.Upload.MaxConcurrentPerUser)
 	if err != nil {
 		// Legacy path (non-atomic): used + fileSize only. In-flight uploads
 		// already registered remain counted via their own session lifecycle.
@@ -325,7 +215,11 @@ func (s *QuotaService) ReserveUpload(ctx context.Context, uid int64, uploadUUID 
 		metrics.QuotaReserve.WithLabelValues("legacy_ok").Inc()
 		return nil
 	}
-	if !ok {
+	if status == 2 {
+		metrics.QuotaReserve.WithLabelValues("concurrency_exceeded").Inc()
+		return ErrUploadConcurrency
+	}
+	if status != 1 {
 		metrics.QuotaReserve.WithLabelValues("exceeded").Inc()
 		return &QuotaExceededError{Used: used + pending, Quota: quota, Requested: fileSize}
 	}
@@ -385,3 +279,6 @@ func formatBytes(b int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
+
+// ErrUploadConcurrency maps to HTTP 429 (too many in-flight uploads for one uid).
+var ErrUploadConcurrency = errors.New("too many concurrent uploads; retry later")

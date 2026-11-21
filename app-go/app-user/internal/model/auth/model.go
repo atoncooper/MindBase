@@ -63,7 +63,7 @@ type UserProfile struct {
 
 func (UserProfile) TableName() string { return "user_profile" }
 
-// UserToken — opaque session token (the bili_session the frontend stores).
+// UserToken — opaque session token (stored by the frontend as session_token).
 type UserToken struct {
 	SessionToken string     `gorm:"column:session_token;primaryKey" json:"session_token"`
 	UID          int64      `gorm:"column:uid" json:"uid"`

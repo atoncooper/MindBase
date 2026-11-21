@@ -22,7 +22,7 @@
 #        MinIO: 控制台关闭（MINIO_BROWSER=off），不映射宿主端口
 #        Milvus: 内嵌 etcd——不再部署独立 etcd 容器（ETCD_USE_EMBED，已实测
 #                v2.6.22 启动/healthz OK），默认上限 1.5GB，只映射 19530 回环
-#        APISIX: 固定 1 worker（apisix/config.client.yaml，非根 config.yaml）
+#        APISIX: 与根 compose 共用标准 apisix/config.yaml（worker=auto）
 #   4. 数据面端口全部绑 127.0.0.1；对外只留 nginx 80/443（端口可改）。
 #   5. json-file 日志轮转（10MB × 3），防止日志盘膨胀。
 #
@@ -65,12 +65,16 @@ services:
       MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
+      # 与根 compose 相同的信任 bundle / 每服务叶子输出（APISIX 9443 需要）
+      MB_CERT_BUNDLE_DIR: /out/bundle
+      MB_CERT_SERVICES_DIR: /out/bundle
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
       - ./secrets/certs/openresty:/out/openresty
       - ./secrets/certs/app-content:/out/app-content
       - ./secrets/certs/app-content-mcp:/out/mcp
       - ./app-pay/certs:/out/pay
+      - ./secrets/certs:/out/bundle
     mem_limit: 128m
     logging: *default-logging
     restart: "no"
@@ -342,8 +346,8 @@ services:
       - mind-base-net
 
   # ==============================================================
-  # Gateway (APISIX standalone — 与根 compose 同一 apisix.yaml 路由面，
-  # 只是 config 换成客户端 2-worker 变体)
+  # Gateway (APISIX standalone — 与根 compose 共用同一份标准
+  # apisix/config.yaml + apisix.yaml.template，不维护客户端变体)
   # ==============================================================
 
   apisix:
@@ -354,10 +358,12 @@ services:
       cert-gen:
         condition: service_completed_successfully
     volumes:
-      - ./apisix/config.client.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
       - ./apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
       - ./secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
+      # 标准 config.yaml 声明了 9443 内部 TLS；客户端也由 cert-gen 签发同一 leaf
+      - ./secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
     entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
       - HTTP_PROXY=
@@ -369,7 +375,9 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
-    mem_limit: 256m
+    # 标准 config.yaml 用 APISIX 默认 worker_processes=auto；多核宿主上
+    # 每个 worker ~40MB luaJIT 常驻，256m 会 OOM，客户端给到 512m。
+    mem_limit: 512m
     logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]

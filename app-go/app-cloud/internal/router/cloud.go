@@ -15,9 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// registerCloud mounts the user-facing /cloud/* endpoints. Handlers only bind
-// requests, call services and map the results onto the wire DTOs in
-// internal/dto — the JSON contract lives there.
 func registerCloud(e *gin.Engine, d Deps) {
 	g := e.Group("/cloud")
 	g.Use(middleware.RequireUID())
@@ -46,6 +43,8 @@ func registerCloud(e *gin.Engine, d Deps) {
 	g.GET("/video/:upload_uuid/status", getVideoStatus(d))
 	g.GET("/video/:upload_uuid/preview", getDocumentPreview(d))
 	g.GET("/video/:upload_uuid/raw", getVideoRaw(d))
+	g.GET("/video/:upload_uuid/hls", getHLS(d))
+	g.POST("/video/:upload_uuid/hls/retry", retryHLS(d))
 
 	// ── quota / search (new) ──
 	g.GET("/quota", getQuota(d))
@@ -74,6 +73,10 @@ func initUpload(d Deps) gin.HandlerFunc {
 		res, err := d.Upload.InitUpload(c.Request.Context(), uid,
 			req.Filename, req.FileSize, req.MimeType, req.FolderID)
 		if err != nil {
+			if errors.Is(err, service.ErrUploadConcurrency) {
+				apiErr(c, http.StatusTooManyRequests, err.Error())
+				return
+			}
 			if _, isQuota := err.(*service.QuotaExceededError); isQuota {
 				apiErr(c, http.StatusRequestEntityTooLarge, err.Error())
 				return
@@ -135,6 +138,10 @@ func completeUpload(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
+		invalidateFolderCache(d, c)
+		if d.HLS != nil {
+			d.HLS.Enqueue(c.Request.Context(), uid, c.Param("upload_uuid"))
+		}
 		c.JSON(http.StatusOK, dto.UploadCompleteResponse{
 			UploadUUID: res.UploadUUID,
 			ETag:       res.ETag,
@@ -172,24 +179,34 @@ func resumeUpload(d Deps) gin.HandlerFunc {
 func listFolders(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := middleware.UIDFrom(c)
-		rows, err := d.Folders.ListByUID(d.DB, uid)
-		if err != nil {
-			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
-			return
+		var rows []model.CloudFolder
+		var err error
+		if d.FolderService != nil {
+			rows, err = d.FolderService.List(c.Request.Context(), uid)
+		} else {
+			// Fallback for tests/wire-only routers without a cache.
+			if err = d.Folders.UpdateCounts(d.DB, uid); err != nil {
+				_ = err
+			}
+			rows, err = d.Folders.ListByUID(d.DB, uid)
 		}
-		// Repair stale video_count (legacy data), parity with recalc_all_counts.
-		if err := d.Folders.UpdateCounts(d.DB, uid); err != nil {
-			// best-effort; tree still served
-			_ = err
-		}
-		_ = rows
-		// Re-fetch with repaired counts.
-		rows, err = d.Folders.ListByUID(d.DB, uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
 		c.JSON(http.StatusOK, dto.FolderTreeResponse{Folders: buildFolderTree(rows, nil)})
+	}
+}
+
+// invalidateFolderCache is best-effort: a stale tree must never fail the write.
+func invalidateFolderCache(d Deps, c *gin.Context) {
+	uid := middleware.UIDFrom(c)
+	if d.FolderService != nil {
+		d.FolderService.Invalidate(c.Request.Context(), uid)
+	}
+	// File list/search caches depend on file rows and folder counts too.
+	if d.FileQuery != nil {
+		d.FileQuery.Invalidate(uid)
 	}
 }
 
@@ -244,6 +261,7 @@ func createFolder(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
+		invalidateFolderCache(d, c)
 		c.JSON(http.StatusCreated, dto.FolderResponse{
 			ID: row.ID, ParentID: row.ParentID, Name: row.Name, VideoCount: 0,
 		})
@@ -296,6 +314,7 @@ func updateFolder(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, "文件夹不存在或已删除")
 			return
 		}
+		invalidateFolderCache(d, c)
 		folder, fetchErr := d.Folders.GetByID(d.DB, folderID, uid)
 		if fetchErr != nil || folder == nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -335,6 +354,7 @@ func deleteFolder(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
+		invalidateFolderCache(d, c)
 		// A force-deleted subtree's folder shares are dropped (the subtree ids
 		// cover shares pointing at any level). Soft deletes stay restorable and
 		// are NOT revoked; their shares resolve uniformly as 404 until restore.
@@ -361,8 +381,16 @@ func listVideos(d Deps) gin.HandlerFunc {
 		}
 		page := clampInt(c.DefaultQuery("page", "1"), 1, 1<<31)
 		pageSize := clampInt(c.DefaultQuery("pageSize", "50"), 1, 200)
-		rows, total, err := d.Files.ListByFolder(d.DB, uid, folderID,
-			page, pageSize, c.DefaultQuery("sort", "created_at"), c.DefaultQuery("order", "desc"))
+		var rows []model.CloudFile
+		var total int64
+		var err error
+		if d.FileQuery != nil {
+			rows, total, err = d.FileQuery.List(c.Request.Context(), uid, folderID, page, pageSize,
+				c.DefaultQuery("sort", "created_at"), c.DefaultQuery("order", "desc"))
+		} else {
+			rows, total, err = d.Files.ListByFolder(d.DB, uid, folderID, page, pageSize,
+				c.DefaultQuery("sort", "created_at"), c.DefaultQuery("order", "desc"))
+		}
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
@@ -406,10 +434,24 @@ func statusOrDefault(s *string) string {
 func getVideoDetail(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := middleware.UIDFrom(c)
-		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
-		if err != nil {
-			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
-			return
+		var f *model.CloudFile
+		if d.FileQuery != nil {
+			file, found, err := d.FileQuery.Detail(c.Request.Context(), uid, c.Param("upload_uuid"))
+			if err != nil {
+				apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+				return
+			}
+			if found {
+				copy := file
+				f = &copy
+			}
+		} else {
+			file, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
+			if err != nil {
+				apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+				return
+			}
+			f = file
 		}
 		if f == nil {
 			apiErr(c, http.StatusNotFound, "File not found")
@@ -510,6 +552,7 @@ func updateVideo(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "File not found")
 			return
 		}
+		invalidateFolderCache(d, c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil || f == nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -542,6 +585,13 @@ func deleteVideo(d Deps) gin.HandlerFunc {
 		if err := d.Files.SoftDelete(d.DB, c.Param("upload_uuid"), uid); err != nil {
 			apiErr(c, http.StatusNotFound, "File not found")
 			return
+		}
+		invalidateFolderCache(d, c)
+		// A trashed file must not stay shareable or playable: kill every
+		// outstanding HLS playback token (new ones cannot be minted because the
+		// file row is soft-deleted). Restoring the file mints fresh tokens.
+		if d.HLS != nil {
+			d.HLS.RevokeTokens(c.Request.Context(), c.Param("upload_uuid"))
 		}
 		// A trashed file must not stay shareable.
 		_ = d.Share.RevokeAllForFile(f.ID)
@@ -727,13 +777,18 @@ func getVideoRaw(d Deps) gin.HandlerFunc {
 				content = &s
 			}
 		}
+		expiresIn := d.Cfg.Minio.PresignExpire
+		if expiresIn <= 0 {
+			expiresIn = 3600
+		}
 		c.JSON(http.StatusOK, dto.RawFileResponse{
-			URL:      url,
-			Content:  content,
-			MimeType: f.MimeType,
-			FileName: f.OriginalName,
-			FileSize: f.FileSize,
-			ViewMode: viewMode,
+			URL:       url,
+			Content:   content,
+			MimeType:  f.MimeType,
+			FileName:  f.OriginalName,
+			FileSize:  f.FileSize,
+			ViewMode:  viewMode,
+			ExpiresIn: expiresIn,
 		})
 	}
 }
@@ -790,7 +845,13 @@ func searchFiles(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusUnprocessableEntity, "缺少搜索关键词 q")
 			return
 		}
-		rows, err := d.Files.SearchByName(d.DB, uid, q, 50)
+		var rows []model.CloudFile
+		var err error
+		if d.FileQuery != nil {
+			rows, err = d.FileQuery.Search(c.Request.Context(), uid, q, 50)
+		} else {
+			rows, err = d.Files.SearchByName(d.DB, uid, q, 50)
+		}
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
@@ -808,7 +869,9 @@ func searchFiles(d Deps) gin.HandlerFunc {
 func listTrash(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := middleware.UIDFrom(c)
-		rows, err := d.Files.ListTrash(d.DB, uid)
+		page := clampInt(c.DefaultQuery("page", "1"), 1, 1<<31)
+		pageSize := clampInt(c.DefaultQuery("pageSize", "100"), 1, 200)
+		rows, total, err := d.Files.ListTrashPage(d.DB, uid, page, pageSize)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
@@ -830,7 +893,7 @@ func listTrash(d Deps) gin.HandlerFunc {
 				PurgeAt:      purgeAt,
 			})
 		}
-		c.JSON(http.StatusOK, dto.TrashListResponse{Items: items, Total: len(items)})
+		c.JSON(http.StatusOK, dto.TrashListResponse{Items: items, Total: int(total)})
 	}
 }
 
@@ -841,6 +904,7 @@ func restoreTrash(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "文件不在回收站中")
 			return
 		}
+		invalidateFolderCache(d, c)
 		c.JSON(http.StatusOK, dto.TrashRestoreResponse{
 			Restored: true, UploadUUID: c.Param("upload_uuid"),
 		})
