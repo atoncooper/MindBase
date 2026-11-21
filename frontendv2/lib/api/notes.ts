@@ -92,10 +92,10 @@ async function fetchNotesList(
     });
     if (response.status === 401) {
         if (typeof window !== "undefined") {
-            const token = localStorage.getItem("bili_session");
+            const token = localStorage.getItem("session_token");
             if (token) {
-                localStorage.removeItem("bili_session");
-                localStorage.removeItem("bili_user");
+                localStorage.removeItem("session_token");
+                localStorage.removeItem("auth_user");
                 window.dispatchEvent(new Event("auth:unauthorized"));
                 throw new Error(sanitizeError({ status: 401 }));
             }

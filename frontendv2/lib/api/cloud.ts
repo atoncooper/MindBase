@@ -173,6 +173,22 @@ export type CloudViewMode =
     | "text"
     | "unsupported";
 
+export interface CloudHlsResponse {
+    ready: boolean;
+    /** disabled | unsupported | queued | processing | ready | failed */
+    status: string;
+    playlistUrl?: string;
+    /** Derived poster (cover.jpg) under the same versioned HLS prefix. */
+    posterUrl?: string;
+    expiresIn?: number;
+    /** Coarse packaging progress (0-100) while queued/processing. */
+    progress?: number;
+    /** Automatic retry attempt counter for transient packaging failures. */
+    attempts?: number;
+    /** Whether a failed packaging run can be retried by the user. */
+    retryable?: boolean;
+}
+
 export interface CloudRawFileResponse {
     url: string;
     content: string | null;
@@ -180,6 +196,8 @@ export interface CloudRawFileResponse {
     fileName: string;
     fileSize: number;
     viewMode: CloudViewMode;
+    /** Presigned URL lifetime in seconds; used by the player to prefetch/refresh. */
+    expiresIn: number;
 }
 
 // ── AI 摘要 / 语义检索 / 相似文件（app-cloud 智能能力）──
@@ -531,6 +549,22 @@ export const cloudApi = {
     },
 
     // ── Original file (raw) ──
+    getHls: async (uploadUuid: string) => {
+        const raw = await request<CloudHlsResponse>(`/cloud/video/${uploadUuid}/hls`, {
+            headers: getAuthHeaders(),
+        });
+        return snakeToCamel<CloudHlsResponse>(raw);
+    },
+
+    /** Requeue a failed HLS packaging job (returns the same descriptor shape). */
+    retryHls: async (uploadUuid: string) => {
+        const raw = await request<CloudHlsResponse>(`/cloud/video/${uploadUuid}/hls/retry`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        });
+        return snakeToCamel<CloudHlsResponse>(raw);
+    },
+
     getRawFile: async (uploadUuid: string) => {
         const raw = await request<CloudRawFileResponse>(
             `/cloud/video/${uploadUuid}/raw`,

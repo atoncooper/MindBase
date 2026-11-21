@@ -13,6 +13,7 @@
    │ 5GB 上传绕 APISIX（避免网关 body-limit + buffering）
    ├─ 分块字节流：presigned URL ──► OpenResty /minio-proxy ──► MinIO drive-videos（app 层不在字节路径上）
    ├─ 预览/下载流：/cloud-stream（内部重写）→ MinIO，OpenResty video_cache 24h + Range
+   ├─ HLS：/hls/{uid}/{uuid}/{version}/...（HttpOnly cookie → OpenResty 本地校验 → MinIO hls_cache），字节不经 app-cloud
    └─ 状态通知：Redis `cloud:status` Pub/Sub → backend WS bridge → 前端
 
 APISIX：/cloud/* 兜底路由 + /workspaces/*（直连 app-cloud，upstream 单 node）
@@ -122,11 +123,58 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 
 ## 七、配置与运行
 
-- 配置唯一入口 `default.yaml`（嵌入二进制）+ `APPCLOUD__` env 覆盖；OCR/摘要模型默认
+- 配置唯一入口 `default.yaml`（嵌入二进制）+ `APPCLOUD__` env 覆盖；**HLS 例外**：
+  `hls:` 段只读 YAML（调优项走配置文件，不提供 `APPCLOUD__HLS__*` 覆盖）。OCR/摘要模型默认
   `z-ai/glm-5.3-flash`（需在 Higress 可路由）；敏感项复用共享 env
   （`MINIO__*`/`REDIS__URL`/`MONGO__URI`/`AI_GATEWAY__*`/`MILVUS__*`/`APISIX_CONSUMER_KEY`）
 - 本地：`go run ./app-go/app-cloud`（读项目根 .env）；compose profile `["", "cloud", "full"]`
 - 扩容：`docker compose up -d --scale app-cloud=2`（宿主 8007/8008）；详见 [deployment.md](deployment.md)
+
+## HLS 异步打包（2026-11 可靠性强化）
+
+上传完成后 app-cloud 把视频交给 Redis 队列里的 ffmpeg worker，产物是
+`hls/{uid}/{uuid}/{version}/`（`index.m3u8` + `seg-*.ts`）。播放链路是
+**浏览器 → OpenResty（校验 hls_token cookie）→ MinIO**，字节不经 app-cloud。
+
+- **幂等入队**：client complete / MinIO bucket 通知 / 内部上传三处都会触发，
+  以 `SET NX cloud:hls:job:{uuid}` 去重；已 ready 的文件不会被重复转码。
+- **可靠消费**：`BLMOVE queue → processing` + 每文件租约（`SET NX EX`），
+  多实例/多 worker 同一视频只会有一个转换；worker 崩溃由 janitor 重新入队。
+- **有限重试**：下载/上传类瞬时失败按 30s→60s→…（上限 10min）指数退避，
+  `hls.max_attempts`（默认 3）次后置 failed；ffmpeg 失败是确定性的，不自动重试，
+  但用户可手动重试（`POST /cloud/video/{uuid}/hls/retry`）。
+- **版本化产物**：每次转换写到新版本目录，全部对象上传完成后才切换 status；
+  旧版本在播放令牌全部过期后才由 GC 清理，正在播放的旧版本不受影响。
+- **状态/进度**：`GET /cloud/video/{uuid}/hls` 未 ready 时返回
+  `status/progress/attempts/retryable`，前端轮询并显示「正在转码」，失败时提供重试。
+- **清理联动**：软删除（进回收站）立即吊销该文件所有播放令牌；物理删除
+  （回收站 purge / 定时 sweeper）删除 HLS 全部对象、Redis 状态与令牌，并留
+  tombstone 防止进行中的 worker 回写。
+- **预探测**：转换前 `ffprobe` 读 stream/format，决定 remux / 只重编音频 /
+  整段转码；image-only、无视频流、损坏文件直接 `unsupported`/failed，不浪费
+  ffmpeg；`hls.probe` 可指定二进制，缺失时退回 copy-first 兜底。
+- **ABR**：`hls.rendition_heights`（默认 360/720/1080，按源高度裁剪）生成
+  `{height}p/index.m3u8` 与 `master.m3u8`；H.264 源的最高档直接 remux，其余档
+  缩放重编；master 的 BANDWIDTH 由实际分片字节数/时长推导。
+- **缩略图**：可选生成 `cover.jpg`（播放器 poster）、`thumbs/thumb-*.jpg`
+  （最多 10 张）与 `sprite.jpg`（5×2 雪碧图，列表 hover / 进度条预览），
+  失败不影响视频可播；`cover.jpg` 随 ready 响应的 `posterUrl` 返回。
+- **旋转/像素格式**：探测到 display matrix 旋转或 10-bit/非 yuv420p 像素格式时
+  强制转码（TS copy 会丢旋转元数据、浏览器也解不了 10-bit），避免"能打包但播不了"。
+- **令牌绑定**：`hls_token`（Redis 能力令牌）+ `hls_ctx`（稳定浏览器绑定
+  cookie）双 cookie，Lua 校验二者匹配；token 泄露但无 cookie 不可重放，
+  多标签页共享同一 bind 值不会互相踢下线。
+- **指标**：`appcloud_hls_jobs_total{result}`、`appcloud_hls_processing_seconds`、
+  `appcloud_hls_queue_depth`、`appcloud_hls_tokens_minted_total`。
+- **代码结构**：HTTP 层 `internal/router/cloud_hls.go`；service 层按职责拆分——
+  `hls.go`（生命周期/共享工具）、`hls_types.go`（类型/常量）、`hls_queue.go`
+  （入队/worker/租约/重试）、`hls_janitor.go`（重试提升/崩溃回收/版本 GC）、
+  `hls_plan.go`（ffprobe 预探测 + ABR 决策）、`hls_packaging.go`（渲染/上传/缩略图）、
+  `hls_state.go`（Redis 状态与 GC 记录）、`hls_playback.go`（播放令牌/令牌吊销/资产删除）。
+- **MinIO 匿名读收敛**：bucket policy 只对 `hls/*` 且 `aws:SourceIp` 命中
+  `hls.allowed_source_cidrs`（默认 RFC1918，即 OpenResty 私网）的请求生效；
+  启动时替换旧的无条件 hls 语句（其他策略保留）。填 `["0.0.0.0/0"]` 可退回
+  旧行为；MinIO 需支持 `IpAddress` 条件（2021+）。
 
 ## 八、红线
 

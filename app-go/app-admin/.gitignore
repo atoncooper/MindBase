@@ -1,2 +1,5 @@
 # 本地运行日志（log.output=file/both 时）
 logs/
+
+# 在服务目录直接 go build 生成的二进制
+/app-admin

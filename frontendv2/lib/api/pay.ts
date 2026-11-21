@@ -2,7 +2,7 @@
  * Pay API - 会员/支付：商品目录 / 下单 / 订单查询 / 会员态 / M1 模拟支付.
  *
  * Backend: app-pay (Java, §2.8). All user endpoints live under /pay/* and are
- * routed through APISIX with bili_session Bearer auth; the caller does NOT
+ * routed through APISIX with session_token Bearer auth; the caller does NOT
  * pass uid - identity comes from the gateway-injected X-Uid.
  *
  * Java records serialize with camelCase field names natively (priceCents,

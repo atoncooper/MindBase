@@ -29,6 +29,7 @@ type PurgeService struct {
 	files    *repo.FileRepo
 	pipeline *Pipeline        // nil-tolerant: Milvus delete skipped when absent
 	graph    CloudGraphWriter // nil-tolerant: Neo4j L1 node delete skipped when absent
+	hls      *HLSService      // nil-tolerant: HLS assets/state cleanup skipped when absent
 }
 
 func NewPurgeService(db *gorm.DB, mc *minio.Client, mongo *mongostore.MongoStore, pipeline *Pipeline) *PurgeService {
@@ -37,6 +38,10 @@ func NewPurgeService(db *gorm.DB, mc *minio.Client, mongo *mongostore.MongoStore
 
 // SetGraphWriter wires the L1 routing-graph delete path (optional).
 func (s *PurgeService) SetGraphWriter(w CloudGraphWriter) { s.graph = w }
+
+// SetHLS wires the HLS derived-asset cleanup (optional). Without it a purged
+// video would leave its playlists/segments and playback tokens behind.
+func (s *PurgeService) SetHLS(h *HLSService) { s.hls = h }
 
 // PurgeFile physically deletes one soft-deleted file (owner-checked).
 func (s *PurgeService) PurgeFile(ctx context.Context, uploadUUID string, uid int64) error {
@@ -90,6 +95,11 @@ func (s *PurgeService) purgeRow(ctx context.Context, f *model.CloudFile) error {
 		slog.Warn("[CLOUD_PURGE] minio delete failed", "upload_uuid", f.UploadUUID, "err", err)
 		// keep the row so the sweeper retries; do NOT hard-delete on failure
 		return err
+	}
+	// 1b. HLS derived assets + Redis state + playback tokens. Best-effort:
+	// a derived-artifact failure must not block deleting the source row.
+	if s.hls != nil {
+		s.hls.DeleteAssets(ctx, f.UID, f.UploadUUID)
 	}
 	// 2. Milvus vectors
 	if s.pipeline != nil {

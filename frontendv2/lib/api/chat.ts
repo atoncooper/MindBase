@@ -162,8 +162,8 @@ export const chatApi = {
         // 会话失效：清本地登录态并通知 AuthProvider 统一跳转（替代硬刷新）
         if (res.status === 401) {
             if (typeof window !== "undefined") {
-                localStorage.removeItem("bili_session");
-                localStorage.removeItem("bili_user");
+                localStorage.removeItem("session_token");
+                localStorage.removeItem("auth_user");
                 window.dispatchEvent(new Event("auth:unauthorized"));
             }
             throw new Error("会话已过期，请重新登录");

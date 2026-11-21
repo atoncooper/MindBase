@@ -1,22 +1,25 @@
 # APISIX standalone (yaml) mode configuration.
-# Routes/upstreams/consumers are read from apisix.yaml at startup; no etcd
-# dependency at runtime.
+# Routes/upstreams/consumers are read from apisix.yaml at startup; etcd is not
+# the route source. Some image startup paths still call init_etcd, so keep the
+# compose dependency until that is verified/removed.
 #
 # In APISIX 3.x, standalone = deployment.role "data_plane" +
 # role_data_plane.config_provider "yaml" (there is no "standalone" role).
-# With role=data_plane, the entrypoint skips `apisix init_etcd` entirely
-# (apisix/cli/ops.lua: `if env.deployment_role ~= "data_plane" then init_etcd`),
-# so no etcd section is needed. Admin API is disabled under yaml provider
-# (ops.lua dies if enable_admin && config_provider=="yaml"), so no admin_key.
+# The route source is yaml, so APISIX does not read routes from etcd. The
+# image's startup command can still run `apisix init_etcd`; keep the compose
+# etcd dependency until that startup path is explicitly removed/verified.
+# Admin API is disabled under the yaml provider, so no admin_key is configured.
 deployment:
   role: data_plane
   role_data_plane:
     config_provider: yaml
 
 apisix:
-  # Control server: exposes /apisix/status for healthcheck (port 9090, in-container only)
+  # Control API (port 9090, in-container only). The compose healthcheck checks
+  # this listener via /proc/net/tcp; bind loopback so other containers cannot
+  # query APISIX control endpoints.
   control:
-    ip: 0.0.0.0
+    ip: 127.0.0.1
     port: 9090
   # Trust anchors for upstream TLS verification (cosocket ssl.verify).
   # ca-bundle.crt = system CA pool + app-content（board 面）dev CA (concatenated
@@ -49,10 +52,13 @@ apisix:
 # generated nginx.conf). Arbitrary directives must go through a
 # *_configuration_snippet slot; this one lands `proxy_buffering off;` inside
 # every location block of the generated nginx.conf (verified with
-# `apisix test` + grep). The backend also sends `X-Accel-Buffering: no` on
-# SSE responses (app/routers/streaming.py) as a per-response belt-and-braces
-# that survives even if this directive is removed.
+# `apisix test` + grep). SSE upstreams (app-ts/app-content) also send
+# `X-Accel-Buffering: no` as a per-response belt-and-braces.
+#
+# client_max_body_size aligns APISIX with the OpenResty API boundary (50 MB);
+# large object bytes never pass through APISIX (edge -> MinIO direct).
 nginx_config:
+  http_server_configuration_snippet: |
+    client_max_body_size 50m;
   http_server_location_configuration_snippet: |
     proxy_buffering off;
-

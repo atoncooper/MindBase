@@ -40,7 +40,7 @@ import static com.mindbase.pay.dto.PayDtos.TierView;
 import static com.mindbase.pay.dto.PayDtos.UpgradeQuote;
 
 /**
- * User endpoints (/pay/*). APISIX forward-auth validates bili_session and injects X-Uid; this
+ * User endpoints (/pay/*). APISIX forward-auth validates session_token and injects X-Uid; this
  * service does not verify login itself (same trust model as app-task). Direct debugging requires
  * manually supplying X-Uid.
  */

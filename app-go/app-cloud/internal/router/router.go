@@ -24,20 +24,23 @@ import (
 
 // Deps carries the wired services into the route registrations.
 type Deps struct {
-	Cfg        *config.Config
-	DB         *gorm.DB
-	Minio      *minio.Client
-	Quota      *service.QuotaService
-	Upload     *service.UploadService
-	Process    *service.Pipeline // nil = pipeline disabled
-	Purge      *service.PurgeService
-	Mongo      *mongostore.MongoStore
-	Files      *repo.FileRepo
-	Folders    *repo.FolderRepo
-	Share      *service.ShareService
-	Ref        *service.RefService // 1.0.16 — "save to my drive" references
-	Attestor   *service.DeviceAttestor
-	Reconciler *service.Reconciler
+	Cfg           *config.Config
+	DB            *gorm.DB
+	Minio         *minio.Client
+	Quota         *service.QuotaService
+	HLS           *service.HLSService
+	Upload        *service.UploadService
+	Process       *service.Pipeline // nil = pipeline disabled
+	Purge         *service.PurgeService
+	Mongo         *mongostore.MongoStore
+	Files         *repo.FileRepo
+	Folders       *repo.FolderRepo
+	FolderService *service.FolderService
+	FileQuery     *service.FileQueryService
+	Share         *service.ShareService
+	Ref           *service.RefService // 1.0.16 — "save to my drive" references
+	Attestor      *service.DeviceAttestor
+	Reconciler    *service.Reconciler
 	// Summary / Search serve the document-intelligence read endpoints; nil
 	// means the corresponding capability is unavailable (503).
 	Summary *service.SummaryService

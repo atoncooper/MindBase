@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"app-cloud/internal/dto"
@@ -102,8 +103,29 @@ func minioEventWebhook(d Deps) gin.HandlerFunc {
 				c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Detail: "settlement failed"})
 				return
 			}
+			// The client-complete path enqueues HLS directly; if the MinIO
+			// bucket notification won the settlement race, enqueue here too.
+			if d.HLS != nil {
+				if uid, uploadUUID, ok := parseUploadObjectKey(key); ok {
+					d.HLS.Enqueue(c.Request.Context(), uid, uploadUUID)
+				}
+			}
 			processed++
 		}
 		c.JSON(http.StatusOK, gin.H{"processed": processed})
 	}
+}
+
+// parseUploadObjectKey extracts uid/uploadUuid from the object key shape
+// "{uid}/{uploadUuid}/file{ext}". It returns false for unrelated keys.
+func parseUploadObjectKey(key string) (int64, string, bool) {
+	parts := strings.SplitN(strings.TrimPrefix(key, "/"), "/", 3)
+	if len(parts) < 3 {
+		return 0, "", false
+	}
+	uid, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || uid <= 0 || parts[1] == "" {
+		return 0, "", false
+	}
+	return uid, parts[1], true
 }

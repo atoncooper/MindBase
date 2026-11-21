@@ -65,7 +65,7 @@ public class MembershipService {
 
     /**
      * Tier-aware overload: a null/blank tier keeps the existing row's tier (new rows default to VIP).
-     * @Transactional must be on this overload -- it is the direct entry point of GrantService.
+     * &#064;Transactional  must be on this overload -- it is the direct entry point of GrantService.
      */
     @Transactional
     public PayMembership extend(

@@ -15,7 +15,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Markdown } from "@/components/markdown";
 import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-react";
 import { cloudApi, formatBytes, type CloudRefRawResponse } from "@/lib/api/cloud";
-import { toSameOriginUrl } from "./file-viewer";
+import { toSameOriginUrl } from "./media-url";
 import { FileIconTile } from "./file-icon";
 import { describeMimeType } from "./helpers";
 

@@ -129,6 +129,11 @@ services:
     environment:
       # Required by the soft-purge endpoint (POST /_purge). Change in prod.
       - PURGE_TOKEN=${PURGE_TOKEN:-dev-purge-token}
+      # HLS token lookup (plain Redis port 6380; the edge only reads tokens).
+      - HLS_REDIS_HOST=redis
+      - HLS_REDIS_PORT=6380
+      - HLS_REDIS_DB=1
+      - HLS_REDIS_PASSWORD=${REDIS_PASSWORD:-mind-base}
     # Workers run unprivileged (nobody); the version file is written by Lua,
     # so the cache volume root must be writable by the worker user.
     command:

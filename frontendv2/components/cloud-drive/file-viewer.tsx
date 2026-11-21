@@ -21,30 +21,15 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Markdown } from "@/components/markdown";
 import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-react";
-import { cloudApi, formatBytes, type CloudRawFileResponse } from "@/lib/api/cloud";
+import { cloudApi, formatBytes, type CloudHlsResponse, type CloudRawFileResponse } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
 import { FileAiPanel } from "./file-ai-panel";
 import { describeMimeType } from "./helpers";
-
-/**
- * Normalize the presigned MinIO URL to a same-origin path when it goes
- * through the nginx /minio-proxy prefix. Embedding the absolute proxy URL
- * (e.g. http://localhost/minio-proxy/...) in an <iframe> trips nginx's
- * X-Frame-Options: SAMEORIGIN whenever the page origin differs (page on
- * :3000, proxy on :80). next.config.ts proxies the identical path through
- * the Next server, so the relative form stays same-origin for every media
- * element below. Non-proxy URLs (custom MINIO__PUBLIC_ENDPOINT) are kept.
- */
-/** Exported for the ref viewer (/cloud-drive/refs/[id]) which presigns through the same nginx /minio-proxy convention. */
-export function toSameOriginUrl(url: string): string {
-    try {
-        const u = new URL(url, window.location.origin);
-        if (u.pathname.startsWith("/minio-proxy/") || u.pathname.startsWith("/mindbase/api/v1/media/")) return u.pathname + u.search;
-        return url;
-    } catch {
-        return url;
-    }
-}
+import { toSameOriginUrl } from "./media-url";
+import { CloudVideoPlayer } from "./video-player";
+import { HlsVideoPlayer } from "./hls-video-player";
+import { HlsFailureCard, HlsPackagingCard } from "./hls-packaging-card";
+import { useHlsPlayback } from "./use-hls-playback";
 
 export function FileViewer() {
     const pathname = usePathname();
@@ -52,8 +37,11 @@ export function FileViewer() {
     const uuid = pathname.split("/").pop() ?? "";
 
     const [raw, setRaw] = useState<CloudRawFileResponse | null>(null);
+    // Seeded once from the raw-file fetch; the hook owns polling/retry state.
+    const [hlsInitial, setHlsInitial] = useState<CloudHlsResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const hls = useHlsPlayback(uuid, raw?.viewMode === "video", hlsInitial);
 
     // PDF: open the file in a NEW tab and let the browser's native viewer
     // take over; this page stays as a status card with manual links in case
@@ -73,8 +61,19 @@ export function FileViewer() {
         void (async () => {
             try {
                 const r = await cloudApi.getRawFile(uuid);
+                let hlsInfo: CloudHlsResponse | null = null;
+                if (r.viewMode === "video") {
+                    try {
+                        // Keep the full descriptor: queued/processing/failed
+                        // states drive the packaging UI below.
+                        hlsInfo = await cloudApi.getHls(uuid);
+                    } catch {
+                        hlsInfo = null;
+                    }
+                }
                 if (!cancelled) {
                     setRaw({ ...r, url: toSameOriginUrl(r.url) });
+                    setHlsInitial(hlsInfo);
                     setLoading(false);
                 }
             } catch (e) {
@@ -161,21 +160,86 @@ export function FileViewer() {
                             <FileAiPanel uploadUuid={uuid} />
                         </div>
                     ) : null}
-                    <RawContent raw={raw} />
+                    <RawContent
+                        raw={raw}
+                        uuid={uuid}
+                        hls={hls.info}
+                        onHlsFallback={hls.playRaw}
+                        onUrlChange={(url) => setRaw((prev) => (prev ? { ...prev, url } : prev))}
+                        onPlayRaw={hls.playRaw}
+                        onRetryHls={() => void hls.retry()}
+                        hlsRetrying={hls.retrying}
+                        hlsError={hls.error}
+                    />
                 </div>
             </div>
         </div>
     );
 }
 
-function RawContent({ raw }: { raw: CloudRawFileResponse }) {
+function RawContent({
+    raw,
+    uuid,
+    hls,
+    onUrlChange,
+    onHlsFallback,
+    onPlayRaw,
+    onRetryHls,
+    hlsRetrying,
+    hlsError,
+}: {
+    raw: CloudRawFileResponse;
+    uuid: string;
+    hls: CloudHlsResponse | null;
+    onUrlChange: (url: string) => void;
+    onHlsFallback: () => void;
+    onPlayRaw: () => void;
+    onRetryHls: () => void;
+    hlsRetrying: boolean;
+    hlsError: string | null;
+}) {
     switch (raw.viewMode) {
         case "video":
+            if (hls?.ready && hls.playlistUrl) {
+                return (
+                    <HlsVideoPlayer
+                        uuid={uuid}
+                        playlistUrl={hls.playlistUrl}
+                        posterUrl={hls.posterUrl}
+                        expiresIn={hls.expiresIn}
+                        onFallback={onHlsFallback}
+                    />
+                );
+            }
+            if (hls && (hls.status === "queued" || hls.status === "processing")) {
+                return (
+                    <HlsPackagingCard
+                        progress={hls.progress}
+                        attempts={hls.attempts}
+                        onPlayRaw={onPlayRaw}
+                    />
+                );
+            }
+            if (hls?.status === "failed") {
+                // A failed package is surfaced (with retry) instead of silently
+                // downgrading to the MP4 fallback.
+                return (
+                    <HlsFailureCard
+                        message={hlsError}
+                        attempts={hls.attempts}
+                        retryable={hls.retryable !== false}
+                        retrying={hlsRetrying}
+                        onRetry={onRetryHls}
+                        onPlayRaw={onPlayRaw}
+                    />
+                );
+            }
             return (
-                <video
-                    src={raw.url}
-                    controls
-                    className="mx-auto w-full max-w-full rounded-2xl bg-black"
+                <CloudVideoPlayer
+                    uuid={uuid}
+                    initialUrl={raw.url}
+                    expiresIn={raw.expiresIn}
+                    onUrlChange={onUrlChange}
                 />
             );
         case "audio":

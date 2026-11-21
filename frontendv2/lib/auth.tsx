@@ -27,11 +27,11 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const SESSION_KEY = "bili_session";
-const USER_KEY = "bili_user";
-const UID_KEY = "bili_uid";
-const AVATAR_KEY = "bili_avatar";
-const CHAT_SESSION_KEY = "bili_chat_session";
+const SESSION_KEY = "session_token";
+const USER_KEY = "auth_user";
+const UID_KEY = "auth_uid";
+const AVATAR_KEY = "auth_avatar";
+const CHAT_SESSION_KEY = "chat_session_id";
 
 function resolveDisplayName(user: UserInfo): string {
   return user.uname || user.nickname || "用户";

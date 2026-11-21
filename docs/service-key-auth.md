@@ -15,7 +15,7 @@
 4. 零代码改动迁移各调用方（只换 env 里的 key 值）。
 
 **非目标**
-- 不改用户侧鉴权（bili_session → forward-auth 链路不动）。
+- 不改用户侧鉴权（session_token → forward-auth 链路不动）。
 - 不引入 per-key 业务限流（APISIX 现有限流保持按 remote_addr）。
 - 不做密钥自动轮换（提供人工轮换流程与台账，自动化后续再说）。
 
@@ -67,7 +67,7 @@ APISIX standalone 不支持 env 插值，key 值由 `apisix/render-config.sh` �
 
 | 项 | 约定 |
 |---|---|
-| 格式 | `mbk_<service>_<token>`；`<service>` 为小写 slug（`backend`、`app-content-mcp` → `app_content_mcp`）；`<token>` = 32 字节随机数 base64url（43 字符，同 bili_session 熵级） |
+| 格式 | `mbk_<service>_<token>`；`<service>` 为小写 slug（`backend`、`app-content-mcp` → `app_content_mcp`）；`<token>` = 32 字节随机数 base64url（43 字符，同 session_token 熵级） |
 | 总长 | ≤ 80 字符；全串仅 `[A-Za-z0-9_-]` |
 | 存储 | **sha256 hex(key)** 唯一索引。不用 bcrypt：校验路径需要按 hash 等值查询（索引点查），256-bit 熵下 sha256 无暴力破解空间；bcrypt 慢哈希用于低熵人类密码，此处反而是浪费 |
 | 可辨识 | 额外存 `key_last4`（明文尾 4 字符）供控制台比对，形如 `…9f3a` |
@@ -243,7 +243,7 @@ consumers:
 | 身份 | 载体 | 签发/校验方 | 含义 |
 |---|---|---|---|
 | **服务身份** | `apikey` 头（key-auth → consumer） | app-user（auth 域）签发、APISIX 校验 | "哪个服务在调"（授权、审计、限流的主体） |
-| **用户身份** | `X-Uid` 头 | forward-auth（bili_session）→ 调用方注入 | "代表哪个用户操作"（数据属主作用域） |
+| **用户身份** | `X-Uid` 头 | forward-auth（session_token）→ 调用方注入 | "代表哪个用户操作"（数据属主作用域） |
 
 约定不变：uid 永不出现在 LLM 可写参数；服务 key 永不出现在用户可见面。
 `consumer-restriction` 只管服务身份；数据级隔离（跨用户 404 等）仍由各

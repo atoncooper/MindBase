@@ -10,7 +10,7 @@
 | 角色 | 内容域三面：**note**=笔记权威（CRUD / 锚点 / 修订 / 分享 / markdown 消毒）；**quiz**=quiz 存储权威（历史 / 错题本 / 导出 / 详情 / 分享 / 定时出题 detail+answer）；**board**=板存储（CRUD / 乐观锁 / 置顶，HTTPS-only）。不做 AI 编排（出题/批改/笔记 agent 在 app-ts） |
 | 技术栈 | Go 1.25 + Gin v1.12 + GORM（MySQL）+ mongo-driver v2 + go-redis v9（board 缓存 / quiz quota） |
 | 端口 | **单端口 8004（HTTPS-only）**：board/note/quiz 三面共用同一 listener（TLS rotator 保留；仅经 APISIX 可达）；一个 `/health` 汇总三域 MySQL 探活 |
-| 鉴权 | 用户路由信任 APISIX forward-auth 注入的 `X-Uid`；`/notes/shared/{token}`、`/quiz/shared/{token}` 免登录；board 同语义（非空正整数 uid 放行），不自验 bili_session |
+| 鉴权 | 用户路由信任 APISIX forward-auth 注入的 `X-Uid`；`/notes/shared/{token}`、`/quiz/shared/{token}` 免登录；board 同语义（非空正整数 uid 放行），不自验 session_token |
 | 存储 | 进程级**一个** MySQL 池 + **一个** Mongo client + **一个** Redis client（三域共享 handle，不再各自连库）。MySQL `mind_base`：note 3 表 + quiz 6 表 + `board` 表（三面统一 CREATE-ONLY 迁移，禁用 AutoMigrate/ALTER）；Mongo：共享库 `mind_base` 存 note `note_documents`/`note_revisions`、quiz `quiz_questions`/`task_quiz_questions`，board 历史库 `MindBase` 存 `board_documents`（可用 `database.mongo.board_database` 显式配置，迁移后置空即统一） |
 | 配置 | 唯一 `app-go/app-content/default.yaml`（进程级 app/server/security/log/observability + **唯一** database 段 + quiz 域参数，embed）；env 用 `CONTENT__` 前缀（`CONTENT__DATABASE__*` 等）；旧 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__` 数据源变量兼容但必须一致；`CONTENT__INTERNAL_API_KEY`（/internal/* 二次校验，fail-closed） |
 | 日志 | 单 logger（`internal/logger`）：stdout + `/app/logs`（lumberjack 轮转；日志卷 `app_content_logs`） |
@@ -198,7 +198,7 @@ MCP server = **`app-content-mcp`**（8019 单端口单端点，12 工具合并�
 
 **信任模型（必须理解）**
 
-- 用户身份唯一来源是 APISIX forward-auth 注入的 `X-Uid`；app-content **不自验 bili_session**。APISIX 的 forward-auth 是“宽验证”：无凭证请求放行且不带 X-Uid，由各 handler 自己 401。因此**新增端点必须在 handler 首行取 `currentUID`**（board 在路由组级 `requireXUid`），否则会变成匿名可写端点。
+- 用户身份唯一来源是 APISIX forward-auth 注入的 `X-Uid`；app-content **不自验 session_token**。APISIX 的 forward-auth 是“宽验证”：无凭证请求放行且不带 X-Uid，由各 handler 自己 401。因此**新增端点必须在 handler 首行取 `currentUID`**（board 在路由组级 `requireXUid`），否则会变成匿名可写端点。
 - `/internal/{note,quiz,board}/*` 由 APISIX key-auth 保护；服务端对三面都再校验 `X-Internal-Key`（APISIX 注入，fail-closed），未配置或错误即 401/503，容器内可达调用方无法仅凭伪造 X-Uid 读写。board 现在有真实的 `/internal/board/*` 路由组（`InternalAuth` + `RequireUID`），APISIX 只做 key-auth 注入而不再 rewrite 到 `/board/*`。用户路由只信任 APISIX 注入的 X-Uid，因此**不要把 8004 暴露到公网**；k8s 建议为 app-content 加 NetworkPolicy（仅放行 APISIX/MCP/探针）。
 - TLS：**服务只有一个 HTTPS listener（8004，TLS 1.2+）**，三域全部走 HTTPS；启动强制 `CONTENT__SERVER__TLS__ENABLED=true`（仅本地调试可用 `CONTENT__ALLOW_INSECURE_HTTP=true` 临时绕过）；`client_auth=request|require` 时必须提供 `server.tls.client_ca_file`，否则拒绝启动。APISIX 三个 upstream 均 `scheme: https`；OpenResty 终止外部 TLS 后经 APISIX 再用 HTTPS 访问本服务。生产证书私钥建议 0600 + 正式 CA/ cert-manager 替换 dev-CA。
 

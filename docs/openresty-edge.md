@@ -11,7 +11,7 @@
     OpenResty（openresty/openresty:1.27.1.2-alpine）
       ├─ TLS 终止、HTTP/2、gzip、边缘限流（limit_req/limit_conn）
       ├─ 负载均衡：upstream apisix_backend（keepalive + max_fails + proxy_next_upstream 重试）
-      ├─ 缓存：static_cache / video_cache / pages_cache / api_cache（软 purge）
+      ├─ 缓存：static_cache / video_cache / media_cache / pages_cache / api_cache（软 purge）
       │
       ├── 业务 API（/auth、/pay、/chat、/notes、/cloud、/task-quiz、/workspaces…）
       │     └──► APISIX :9443（https，dev CA 校验证书）──► app-ts / app-go / app-pay / app-content-mcp
@@ -45,6 +45,8 @@
 |---|---|---|---|
 | static_cache | `/_next/static` | 30d | 内容哈希文件，immutable |
 | video_cache | `/cloud-stream/` | 24h | Range 请求按 `$http_range` 分键 |
+| media_cache | `/mindbase/api/v1/media/`、旧 `/minio-proxy/` | 5m | 仅预签名 GET/HEAD；key 含 `$args` + `$http_range`；PUT/POST/无签名 bypass |
+| hls_cache | `/hls/` | 24h | `hls_token` + `hls_ctx` 双 cookie：token 经 Redis 校验并绑定版本化 URI 前缀，ctx 校验会话绑定；key 为 MinIO 对象路径；播放列表/分片均由 app-cloud 之外代理；删文件即吊销 token，缓存条目在无有效 token 时不可达 |
 | pages_cache | 公开 SSR 页（`/`、`/forgot-password`、`/reset-password`、`/notes/shared/`、`/quiz/shared/`、`/cloud/s/`） | 10m | 仅匿名；带 Authorization / RSC 请求 bypass；`proxy_ignore_headers Cache-Control Set-Cookie` 只作用于这些白名单页面 |
 | api_cache | 少数公开只读 API（health/docs/openapi、pay/products 等原有短 TTL 位置） | 5s–1h | 其余业务 API 不缓存 |
 

@@ -6,9 +6,12 @@ package minio
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -287,4 +290,109 @@ func (c *Client) RemoveObjects(ctx context.Context, keys []string) error {
 // DeleteObject removes one object (purge path).
 func (c *Client) DeleteObject(ctx context.Context, objectKey string) error {
 	return c.sdk.RemoveObject(ctx, c.cfg.Bucket, objectKey, minio.RemoveObjectOptions{})
+}
+
+// DownloadToFile streams one object to a local path. HLS packaging uses this
+// instead of GetObject so multi-GB source videos are never loaded into RAM.
+func (c *Client) DownloadToFile(ctx context.Context, objectKey, path string) error {
+	obj, err := c.sdk.GetObject(ctx, c.cfg.Bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return err
+	}
+	defer obj.Close()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	dst, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(dst, obj); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	return dst.Close()
+}
+
+// UploadFile uploads one local file with an explicit content type (HLS
+// playlist/segment uploads). The object key is relative to the drive bucket.
+func (c *Client) UploadFile(ctx context.Context, objectKey, path, contentType string) error {
+	_, err := c.sdk.FPutObject(ctx, c.cfg.Bucket, objectKey, path, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	return err
+}
+
+// EnsurePublicPrefix makes only the given bucket prefix anonymously readable.
+// HLS assets are fetched by OpenResty without a MinIO presign; the edge checks
+// the short-lived hls_token before proxying.
+//
+// The grant is additionally scoped to allowedSourceCIDRs (the edge network) so
+// that a leaked MinIO address cannot be used to read HLS objects from outside
+// the cluster. Statements targeting the same resource that were written by an
+// older (unscoped) version are replaced, so an upgrade tightens the policy
+// instead of leaving the permissive grant behind. Unrelated statements in an
+// existing bucket policy are preserved.
+func (c *Client) EnsurePublicPrefix(ctx context.Context, prefix string, allowedSourceCIDRs []string) error {
+	cleanPrefix := strings.Trim(strings.TrimSpace(prefix), "/")
+	if cleanPrefix == "" {
+		return fmt.Errorf("minio: empty public prefix")
+	}
+	resource := fmt.Sprintf("arn:aws:s3:::%s/%s/*", c.cfg.Bucket, cleanPrefix)
+	ourStatement := map[string]any{
+		"Effect":    "Allow",
+		"Principal": map[string]any{"AWS": []string{"*"}},
+		"Action":    []string{"s3:GetObject"},
+		"Resource":  []string{resource},
+	}
+	if len(allowedSourceCIDRs) > 0 {
+		ourStatement["Condition"] = map[string]any{
+			"IpAddress": map[string]any{"aws:SourceIp": allowedSourceCIDRs},
+		}
+	}
+	policy := map[string]any{
+		"Version":   "2012-10-17",
+		"Statement": []any{ourStatement},
+	}
+	existing, err := c.sdk.GetBucketPolicy(ctx, c.cfg.Bucket)
+	if err == nil && strings.TrimSpace(existing) != "" {
+		var prior map[string]any
+		if err := json.Unmarshal([]byte(existing), &prior); err != nil {
+			return fmt.Errorf("minio: parse existing bucket policy: %w", err)
+		}
+		if stmts, ok := prior["Statement"].([]any); ok {
+			for _, st := range stmts {
+				if policyTargetsResource(st, resource) {
+					continue // superseded (possibly unscoped) grant for this prefix
+				}
+				policy["Statement"] = append(policy["Statement"].([]any), st)
+			}
+		}
+	}
+	body, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	return c.sdk.SetBucketPolicy(ctx, c.cfg.Bucket, string(body))
+}
+
+// policyTargetsResource reports whether a bucket-policy statement grants (or
+// restricts) exactly the given object resource.
+func policyTargetsResource(statement any, resource string) bool {
+	st, ok := statement.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch r := st["Resource"].(type) {
+	case string:
+		return r == resource
+	case []any:
+		for _, v := range r {
+			if s, ok := v.(string); ok && s == resource {
+				return true
+			}
+		}
+	}
+	return false
 }

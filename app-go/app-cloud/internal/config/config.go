@@ -32,6 +32,8 @@ type Config struct {
 	Joblock     JoblockConfig     `yaml:"joblock"`
 	Orphan      OrphanConfig      `yaml:"orphan"`
 	Quota       QuotaConfig       `yaml:"quota"`
+	Folder      FolderCacheConfig `yaml:"folder"`
+	HLS         HLSConfig         `yaml:"hls"`
 	Trash       TrashConfig       `yaml:"trash"`
 	Pipeline    PipelineConfig    `yaml:"pipeline"`
 	Internal    InternalConfig    `yaml:"internal"`
@@ -113,6 +115,8 @@ type UploadConfig struct {
 	MaxFileSize   int64 `yaml:"max_file_size"`
 	HeartbeatTTL  int   `yaml:"heartbeat_ttl"`
 	UploadMetaTTL int   `yaml:"upload_meta_ttl"`
+	// MaxConcurrentPerUser caps in-flight upload sessions per uid. 0 disables.
+	MaxConcurrentPerUser int `yaml:"max_concurrent_per_user"`
 	// Deadline sweeper (sharded ZSET queue) tuning.
 	SweepIntervalSeconds    int `yaml:"sweep_interval_seconds"`
 	SweepBatch              int `yaml:"sweep_batch"`
@@ -187,6 +191,49 @@ type QuotaConfig struct {
 	MembershipAPIKey   string `yaml:"membership_api_key"`
 	MembershipCacheTTL int    `yaml:"membership_cache_ttl"`
 }
+
+// FolderCacheConfig controls the per-user folder-tree L1 cache.
+type FolderCacheConfig struct {
+	CacheTTL        int `yaml:"cache_ttl"`
+	CacheMaxEntries int `yaml:"cache_max_entries"`
+}
+
+// HLSConfig controls asynchronous HLS packaging for uploaded videos. The
+// generated assets live in the MinIO bucket under hls/{uid}/{uploadUuid}/;
+// the playback path is frontend -> OpenResty -> MinIO, never app-cloud bytes.
+type HLSConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	FFmpeg          string `yaml:"ffmpeg"`
+	SegmentSeconds  int    `yaml:"segment_seconds"`
+	Workers         int    `yaml:"workers"`
+	TokenTTLSeconds int    `yaml:"token_ttl_seconds"`
+	TimeoutSeconds  int    `yaml:"timeout_seconds"`
+	Prefix          string `yaml:"prefix"`
+	// MaxAttempts bounds automatic retries of transient packaging failures
+	// (download/upload/MinIO hiccups); ffmpeg failures are deterministic and
+	// never auto-retry.
+	MaxAttempts int `yaml:"max_attempts"`
+	// Probe is the ffprobe binary; stream metadata decides copy vs transcode and
+	// rejects media ffmpeg would fail on (image-only, broken, no video stream).
+	Probe string `yaml:"probe"`
+	// ABR / Thumbnails are pointers so an absent YAML key keeps the recommended
+	// default (on), while an explicit false disables the branch.
+	ABR        *bool `yaml:"abr"`
+	Thumbnails *bool `yaml:"thumbnails"`
+	// RenditionHeights is the adaptive-bitrate ladder (ascending, capped at the
+	// source height). Empty means 360/720/1080.
+	RenditionHeights []int `yaml:"rendition_heights"`
+	// AllowedSourceCIDRs restricts the anonymous-read bucket policy for HLS
+	// objects to the edge's private network, so a leaked MinIO address cannot be
+	// used from outside the cluster. Set ["0.0.0.0/0"] for the legacy behaviour.
+	AllowedSourceCIDRs []string `yaml:"allowed_source_cidrs"`
+}
+
+// ABREnabled defaults to on unless explicitly disabled.
+func (h HLSConfig) ABREnabled() bool { return h.ABR == nil || *h.ABR }
+
+// ThumbnailsEnabled defaults to on unless explicitly disabled.
+func (h HLSConfig) ThumbnailsEnabled() bool { return h.Thumbnails == nil || *h.Thumbnails }
 
 type TrashConfig struct {
 	PurgeAfterDays       int `yaml:"purge_after_days"`
@@ -329,6 +376,42 @@ func Load(yamlBytes []byte) (*Config, error) {
 	if cfg.Upload.SweepRecentGuardSeconds <= 0 {
 		cfg.Upload.SweepRecentGuardSeconds = 300
 	}
+	if cfg.Folder.CacheTTL <= 0 {
+		cfg.Folder.CacheTTL = 15
+	}
+	if cfg.Folder.CacheMaxEntries <= 0 {
+		cfg.Folder.CacheMaxEntries = 50_000
+	}
+	if strings.TrimSpace(cfg.HLS.FFmpeg) == "" {
+		cfg.HLS.FFmpeg = "ffmpeg"
+	}
+	if cfg.HLS.SegmentSeconds <= 0 {
+		cfg.HLS.SegmentSeconds = 6
+	}
+	if cfg.HLS.Workers <= 0 {
+		cfg.HLS.Workers = 1
+	}
+	if cfg.HLS.TokenTTLSeconds <= 0 {
+		cfg.HLS.TokenTTLSeconds = 3600
+	}
+	if cfg.HLS.TimeoutSeconds <= 0 {
+		cfg.HLS.TimeoutSeconds = 1800
+	}
+	if strings.TrimSpace(cfg.HLS.Prefix) == "" {
+		cfg.HLS.Prefix = "hls"
+	}
+	if cfg.HLS.MaxAttempts <= 0 {
+		cfg.HLS.MaxAttempts = 3
+	}
+	if strings.TrimSpace(cfg.HLS.Probe) == "" {
+		cfg.HLS.Probe = "ffprobe"
+	}
+	if len(cfg.HLS.RenditionHeights) == 0 {
+		cfg.HLS.RenditionHeights = []int{360, 720, 1080}
+	}
+	if len(cfg.HLS.AllowedSourceCIDRs) == 0 {
+		cfg.HLS.AllowedSourceCIDRs = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1/32"}
+	}
 	normalizeOCR(&cfg.Pipeline.OCR)
 	return &cfg, nil
 }
@@ -432,6 +515,7 @@ func applyEnvOverrides(cfg *Config) {
 	atoi("APPCLOUD__UPLOAD__SWEEP_BATCH", &cfg.Upload.SweepBatch)
 	atoi("APPCLOUD__UPLOAD__SWEEP_VISIBILITY_SECONDS", &cfg.Upload.SweepVisibilitySeconds)
 	atoi("APPCLOUD__UPLOAD__SWEEP_RECENT_GUARD_SECONDS", &cfg.Upload.SweepRecentGuardSeconds)
+	atoi("APPCLOUD__UPLOAD__MAX_CONCURRENT_PER_USER", &cfg.Upload.MaxConcurrentPerUser)
 	if b, ok := getBool("APPCLOUD__ORPHAN__AUTO_DELETE"); ok {
 		cfg.Orphan.AutoDelete = b
 	}
@@ -513,6 +597,8 @@ func applyEnvOverrides(cfg *Config) {
 	atol("APPCLOUD__QUOTA__FREE", &cfg.Quota.Free)
 	atol("APPCLOUD__QUOTA__VIP", &cfg.Quota.VIP)
 	atol("APPCLOUD__QUOTA__SVIP", &cfg.Quota.SVIP)
+	atoi("APPCLOUD__FOLDER__CACHE_TTL", &cfg.Folder.CacheTTL)
+	atoi("APPCLOUD__FOLDER__CACHE_MAX_ENTRIES", &cfg.Folder.CacheMaxEntries)
 }
 
 // Validate fails loud on config that would silently break the drive.

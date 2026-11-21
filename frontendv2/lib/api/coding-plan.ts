@@ -3,7 +3,7 @@
  *
  * Backend: app-user /settings/coding-plans (VIP/SVIP only). Responses are
  * snake_case; the API key is write-only — list/detail only ever expose
- * api_key_masked. Identity comes from the bili_session Bearer token, so every
+ * api_key_masked. Identity comes from the session_token Bearer token, so every
  * request carries Authorization explicitly (the shared client also injects it).
  */
 

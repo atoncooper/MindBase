@@ -22,6 +22,7 @@
     "@radix-ui/react-hover-card": "^1.2.1",
     "clsx": "^2.1.1",
     "framer-motion": "^13.0.0",
+    "hls.js": "^1.7.4",
     "katex": "^0.16.47",
     "lucide-react": "^1.30.0",
     "mermaid": "^11.17.2",

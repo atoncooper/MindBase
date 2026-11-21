@@ -80,6 +80,10 @@ func internalUploadFile(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "文件元数据写入失败")
 			return
 		}
+		invalidateFolderCache(d, c)
+		if d.HLS != nil {
+			d.HLS.Enqueue(c.Request.Context(), uid, uploadUUID)
+		}
 		c.JSON(http.StatusCreated, gin.H{
 			"upload_uuid": uploadUUID,
 			"id":          row.ID,
