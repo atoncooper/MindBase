@@ -59,7 +59,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | higress | Higress all-in-one | 8080 gw / 18081 console | 127.0.0.1:18080 / :18081 | ai | AI 网关：平台 LLM/embedding/rerank/ASR 出网统一入口 + 计量 |
 | frontend | Next.js 16（`frontendv2/`） | 3000 | `${FRONTEND_PORT:-3000}` | 默认（standalone） | 用户端 SPA（standalone 构建） |
 | openresty | openresty/openresty:1.27.1.2-alpine | 80 / 443 | 80 / 443 | 默认（standalone） | 统一入口：TLS、负载均衡（APISIX upstream）、页面/接口分发、多级缓存 + 软 purge；业务 API → APISIX |
-| apisix | apache/apisix:3.11 | 9080 | 无宿主端口 | 默认（standalone） | API 网关：forward-auth / key-auth / 路由 / 限流 |
+| apisix | atoncooper/mind-base-apisix（stock 3.20 + sync） | 9080 / 9443 / 9180 | 宿主 19180:9180，仅本机/指定 IP（compose 端口 + config allow_admin） | 默认（traditional + etcd） | API 网关：forward-auth / key-auth / 路由 / 限流；配置存 etcd，Admin API/内嵌 Dashboard（HTTPS）管理 |
 | mysql | mysql:8.4 | 3306 | `${MYSQL_PORT:-3306}` | 始终 | 主库 `mind_base`（`db/system.sql` 初始化） |
 | mongo | mongo:7 | 27017 | `${MONGO_PORT:-27017}` | 始终 | 库 `mind_base`（Go 服务 + 共享集合）与 `mind_base_ts`（app-ts 自有） |
 | redis | redis:7 | 6379 | — | 始终 | 限流/验证码/quota/分享缓存/`bili:page_ready` 事件桥 |

@@ -13,14 +13,19 @@ services:
       - ETCD_SNAPSHOT_COUNT=50000
     command: >
       etcd
-      -advertise-client-urls=http://etcd:2379
-      -listen-client-urls=http://0.0.0.0:2379
+      -advertise-client-urls=https://etcd:2379
+      -listen-client-urls=https://0.0.0.0:2379
       -data-dir=/etcd
+      -cert-file=/certs/server.crt
+      -key-file=/certs/server.key
+      -trusted-ca-file=/certs/dev-ca.crt
+      -client-cert-auth
     volumes:
       - etcd_data:/etcd
+      - ../../secrets/certs/etcd:/certs:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
+      test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -283,8 +283,7 @@ cd app-pay && mvn test    # 38 个测试类 / 245 个用例（244 执行 + 性�
 - **支付频次风控**：`pay.risk.max-paid-orders-per-day / max-paid-amount-per-day-cents`（滚动 24h，下单时拦截，
   429 `RISK_VELOCITY_EXCEEDED` + `RISK_VELOCITY_BLOCKED` 审计）。
 - **CI 漏洞门禁**：`ci-app-pay.yml` 增加 Trivy 依赖扫描（HIGH/CRITICAL 红）；`.github/dependabot.yml` 每周自动升级 PR。
-- **上游 TLS verify**：APISIX 3.11 不支持普通 https upstream 证书校验（见 upstream-app-pay 注释），已挂 `TODO(security)`，
-  升级后翻 `verify:true` 并收紧 `https_verify_certificate`。
+- **上游 TLS verify**：APISIX 3.20 已支持普通 https upstream 证书校验（3.19+，`tls.verify` + `tls.ca_certs`），但当前未给 APISIX 挂内部 CA，仍按不校验运行（见 upstream-app-pay 注释）；挂 CA 后翻 `verify:true` 并收紧 `https_verify_certificate`。
 - **备份与演练**：`ops/archive/app-pay/backup/app-pay-backup.sh`（MySQL dump + 审计 JSONL，30 天轮转）+ `ops/archive/app-pay/backup/README.md` 恢复演练清单。
 
 ## 高并发加固（2026-10）

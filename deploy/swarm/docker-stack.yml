@@ -97,12 +97,16 @@ services:
       MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
+      # APISIX 9443/9180 leaf + etcd mTLS leaf + shared CA bundle
+      MB_CERT_BUNDLE_DIR: /out/bundle
+      MB_CERT_SERVICES_DIR: /out/bundle
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
       - ${MB_ROOT:-/srv/mindbase}/secrets/certs/nginx:/out/nginx
       - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content:/out/app-content
       - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content-mcp:/out/mcp
       - ${MB_ROOT:-/srv/mindbase}/app-pay/certs:/out/pay
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs:/out/bundle
     deploy:
       replicas: 1
       restart_policy:
@@ -113,6 +117,42 @@ services:
       # placement:
       #   constraints:
       #     - node.labels.role == data
+
+  # ==============================================================
+  # etcd — APISIX 配置中心（traditional + config_provider=etcd，mTLS）
+  # 证书由 cert-gen 签发到 secrets/certs/etcd（与 nginx/apisix 同节点）
+  # ==============================================================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: >
+      etcd
+      -advertise-client-urls=https://etcd:2379
+      -listen-client-urls=https://0.0.0.0:2379
+      -data-dir=/etcd
+      -cert-file=/certs/server.crt
+      -key-file=/certs/server.key
+      -trusted-ca-file=/certs/dev-ca.crt
+      -client-cert-auth
+    volumes:
+      - etcd_data:/etcd
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/etcd:/certs:ro
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+    networks:
+      - mind-base-net
 
   # ==============================================================
   # Reverse Proxy (Nginx) — SSL termination + 路由；唯一的对外入口
@@ -347,38 +387,6 @@ services:
     networks:
       - mind-base-net
 
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.14
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    command: ["etcd", "-advertise-client-urls=http://etcd:2379", "-listen-client-urls=http://0.0.0.0:2379", "-data-dir=/etcd"]
-    volumes:
-      - etcd_data:/etcd
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: stop-first
-        parallelism: 1
-        delay: 15s
-      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
-      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
-      # placement:
-      #   constraints:
-      #     - node.labels.role == data
-    networks:
-      - mind-base-net
-
   # MinIO（社区版上游已停发，项目自 vendor 构建；CI 已发布镜像）
   minio:
     image: atoncooper/mind-base-minio:latest
@@ -477,10 +485,10 @@ services:
       - mind-base-net
 
   # ==============================================================
-  # APISIX 业务网关（standalone；不发布端口，入口只有 nginx）
+  # APISIX 业务网关（traditional + etcd；Admin API/UI :9180 仅 data 节点 + allow_admin）
   # ==============================================================
   apisix:
-    image: apache/apisix:3.11.0-debian
+    image: atoncooper/mind-base-apisix:latest
     configs:
       - source: apisix_config
         target: /usr/local/apisix/conf/config.yaml
@@ -492,8 +500,16 @@ services:
       # app-content board 域 dev-CA：apisix 信任 app-content:8004 的 HTTPS upstream；
       # ⚠️ 与 app-content 必须同节点（见文件头；宿主证书在 secrets/certs/app-content）
       - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
-    # 容器内清掉代理变量，防宿主 ~/.docker/config.json 注入劫持内网流量（同单机 compose）
-    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+      # 9443/9180 TLS leaf + etcd mTLS 客户端证书
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/etcd:/usr/local/apisix/conf/certs/etcd:ro
+    # Admin API / Dashboard UI（HTTPS）。Swarm 发布端口无法绑定单一宿主 IP：
+    # 用 host 模式只发布到 data 节点，并依赖 allow_admin + 节点防火墙限定来源 IP。
+    ports:
+      - target: 9180
+        published: 19180
+        protocol: tcp
+        mode: host
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
@@ -504,6 +520,8 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
+      # 允许为空：docker compose down/config 不应因缺密钥失败；容器 entrypoint 会在启动时强制校验。
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
       interval: 15s

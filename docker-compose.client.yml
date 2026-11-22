@@ -246,40 +246,43 @@ services:
     networks:
       - mind-base-net
 
-  # ── etcd 已砍掉：Milvus standalone 改用内嵌 etcd（见下方 milvus 环境变量）──
-  # v2.6.22 实测：DEPLOY_MODE=STANDALONE + ETCD_USE_EMBED=true + ETCD_DATA_DIR
-  # 指向持久卷目录时正常启动、healthz OK、元数据落在 /var/lib/milvus/etcdData
-  # （milvus_data 卷内，随容器重建持久化）。
-  # ⚠️ DEPLOY_MODE 必须显式置 STANDALONE（大小写敏感）：Milvus 在 Go 包初始化期
-  # 读 DEPLOY_MODE（metricsinfo.DeployModeEnvKey），未设时视为分布式模式直接 panic。
-  # 兜底回退（内嵌 etcd 异常时）：milvus 的 ETCD_USE_EMBED 改 false、加回
-  # ETCD_ENDPOINTS=etcd:2379，取消注释本块，再 up -d etcd（先于 milvus 启动）。
-  #
-  # etcd:
-  #   image: quay.io/coreos/etcd:v3.5.14
-  #   container_name: mind-base-etcd
-  #   environment:
-  #     - ETCD_AUTO_COMPACTION_MODE=revision
-  #     - ETCD_AUTO_COMPACTION_RETENTION=1000
-  #     - ETCD_QUOTA_BACKEND_BYTES=1073741824
-  #     - ETCD_SNAPSHOT_COUNT=50000
-  #   command: >
-  #     etcd
-  #     -advertise-client-urls=http://etcd:2379
-  #     -listen-client-urls=http://0.0.0.0:2379
-  #     -data-dir=/etcd
-  #   volumes:
-  #     - etcd_data:/etcd
-  #   mem_limit: 256m
-  #   logging: *default-logging
-  #   healthcheck:
-  #     test: ["CMD", "etcdctl", "endpoint", "health"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #   restart: unless-stopped
-  #   networks:
-  #     - mind-base-net
+  # ── etcd：APISIX 配置中心（traditional + config_provider=etcd，mTLS）──
+  # Milvus 仍使用内嵌 etcd（独立数据目录），本服务只服务 APISIX。
+  # 证书由 cert-gen 统一签发到 secrets/certs/etcd（MB_CERT_SERVICES_DIR）。
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    container_name: mind-base-etcd
+    # mTLS certs are created by cert-gen; etcd must not start before them.
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=1073741824
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: >
+      etcd
+      -advertise-client-urls=https://etcd:2379
+      -listen-client-urls=https://0.0.0.0:2379
+      -data-dir=/etcd
+      -cert-file=/certs/server.crt
+      -key-file=/certs/server.key
+      -trusted-ca-file=/certs/dev-ca.crt
+      -client-cert-auth
+    volumes:
+      - etcd_data:/etcd
+      - ./secrets/certs/etcd:/certs:ro
+    mem_limit: 128m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
 
   minio:
     image: atoncooper/mind-base-minio:latest
@@ -351,20 +354,29 @@ services:
   # ==============================================================
 
   apisix:
-    image: apache/apisix:3.11.0-debian
+    # 与根 compose 相同的派生镜像（stock APISIX + apisix-sync）
+    image: atoncooper/mind-base-apisix:latest
+    pull_policy: never
+    build:
+      context: ./apisix
+      dockerfile: Dockerfile
     container_name: mind-base-apisix
-    # data_plane（yaml provider）不跑 init_etcd，无需依赖 etcd
     depends_on:
       cert-gen:
         condition: service_completed_successfully
+      etcd:
+        condition: service_healthy
+    # Admin API / Dashboard UI：仅 HTTPS，绑定指定宿主 IP，来源 IP 由 allow_admin 限制
+    ports:
+      - "127.0.0.1:19180:9180"  # 宿主 9180 常被 Logitech G HUB 占用；容器内仍 9180
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
       - ./apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
       - ./secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
-      # 标准 config.yaml 声明了 9443 内部 TLS；客户端也由 cert-gen 签发同一 leaf
+      # 9443 监听与 9180 Admin UI 共用 APISIX leaf；etcd 客户端 mTLS
       - ./secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
-    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+      - ./secrets/certs/etcd:/usr/local/apisix/conf/certs/etcd:ro
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
@@ -375,6 +387,8 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
+      # 允许为空：docker compose down/config 不应因缺密钥失败；容器 entrypoint 会在启动时强制校验。
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-}
     # 标准 config.yaml 用 APISIX 默认 worker_processes=auto；多核宿主上
     # 每个 worker ~40MB luaJIT 常驻，256m 会 OOM，客户端给到 512m。
     mem_limit: 512m
@@ -966,6 +980,7 @@ volumes:
   redis_data:
   mongo_data:
   milvus_data:
+  etcd_data:
   neo4j_data:
   neo4j_logs:
   minio_data:

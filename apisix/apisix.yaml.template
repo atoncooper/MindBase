@@ -1,18 +1,20 @@
-# APISIX standalone routes - standard template (Docker / production / client)
+# APISIX declarative SEED (not the runtime route source).
 # ========================================================
-# TEMPLATE (rendered at container start by apisix/render-config.sh).
+# Rendered at container start by apisix/render-config.sh and consumed by
+# apisix-sync (baked into atoncooper/mind-base-apisix):
+#   - etcd EMPTY (first migration / disaster rebuild) -> full seed import;
+#   - afterwards -> only ssls + internal consumers are refreshed.
+#
+# Runtime source of truth is etcd. Manage routes/upstreams/plugins through the
+# embedded Dashboard (https://<admin>:9180/ui/) or the Admin API. Editing this
+# file does NOT change a running deployment unless etcd is empty.
+#
 # Secrets are NOT stored here: __APISIX_CONSUMER_KEY__ / __PAY_READONLY_KEY__ /
-# __PAY_OPS_KEY__ are substituted from container env; the generated
-# apisix.yaml lives only inside the container (or on disk during local dev) and
-# is gitignored. Rotate a key = change the env value + restart apisix.
+# __PAY_OPS_KEY__ / TLS PEM placeholders are substituted at render time; the
+# generated seed stays inside the container and is gitignored.
 #
 # Upstreams use compose service names (app-ts:8000 / app-task:8001 ...) on
-# mind-base-net. This is the ONLY route template: client/dev deployments mount
-# the same file and the same config.yaml; there are no per-environment variants.
-#
-# ⚠️ Standalone mode: dashboard / Admin API writes do NOT persist. Edit THIS
-#    file and restart APISIX. Do NOT configure via the dashboard UI - changes
-#    are lost on restart (no etcd).
+# mind-base-net. All deployment stacks mount this same seed + config.yaml.
 #
 # Auth model:
 #   - User endpoints (/task-quiz/chat, /task-quiz/register, /tasks, /tasks/*):
@@ -25,9 +27,8 @@
 #       key-auth (consumer "internal"). backend calls /tasks/register with apikey;
 #       uid passed in request body (agent already knows it).
 #
-# NOTE: standalone yaml does NOT interpolate ${ENV}. Replace the placeholder
-# key below with a real secret (or migrate to APISIX dashboard + etcd for
-# env-based config).
+# Secrets are injected at render time by render-config.sh (__APISIX_* placeholders);
+# runtime config lives in etcd and is managed through the Admin API / Dashboard.
 #
 # Upstream normalization:
 #   - retries: 2 for normal APIs; 0 for SSE (replaying a half stream corrupts it)
@@ -41,6 +42,44 @@
 # Route matching: higher priority wins; ties broken by path length (longer first).
 #   - /tasks/register (100) beats /tasks/* (10) so backend->app-task uses key-auth.
 #   - catch_all (1) is the fallback for /auth /chat /favorites ... -> backend.
+
+# ============================================================
+# Global rules (run before every route's plugins)
+# ============================================================
+global_rules:
+  # Real client IP from the edge. OpenResty overwrites X-Forwarded-For with the
+  # socket peer (see nginx/nginx.conf), so this restores the true client address.
+  # Without it remote_addr is the edge container IP and every per-IP limit
+  # (limit-req / limit-conn) would collapse into one shared bucket.
+  - id: global_real_ip
+    plugins:
+      real-ip:
+        source: http_x_forwarded_for
+        trusted_addresses:
+          - 127.0.0.0/8
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+        recursive: true
+
+  # Prometheus metrics for every route. The exporter listens on
+  # 0.0.0.0:9091/metrics inside the network (plugin_attr.prometheus in
+  # config.yaml); scrape target "apisix:9091". Not published to the host.
+  - id: global_prometheus
+    plugins:
+      prometheus: {}
+
+  # Security headers on every API response. response-rewrite only touches the
+  # header filter phase, so SSE streams and large bodies are not buffered.
+  - id: global_security_headers
+    plugins:
+      response-rewrite:
+        headers:
+          set:
+            X-Content-Type-Options: nosniff
+            X-Frame-Options: DENY
+            Referrer-Policy: no-referrer
+            Permissions-Policy: "geolocation=(), microphone=(), camera=()"
 
 # ============================================================
 # Upstreams
@@ -405,19 +444,20 @@ upstreams:
 
   # app-pay Spring Boot payment/membership service - /pay/* + /internal/pay/*
   # 服务端 HTTPS-only（自签名开发证书，app-pay/scripts/gen-dev-cert.* 生成）。
-  # tls.verify=false = 只加密不校验身份：避免 ssl_trusted_certificate 覆盖公共 CA
-  # 影响其他 cosocket；生产换正式 CA 后建议收紧为 verify:true + 挂载 CA。
-   # TODO(security): APISIX 升级支持普通 https upstream 证书校验后，立即翻 verify:true
-   #   （3.11 的 upstream tls 限制解除时），并同步收紧 https_verify_certificate。
+  # APISIX 3.19+ 已支持普通 https upstream 的 tls.verify + tls.ca_certs；
+  # 当前没有给 APISIX 挂内部 CA，因此保持"只加密、不校验身份"（行为与 3.11 一致）。
+   # TODO(security): 挂载内部 CA 后：
+   #   - 给 https upstream 加 tls: {verify: true, ca_certs: [...]}（或走全局
+   #     ssl_trusted_certificate），再逐条验证健康检查；
+   #   - 同步收紧健康检查 https_verify_certificate: true。
   # 健康检查同步走 https（https_verify_certificate=false 对应自签名）。
   - id: upstream-app-pay
     name: app-pay
     type: roundrobin
     scheme: https
-    # NOTE: no `tls:` block here — APISIX 3.11 crashes (parse_pem_cert(nil)
-    # in upstream.lua set_upstream) for https upstreams carrying a tls block
-    # without client_cert. Default behaviour already skips upstream cert
-    # verification, so removing the block is equivalent and avoids the bug.
+    # NOTE: 刻意不写 `tls:` 块：APISIX ≤3.18 对 https upstream 会忽略
+    # tls.verify（3.11 甚至在无 client_cert 时 parse_pem_cert(nil) 崩溃），
+    # 3.20 起支持校验但未挂 CA，所以省略 tls 块等价于继续"不校验"。
     pass_host: pass
     retries: 2
     timeout:
@@ -547,6 +587,77 @@ upstreams:
           http_failures: 3
 
 # ============================================================
+# Reusable plugin configs
+# ============================================================
+# A plugin_config is applied to several routes sharing an identical policy;
+# edit it once and every referencing route follows. Routes that differ by even
+# one plugin keep their inline block.
+plugin_configs:
+  # Service-to-service M2M routes that only accept the "internal" consumer.
+  # - key-auth.hide_credentials: the apikey header is consumed by APISIX and must
+  #   never reach the upstream (upstreams trust X-Internal-Key injected by the
+  #   route's proxy-rewrite).
+  # - consumer-restriction: a leaked pay_readonly / pay_ops key must NOT reach
+  #   code-upload or task-execution surfaces.
+  # - limit-req / limit-conn: one misbehaving caller cannot stampede a backend.
+  - id: pc_internal_keyauth
+    plugins:
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      key-auth:
+        hide_credentials: true
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+      limit-req:
+        rate: 20
+        burst: 10
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+      limit-conn:
+        conn: 20
+        burst: 10
+        default_conn_delay: 0.1
+        rejected_code: 503
+        key_type: var
+        key: remote_addr
+
+  # Same as pc_internal_keyauth, plus proxy-rewrite: app-task (independent repo)
+  # re-validates the shared key on its service surface via X-API-Key/apikey, so
+  # the gateway re-injects it as X-API-Key after key-auth consumed the client's.
+  - id: pc_internal_keyauth_task
+    plugins:
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      key-auth:
+        hide_credentials: true
+      proxy-rewrite:
+        headers:
+          set:
+            X-API-Key: "__APISIX_CONSUMER_KEY__"
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+      limit-req:
+        rate: 20
+        burst: 10
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+      limit-conn:
+        conn: 20
+        burst: 10
+        default_conn_delay: 0.1
+        rejected_code: 503
+        key_type: var
+        key: remote_addr
+
+# ============================================================
 # Routes
 # ============================================================
 routes:
@@ -555,7 +666,13 @@ routes:
     uri: /task-quiz/chat
     methods: [POST]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
+    timeout:
+      connect: 5
+      send: 30
+      read: 3600
     plugins:
       proxy-rewrite:
         headers:
@@ -566,12 +683,21 @@ routes:
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
+      limit-conn:
+        conn: 100
+        burst: 50
+        default_conn_delay: 0.1
+        rejected_code: 503
+        key_type: var
+        key: remote_addr
 
   # User -> main app task-quiz register form (forward-auth verifies session_token)
   - id: task_quiz_register
     uri: /task-quiz/register
     methods: [POST]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
       proxy-rewrite:
@@ -591,9 +717,10 @@ routes:
     uri: /internal/quiz/generate-llm
     methods: [POST]
     priority: 110
+    labels:
+      domain: internal
     upstream_id: upstream-app-ts
-    plugins:
-      key-auth: {}
+    plugin_config_id: pc_internal_keyauth
 
   # app-task -> main app poll quiz generation status (async A+B).
   # priority 110 > quiz_internal (100) — same shadow guard as generate-llm.
@@ -601,9 +728,10 @@ routes:
     uri: /internal/quiz/status/*
     methods: [GET]
     priority: 110
+    labels:
+      domain: internal
     upstream_id: upstream-app-ts
-    plugins:
-      key-auth: {}
+    plugin_config_id: pc_internal_keyauth
 
   # agent(backend) -> app-task register (service-to-service, key-auth; uid in body)
   # priority 100 so /tasks/register is NOT shadowed by /tasks/* (forward-auth)
@@ -613,9 +741,14 @@ routes:
     uri: /scripts*
     methods: [POST, GET]
     priority: 60
+    labels:
+      domain: user
     upstream_id: upstream-app-task
-    plugins:
-      key-auth: {}
+    timeout:
+      connect: 5
+      send: 60
+      read: 120
+    plugin_config_id: pc_internal_keyauth_task
 
   # main app -> app-task async callback + mail delivery (service-to-service,
   # key-auth): executors report task completion and request email delivery.
@@ -623,34 +756,55 @@ routes:
     uri: /internal/task/*/complete
     methods: [POST]
     priority: 50
+    labels:
+      domain: internal
     upstream_id: upstream-app-task
-    plugins:
-      key-auth: {}
+    plugin_config_id: pc_internal_keyauth_task
 
   - id: internal_email_send
     uri: /internal/email/send
     methods: [POST]
     priority: 50
+    labels:
+      domain: internal
     upstream_id: upstream-app-task
-    plugins:
-      key-auth: {}
+    plugin_config_id: pc_internal_keyauth_task
 
   # app-ts -> app-sandbox 控制层（M2M，key-auth；仅放行 /v1 执行面，管理面不经网关）。
   # 只允许服务端调用；app-ts 侧仅在 sandbox.enabled=true 时使用。
+  # 沙箱控制面（app-sandbox）自己校验 X-API-Key；调用方 app-ts 同时带
+  # apikey（给 APISIX）与 X-API-Key（给 app-sandbox），因此这里可以安全开启
+  # hide_credentials（只吞 apikey，不影响 X-API-Key）。
   - id: sandbox_internal
     uri: /internal/sandbox/v1/*
     methods: [GET, POST, DELETE]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-sandbox
     plugins:
-      request-id: {}
-      key-auth: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      key-auth:
+        hide_credentials: true
       proxy-rewrite:
         regex_uri: ["^/internal/sandbox/(v1/.*)", "/$1"]
       limit-req:
         rate: 30
         burst: 15
         rejected_code: 429
+        key_type: var
+        key: remote_addr
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+      limit-conn:
+        conn: 20
+        burst: 10
+        default_conn_delay: 0.1
+        rejected_code: 503
         key_type: var
         key: remote_addr
 
@@ -661,6 +815,8 @@ routes:
     uri: /tasks/*/detail
     methods: [GET]
     priority: 100
+    labels:
+      domain: user
     upstream_id: upstream-app-content-quiz
     plugins:
       proxy-rewrite:
@@ -677,15 +833,18 @@ routes:
     uri: /tasks/register
     methods: [POST]
     priority: 100
+    labels:
+      domain: user
     upstream_id: upstream-app-task
-    plugins:
-      key-auth: {}
+    plugin_config_id: pc_internal_keyauth_task
 
   # User -> app-task task list (forward-auth, X-Uid injected)
   - id: tasks_list
     uri: /tasks
     methods: [GET]
     priority: 90
+    labels:
+      domain: user
     upstream_id: upstream-app-task
     plugins:
       proxy-rewrite:
@@ -705,6 +864,8 @@ routes:
     uri: /tasks/*
     methods: [GET, POST, DELETE]
     priority: 10
+    labels:
+      domain: user
     upstream_id: upstream-app-task
     plugins:
       proxy-rewrite:
@@ -726,6 +887,8 @@ routes:
     uri: /tasks/*/answer
     methods: [POST]
     priority: 100
+    labels:
+      domain: user
     upstream_id: upstream-app-content-quiz
     plugins:
       proxy-rewrite:
@@ -744,6 +907,8 @@ routes:
     uri: /pay/*
     methods: [GET, POST]
     priority: 50
+    labels:
+      domain: pay
     upstream_id: upstream-app-pay
     plugins:
       proxy-rewrite:
@@ -764,6 +929,8 @@ routes:
     uri: /pay/callback/*
     methods: [POST]
     priority: 60
+    labels:
+      domain: pay
     upstream_id: upstream-app-pay
     plugins:
       limit-req:
@@ -775,6 +942,13 @@ routes:
         rejected_code: 429
         key_type: var
         key: http_x_forwarded_for
+      limit-conn:
+        conn: 50
+        burst: 20
+        default_conn_delay: 0.1
+        rejected_code: 503
+        key_type: var
+        key: remote_addr
 
   # main app / ops -> app-pay internal。P1 密钥分权（最小权限）：
   #   - membership 读（app-cloud / app-ts 会员查询）: 共享 internal 或 pay_readonly
@@ -786,9 +960,12 @@ routes:
     uri: /internal/pay/membership/*
     methods: [GET]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-pay
     plugins:
-      key-auth: {}
+      key-auth:
+        hide_credentials: true
       consumer-restriction:
         type: consumer_name
         whitelist:
@@ -803,10 +980,13 @@ routes:
     uri: /internal/pay/grant
     methods: [POST]
     priority: 100
+    labels:
+      domain: internal
     # 非幂等资金写：不重试（调用方带同一 requestId 时重试安全，由 app-pay 幂等占位表兜底）
     upstream_id: upstream-app-pay-no-retry
     plugins:
-      key-auth: {}
+      key-auth:
+        hide_credentials: true
       consumer-restriction:
         type: consumer_name
         whitelist:
@@ -820,9 +1000,12 @@ routes:
     uri: /internal/pay/orders/*
     methods: [POST]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-pay
     plugins:
-      key-auth: {}
+      key-auth:
+        hide_credentials: true
       consumer-restriction:
         type: consumer_name
         whitelist:
@@ -836,9 +1019,12 @@ routes:
     uri: /internal/pay/refund-requests
     methods: [GET]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-pay
     plugins:
-      key-auth: {}
+      key-auth:
+        hide_credentials: true
       consumer-restriction:
         type: consumer_name
         whitelist:
@@ -853,13 +1039,22 @@ routes:
     uri: /internal/pay/*
     methods: [GET, POST]
     priority: 50
+    labels:
+      domain: internal
     upstream_id: upstream-app-pay
     plugins:
-      key-auth: {}
+      key-auth:
+        hide_credentials: true
       proxy-rewrite:
         headers:
           set:
             X-Internal-Key: "__PAY_INTERNAL_KEY__"
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+          - pay_readonly
+          - pay_ops
 
   # CORS preflight for /board/*: browsers strip Authorization on preflight,
   # so this route MUST NOT carry forward-auth (it would 401) — app-content board 面的
@@ -868,6 +1063,8 @@ routes:
     uri: /board/*
     methods: [OPTIONS]
     priority: 60
+    labels:
+      domain: user
     upstream_id: upstream-app-content-board
 
   # User -> app-content（board 面）mind-map/whiteboard CRUD (forward-auth verifies
@@ -880,9 +1077,13 @@ routes:
     uri: /board/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-content-board
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -906,10 +1107,15 @@ routes:
     uri: /internal/board/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-content-board
     plugins:
-      request-id: {}
-      key-auth: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      key-auth:
+        hide_credentials: true
       limit-req:
         rate: 20
         burst: 10
@@ -920,6 +1126,10 @@ routes:
         headers:
           set:
             X-Internal-Key: "__APISIX_CONSUMER_KEY__"
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
 
   # Internal (M2M) -> app-content（note 面）: note agent tools (save_note /
   # list_notes / get_note / update_note) call /internal/note/notes with the
@@ -930,10 +1140,15 @@ routes:
     uri: /internal/note/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-content-note
     plugins:
-      request-id: {}
-      key-auth: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      key-auth:
+        hide_credentials: true
       proxy-rewrite:
         headers:
           set:
@@ -944,6 +1159,10 @@ routes:
         rejected_code: 429
         key_type: var
         key: remote_addr
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
 
   # quiz_internal —— app-content-mcp → app-content（quiz 面）的 M2M 写入路由（quiz agent 落库）。
   # priority 100：/internal/quiz/* 不落 quiz_user/catch_all。信任模型同 note_internal。
@@ -951,10 +1170,15 @@ routes:
     uri: /internal/quiz/*
     methods: [GET, POST]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-content-quiz
     plugins:
-      request-id: {}
-      key-auth: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      key-auth:
+        hide_credentials: true
       proxy-rewrite:
         headers:
           set:
@@ -965,15 +1189,23 @@ routes:
         rejected_code: 429
         key_type: var
         key: remote_addr
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
 
   # 用户端认证端点 (/auth/*) -> app-user（auth 监听口 8006）。app-user 自己
   # 校验 Bearer token（authGuard），无需 forward-auth；仍剥离伪造身份头以防伪造 X-Uid。
   - id: auth_user
     uris: [/auth, /auth/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-user-auth
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -992,9 +1224,13 @@ routes:
   - id: cloud_user
     uris: [/cloud, /cloud/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-cloud
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1014,9 +1250,17 @@ routes:
   - id: chat_ts
     uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
     priority: 60
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
+    timeout:
+      connect: 5
+      send: 30
+      read: 3600
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1026,6 +1270,13 @@ routes:
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
+      limit-conn:
+        conn: 200
+        burst: 80
+        default_conn_delay: 0.1
+        rejected_code: 503
+        key_type: var
+        key: remote_addr
 
   # /knowledge/kg/* -> app-ts（KG AI 编排：抽取/实体链接/子图；存储在 app-go/app-kg
   # 经 gRPC。契约镜像 Python，前端 kgApi 零改动。切流自主 backend catch_all。
@@ -1033,9 +1284,13 @@ routes:
   - id: kg_ts
     uris: [/knowledge/kg, /knowledge/kg/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1056,9 +1311,13 @@ routes:
   - id: quiz_user
     uris: [/quiz, /quiz/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-content-quiz
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1076,9 +1335,13 @@ routes:
     uri: /quiz/styles
     methods: [GET]
     priority: 110
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1095,9 +1358,13 @@ routes:
     uri: /quiz/generate-from-summary
     methods: [POST]
     priority: 110
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1114,9 +1381,17 @@ routes:
     uris: [/quiz/generate, /quiz/generate-ai, /quiz/resume]
     methods: [POST]
     priority: 110
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
+    timeout:
+      connect: 5
+      send: 30
+      read: 300
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1126,6 +1401,13 @@ routes:
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
+      limit-conn:
+        conn: 20
+        burst: 10
+        default_conn_delay: 0.1
+        rejected_code: 503
+        key_type: var
+        key: remote_addr
 
   # /quiz/generate-from-images -> app-ts（错题图片/文件上传出题；multipart，
   # OCR 视觉转写 + 结构化提取后走 AI 出题管道。priority 110 压过 quiz_user 通配）。
@@ -1133,9 +1415,13 @@ routes:
     uri: /quiz/generate-from-images
     methods: [POST]
     priority: 110
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1151,9 +1437,13 @@ routes:
   - id: quiz_ai
     uris: [/quiz/submit]
     priority: 100
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1172,9 +1462,13 @@ routes:
   - id: bili_user
     uris: [/favorites, /favorites/*, /asr, /asr/*, /knowledge/build, /knowledge/build/*, /knowledge/folders/sync]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-user-bili
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1195,9 +1489,13 @@ routes:
   - id: vec_knowledge_ts
     uris: [/vec, /vec/*, /knowledge/stats, /knowledge/folders/status, /knowledge/pages/vectorized, /knowledge/clear, /knowledge/video, /knowledge/video/*, /chat/search, /blindspot, /blindspot/*, /skills, /skills/*]
     priority: 55
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1214,9 +1512,13 @@ routes:
   - id: academic_ts
     uris: [/academic, /academic/*]
     priority: 55
+    labels:
+      domain: user
     upstream_id: upstream-app-ts
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1233,9 +1535,13 @@ routes:
   - id: prefs_avatar_user
     uris: [/preferences, /preferences/*, /avatar, /avatar/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-user-settings
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1252,9 +1558,13 @@ routes:
   - id: coding_plans_user
     uris: [/settings/coding-plans, /settings/coding-plans/*]
     priority: 60
+    labels:
+      domain: user
     upstream_id: upstream-app-user-settings
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1271,10 +1581,18 @@ routes:
     uri: /internal/settings/coding-plan/*
     methods: [GET]
     priority: 100
+    labels:
+      domain: internal
     upstream_id: upstream-app-user-settings
     plugins:
-      request-id: {}
-      key-auth: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      # app-user re-validates the shared key itself by reading the "apikey"
+      # header, so this route intentionally keeps hide_credentials off: APISIX
+      # strips "apikey" in the access phase, after proxy-rewrite could re-add it.
+      key-auth:
+        hide_credentials: false
       consumer-restriction:
         type: consumer_name
         whitelist:
@@ -1285,9 +1603,13 @@ routes:
   - id: workspaces_user
     uris: [/workspaces, /workspaces/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-cloud
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1305,9 +1627,13 @@ routes:
   - id: notes_user
     uris: [/notes, /notes/*]
     priority: 50
+    labels:
+      domain: user
     upstream_id: upstream-app-content-note
     plugins:
-      request-id: {}
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
@@ -1318,13 +1644,14 @@ routes:
         timeout: 5000
         status_code: 401
 
-
 # ============================================================
 # Internal TLS termination (9443 listener, rendered by render-config.sh)
 # ============================================================
 # BEGIN-INTERNAL-TLS
 ssls:
   - id: internal-9443
+    labels:
+      purpose: internal-service-tls
     cert: |
 __APISIX_TLS_CERT_PEM__
     key: |
@@ -1336,19 +1663,39 @@ __APISIX_TLS_KEY_PEM__
 # Consumers
 # ============================================================
 consumers:
+  # Service-to-service M2M consumer. limit-count is a per-consumer quota so a
+  # misfiring caller degrades to 429 instead of saturating the backend.
   - username: internal
     plugins:
       key-auth:
         key: __APISIX_CONSUMER_KEY__  # rendered from env APISIX_CONSUMER_KEY
+      limit-count:
+        count: 12000
+        time_window: 60
+        rejected_code: 429
+        key_type: var
+        key: consumer_name
   - username: pay_readonly
     # P1 密钥分权：会员查询只读密钥（/internal/pay/membership/*）
     plugins:
       key-auth:
         key: __PAY_READONLY_KEY__
+      limit-count:
+        count: 3000
+        time_window: 60
+        rejected_code: 429
+        key_type: var
+        key: consumer_name
   - username: pay_ops
     # P1 密钥分权：资金写操作专用密钥（grant / orders 退款），只存 .env PAY_OPS_KEY，不下发业务容器
     plugins:
       key-auth:
         key: __PAY_OPS_KEY__
+      limit-count:
+        count: 600
+        time_window: 60
+        rejected_code: 429
+        key_type: var
+        key: consumer_name
 
 #END

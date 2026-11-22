@@ -823,18 +823,22 @@ services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
     container_name: mind-base-etcd
-    # APISIX (init_etcd) and Milvus both depend on etcd, so etcd must be
-    # available in every profile where either runs: "", standalone, storage,
-    # task, full.
+    # APISIX (init_etcd + config source) and Milvus both depend on etcd, so
+    # etcd must be available in every profile where either runs: "",
+    # standalone, storage, task, full.
     profiles: ["", "standalone", "storage", "task", "full"]
+    # etcd serves mTLS; the cert files must exist before the process starts.
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
-    # Client TLS (mTLS): certs from the shared dev CA. Only Milvus talks to
-    # etcd today (APISIX standalone runs role=data_plane and never initializes
-    # etcd), so the client cert is the etcd leaf itself.
+    # mTLS for both Milvus and APISIX (traditional + config_provider=etcd).
+    # Startup order: cert-gen -> etcd -> apisix (apisix runs `apisix init_etcd`
+    # on startup, so etcd must be healthy first).
     command: >
       etcd
       -advertise-client-urls=https://etcd:2379
@@ -942,13 +946,20 @@ services:
   # ==============================================================
   # Task scheduling stack (profile=task)
   # Start: docker compose --profile task up -d
-  #   apisix            - API gateway (standalone mode; init_etcd needs etcd,
+  #   apisix            - API gateway (traditional + etcd; Admin API/UI :9180),
   #                       which is included in the task profile)
   #   app-task          - task executor (Go + self-polling scheduler, no xxl-job)
   # ==============================================================
 
   apisix:
-    image: apache/apisix:3.11.0-debian
+    # Derived image = stock apache/apisix:3.20.0-debian + apisix-sync (seed
+    # import for empty etcd, ssls/consumer rotation sync). Build:
+    #   docker compose build apisix
+    image: atoncooper/mind-base-apisix:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub
+    build:
+      context: ./apisix
+      dockerfile: Dockerfile
     container_name: mind-base-apisix
     # nginx depends on apisix in "", standalone, storage, full; app-task needs
     # it in task. Share all of nginx's profiles plus task to cover both paths.
@@ -960,10 +971,15 @@ services:
       # to be healthy first so APISIX doesn't crash on startup.
       etcd:
         condition: service_healthy
-    # No host port mapping: apisix must only be reachable inside mind-base-net
-    # (nginx -> apisix -> app services). Exposing 9080 to the host lets external
-    # clients bypass nginx (SSL/cache/rate-limit). To debug apisix directly,
-    # `docker compose exec apisix ...` or temporarily re-add `ports: ["9080:9080"]`.
+    # Admin API / Dashboard UI: HTTPS only, loopback-published by default.
+    # Source IPs are restricted by deployment.admin.allow_admin in
+    # apisix/config.yaml; 9080 (business traffic) stays internal.
+    ports:
+      # 宿主端口默认 19180（容器内 Admin API 仍是 9180）：9180 常被
+      # Logitech G HUB 的 lghub_updater.exe 占用。要从管理网 IP 访问：
+      # 改成 "<IP>:19180:9180"，并在 apisix/config.yaml 的
+      # deployment.admin.allow_admin 加入同源 CIDR。
+      - "127.0.0.1:19180:9180"
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
@@ -971,19 +987,13 @@ services:
       # app-content board 面 dev-CA（自动模式首次启动生成）：只读挂入，
       # entrypoint 将其与系统 CA 池拼成 ssl_trusted_certificate 的 ca-bundle.crt
       - ./secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
-      # apisix 自身 9443 TLS 监听口证书（nginx 以 dev CA 校验）
+      # apisix 自身 9443/9180 TLS 证书（nginx / 浏览器以 dev CA 校验）
       - ./secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
-    # APISIX's lua-http client honors HTTP_PROXY. The host's
-    # ~/.docker/config.json injects HTTP_PROXY at runtime with higher priority
-    # than compose environment, which misroutes internal etcd traffic to the
-    # proxy and fails with "connection reset by peer". The compose environment
-    # HTTP_PROXY= below is NOT enough (docker treats empty string as unset, so
-    # config.json's default wins). Override the entrypoint to unset proxy vars
-    # before exec'ing the original entrypoint - guarantees the APISIX process
-    # env has no proxy regardless of config.json, making the fix self-contained.
-    # Entrypoint renders the route/consumer template from env first (APISIX's
-    # yaml provider cannot read env), then keeps the original proxy/CA logic.
-    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+      # etcd mTLS 客户端证书（APISIX -> https://etcd:2379）
+      - ./secrets/certs/etcd:/usr/local/apisix/conf/certs/etcd:ro
+    # The derived image entrypoint renders the seed, builds the CA bundle,
+    # unsets host proxy vars and starts apisix-sync before delegating to the
+    # stock APISIX entrypoint (apisix init + init_etcd + openresty foreground).
     environment:
       # Belt-and-suspenders: also clear via environment (documents intent;
       # may not override config.json runtime injection on its own).
@@ -998,6 +1008,10 @@ services:
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
       # app-pay /internal/* 的 X-Internal-Key（渲染进路由）；未配置时渲染脚本回落到 APISIX_CONSUMER_KEY
       - PAY_INTERNAL_KEY=${PAY_INTERNAL_KEY:-}
+      # ── Admin API / Dashboard UI（HTTPS）──
+      # 必填：UI 登录 key 与 apisix-sync 的 Admin API 凭据
+      # 允许为空：docker compose down/config 不应因缺密钥失败；容器 entrypoint 会在启动时强制校验。
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]

@@ -60,7 +60,7 @@ scp -r manager:/MindBase/app-pay/certs           <repo>/app-pay/  # 例外：app
 scp -r manager:/MindBase/data/higress            <repo>/data/                 # 本机 higress 时
 ```
 
-.env 必须包含：RDBMS__URL（外部主库）、APISIX_CONSUMER_KEY（server1 的 apisix 容器启动时渲染进模板；只填 .env 一处）、
+.env 必须包含：RDBMS__URL（外部主库）、APISIX_CONSUMER_KEY（server1 的 apisix 容器启动时渲染进模板；只填 .env 一处）、APISIX_ADMIN_KEY（Admin API/UI 登录 key；其余白名单/端口在 apisix/config.yaml + compose 字面量）、
 AI_GATEWAY__API_KEY / AI_GATEWAY__BASE_URL、REDIS_PASSWORD / MONGO_* / MINIO_* /
 NEO4J_PASSWORD（与 server1 同值）、PAY_MYSQL_* / APPTASK_MYSQL_*。
 
