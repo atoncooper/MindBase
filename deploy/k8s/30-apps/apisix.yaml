@@ -1,14 +1,25 @@
-# APISIX 3.11 — business API gateway (standalone mode, routes declarative in
-# apisix.yaml). Cluster-internal only: nginx -> apisix -> backend; exposing
-# 9080 would let clients bypass nginx SSL/cache/rate-limiting.
-# The entrypoint override unsets proxy vars (host proxy injection once broke
-# internal etcd traffic) and builds the ssl_trusted_certificate CA bundle
-# including the app-content board dev CA (upstream tls_verify trust anchor).
+# APISIX 3.20 — traditional + etcd (Admin API / embedded Dashboard enabled).
 #
-# APISIX's yaml provider cannot read env, so routes/consumers come from the
-# apisix-config ConfigMap TEMPLATE (apisix.yaml.template + render-config.sh)
-# and a one-shot initContainer renders the real apisix.yaml (with secrets from
-# the mindbase-env Secret) into a shared emptyDir before apisix starts.
+# etcd is the config source of truth; routes/upstreams/consumers/ssls are
+# managed through the Admin API (HTTPS :9180) or the embedded Dashboard UI.
+# apisix/apisix.yaml.template is rendered by the derived image entrypoint and
+# used by apisix-sync to seed an EMPTY etcd and to keep ssls/consumers
+# (certificate / internal-key rotation) in sync. It is NOT the runtime source.
+#
+# Prerequisites (see deploy/k8s/README.md):
+#   secret mindbase-env: APISIX_CONSUMER_KEY, APISIX_ADMIN_KEY, PAY_* optional
+#                        (Admin source IPs live in apisix/config.k8s.yaml)
+#   secret apisix-tls   : server.crt, server.key, dev-ca.crt
+#                        (9443 + 9180 TLS; dev-ca.crt is the shared CA used by
+#                         apisix-sync to verify the Admin API)
+#   secret app-board-certs: dev-ca.crt
+# The cluster etcd is shared with Milvus (plain HTTP, cluster-internal); APISIX
+# uses it as its config store. Moving it to mTLS is a separate Milvus-touching
+# migration.
+#
+# Admin API/UI is never exposed publicly: the apisix-admin Service is
+# ClusterIP; use kubectl port-forward / VPN. If a LoadBalancer is required,
+# add loadBalancerSourceRanges with your exact admin source IPs.
 apiVersion: v1
 kind: Service
 metadata:
@@ -22,13 +33,31 @@ spec:
     - name: http
       port: 9080
       targetPort: 9080
+    - name: https
+      port: 9443
+      targetPort: 9443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apisix-admin
+  labels:
+    app: apisix
+spec:
+  type: ClusterIP
+  selector:
+    app: apisix
+  ports:
+    - name: admin-https
+      port: 9180
+      targetPort: 9180
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: apisix
 spec:
-  # standalone data_plane is stateless (routes declared in the ConfigMap) — 2 replicas remove the business-gateway single point
+  # etcd-backed and stateless; 2 replicas remove the business-gateway single point.
   replicas: 2
   revisionHistoryLimit: 3
   selector:
@@ -46,14 +75,10 @@ spec:
           labelSelector:
             matchLabels:
               app: apisix
-      # standalone data_plane：不依赖 etcd（config.yaml role=data_plane 跳过 init_etcd）
-      initContainers:
-        - name: render-apisix-config
-          image: apache/apisix:3.11.0-debian
+      containers:
+        - name: apisix
+          image: atoncooper/mind-base-apisix:latest
           imagePullPolicy: IfNotPresent
-          command: ["/bin/sh", "-c"]
-          args:
-            - sh /config/render-config.sh /config/apisix.yaml.template /rendered/apisix.yaml
           env:
             - name: APISIX_CONSUMER_KEY
               valueFrom:
@@ -64,27 +89,9 @@ spec:
             - name: PAY_OPS_KEY
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: PAY_OPS_KEY, optional: true }
-          volumeMounts:
-            - name: config
-              mountPath: /config
-              readOnly: true
-            - name: rendered
-              mountPath: /rendered
-      containers:
-        - name: apisix
-          image: apache/apisix:3.11.0-debian
-          imagePullPolicy: IfNotPresent
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy
-              if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then
-                cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt
-              else
-                cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt
-              fi
-              exec /docker-entrypoint.sh docker-start
-          env:
+            - name: APISIX_ADMIN_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_ADMIN_KEY }
             - name: HTTP_PROXY
               value: ""
             - name: HTTPS_PROXY
@@ -98,24 +105,38 @@ spec:
             - name: no_proxy
               value: etcd,app-ts,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,localhost,127.0.0.1
           ports:
-            - containerPort: 9080
+            - name: http
+              containerPort: 9080
+            - name: https
+              containerPort: 9443
+            - name: admin
+              containerPort: 9180
           volumeMounts:
+            # Template + config + render script at the stock APISIX paths, so
+            # the derived image entrypoint needs no path env vars.
             - name: config
               mountPath: /usr/local/apisix/conf/config.yaml
               subPath: config.yaml
               readOnly: true
-            - name: rendered
-              mountPath: /usr/local/apisix/conf/apisix.yaml
-              subPath: apisix.yaml
+            - name: config
+              mountPath: /usr/local/apisix/conf/apisix.yaml.template
+              subPath: apisix.yaml.template
+              readOnly: true
+            - name: config
+              mountPath: /usr/local/apisix/conf/render-config.sh
+              subPath: render-config.sh
               readOnly: true
             - name: board-ca
               mountPath: /usr/local/apisix/conf/certs/board
+              readOnly: true
+            - name: apisix-tls
+              mountPath: /usr/local/apisix/conf/certs/apisix
               readOnly: true
           startupProbe:
             tcpSocket:
               port: 9080
             periodSeconds: 5
-            failureThreshold: 15
+            failureThreshold: 24
           readinessProbe:
             tcpSocket:
               port: 9080
@@ -132,14 +153,20 @@ spec:
         - name: config
           configMap:
             name: apisix-config
-        # initContainer renders the secret-substituted routes here; the main
-        # container mounts only the generated file (never the template).
-        - name: rendered
-          emptyDir: {}
         - name: board-ca
           secret:
             secretName: app-board-certs
             items:
+              - key: dev-ca.crt
+                path: dev-ca.crt
+        - name: apisix-tls
+          secret:
+            secretName: apisix-tls
+            items:
+              - key: server.crt
+                path: server.crt
+              - key: server.key
+                path: server.key
               - key: dev-ca.crt
                 path: dev-ca.crt
 ---

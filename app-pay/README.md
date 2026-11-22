@@ -14,6 +14,35 @@ Design and implementation plan: [plan/1.0.7-Pay/1.0.7-Pay.md](../plan/1.0.7-Pay/
 > `src/test/resources/logback-test.xml`).
 > Client knobs: `src/test/resources/pay-test.properties`; server knobs: `config-test.yaml`.
 
+## Local IDE (VS Code)
+
+Java files are only fully analysed inside the app-pay workspace. The repository-root
+workspace intentionally keeps `java.import.maven.enabled` off (so opening the repo never
+runs a Maven import), and it filters Java diagnostics for `app-pay/**`. Two consequences:
+
+- Browsing `app-pay/**/*.java` from the repo root is fine, but the Java extension does
+  single-file analysis without the Maven classpath. Lombok-generated members
+  (`@Getter`/`@Setter`, e.g. `PayOrder#getOrderNo`) are then reported as
+  **"cannot find symbol"** — those diagnostics are false; do not "fix" them by hand.
+- To edit/debug Java, open `.vscode/app-pay.code-workspace`
+  (File → Open Workspace from File…). It imports the Maven project, enables autobuild and
+  the built-in Lombok support, and runs the real compiler diagnostics.
+
+Toolchain expected by the workspace files:
+
+| Item | Path |
+|---|---|
+| JDK 21 | `C:/java21` |
+| Maven 3.9.9 | `D:/repo/apache-maven-3.9.9/bin/mvn.cmd` |
+| Maven local repo | `D:/repo/apache-maven-3.9.9/maven_repo` (declared in `~/.m2/settings.xml`) |
+
+Lombok is supported by `redhat.java` itself (`java.jdt.ls.lombokSupport.enabled`, default
+true). Do **not** install the retired `vscjava.vscode-lombok` extension, and do not run a
+second Java language server (`oracle.oracle-java`): both duplicate/override the Lombok
+agent and bring the "cannot find symbol" errors back. If diagnostics are still stale after
+switching workspaces, run **Java: Clean Java Language Server Workspace** from the Command
+Palette and reload.
+
 ## Scope and Boundaries
 
 - Standalone service (Java 21 + Spring Boot 3.5), modeled after `app-task/`: dedicated MySQL (`app-pay-mysql`, database `app_pay`), unified APISIX authentication, **single configuration entry point = application.yaml (+ docker/test profile variants; sensitive values reference .env via placeholders)**.

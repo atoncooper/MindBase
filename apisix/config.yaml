@@ -1,18 +1,65 @@
-# APISIX standalone (yaml) mode configuration.
-# Routes/upstreams/consumers are read from apisix.yaml at startup; etcd is not
-# the route source. Some image startup paths still call init_etcd, so keep the
-# compose dependency until that is verified/removed.
+# APISIX 3.20 — traditional + etcd (Admin API / embedded Dashboard enabled).
 #
-# In APISIX 3.x, standalone = deployment.role "data_plane" +
-# role_data_plane.config_provider "yaml" (there is no "standalone" role).
-# The route source is yaml, so APISIX does not read routes from etcd. The
-# image's startup command can still run `apisix init_etcd`; keep the compose
-# etcd dependency until that startup path is explicitly removed/verified.
-# Admin API is disabled under the yaml provider, so no admin_key is configured.
+# Source of truth is etcd: routes / upstreams / consumers / ssls / plugin
+# config live there and are managed through the Admin API (https://<admin>:9180)
+# or the embedded Dashboard UI (https://<admin>:9180/ui/).
+#
+# apisix/apisix.yaml.template is NOT the runtime route source. It is rendered at
+# container start and consumed by `apisix-sync` (baked into the derived image
+# atoncooper/mind-base-apisix):
+#   1. first boot / empty etcd -> full seed import (routes, upstreams, ...);
+#   2. every sync interval      -> refresh ssls (cert rotation) + internal
+#      consumers (keys from .env) so cert/key rotation keeps working.
+#
+# Security contract:
+#   - Admin API/UI is HTTPS only (dev CA or a real CA must be trusted by the
+#     browser); the published host port lives in the compose file literal and
+#     allow_admin below restricts source CIDRs (edit both for a fixed admin IP).
+#   - APISIX_ADMIN_KEY is the only Admin API credential and the only APISIX
+#     setting read from env; everything else is in this file / the compose file.
+#   - etcd uses mTLS (secrets/certs/etcd).
 deployment:
-  role: data_plane
-  role_data_plane:
-    config_provider: yaml
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+  etcd:
+    # Deployment settings live in this file, not in compose env. The k8s stack
+    # uses its own apisix/config.k8s.yaml (its etcd is shared with Milvus and
+    # kept plain HTTP inside the cluster).
+    host:
+      - "https://etcd:2379"
+    prefix: /apisix
+    timeout: 30
+    tls:
+      cert: /usr/local/apisix/conf/certs/etcd/server.crt
+      key: /usr/local/apisix/conf/certs/etcd/server.key
+  admin:
+    admin_key_required: true
+    admin_key:
+      - name: admin
+        key: ${{APISIX_ADMIN_KEY}}
+        role: admin
+    # Source-IP allowlist as a YAML list (deployment policy, not a secret).
+    # NOTE: with a Docker-published port, APISIX sees the Docker bridge gateway
+    # (e.g. 172.19.0.1), NOT the browser's original IP. So the "only my admin
+    # IP" restriction must be enforced by the host bind address (127.0.0.1 /
+    # fixed NIC IP) and the host firewall / SSH tunnel; allow_admin here only
+    # limits which network hops may reach the Admin API. Tighten the private
+    # ranges below if your bridge network overlaps something you distrust.
+    allow_admin:
+      - 127.0.0.1/32
+      - 172.16.0.0/12   # Docker bridge / overlay networks
+      - 192.168.0.0/16  # Docker Desktop VM + LAN
+      - 10.0.0.0/8      # optional VPN / LAN
+    admin_listen:
+      ip: 0.0.0.0
+      port: 9180
+    https_admin: true
+    admin_api_mtls:
+      admin_ssl_cert: /usr/local/apisix/conf/certs/apisix/server.crt
+      admin_ssl_cert_key: /usr/local/apisix/conf/certs/apisix/server.key
+    enable_admin_ui: true
+    enable_admin_cors: false
 
 apisix:
   # Control API (port 9090, in-container only). The compose healthcheck checks
@@ -21,43 +68,50 @@ apisix:
   control:
     ip: 127.0.0.1
     port: 9090
-  # Trust anchors for upstream TLS verification (cosocket ssl.verify).
-  # ca-bundle.crt = system CA pool + app-content（board 面）dev CA (concatenated
-  # by the compose entrypoint into /tmp at container start — the image's
-  # conf/certs dir is not writable by the runtime user). The system pool MUST be
-  # included: ssl_trusted_certificate REPLACES the default verification pool, so
-  # a bare dev-ca.crt here would break every other https cosocket — the exact
-  # trap documented on upstream-app-pay (which works around it with verify:false;
-  # app-content board 面 keeps verification on). If app-content has not generated
-  # its CA yet (cold start ordering), the entrypoint falls back to the system pool
-  # and `docker compose restart apisix` after first app-content boot reloads it.
+  # Trust anchors for cosocket TLS: upstream verification and the etcd client
+  # (apisix.core.etcd uses apisix.ssl.ssl_trusted_certificate as trusted_ca).
+  # The container entrypoint builds /tmp/ca-bundle.crt from the system pool +
+  # app-content board CA + etcd mTLS CA. The system pool MUST be included:
+  # ssl_trusted_certificate REPLACES the default verification pool.
   ssl:
     # Service-to-service HTTPS listener (nginx -> https://apisix:9443).
-    # Encryption only for upstreams (APISIX 3.11 cannot verify non-kafka
-    # upstream certs), but nginx verifies this listener's leaf.
+    # Upstream certificate verification is still intentionally off (no internal
+    # CA is mounted for upstream verification yet); APISIX 3.20 supports it
+    # through upstream.tls.verify + tls.ca_certs. nginx always verifies this
+    # listener's leaf against the shared dev CA.
+    # The listener cert comes from the declarative `ssls` resource in etcd
+    # (apisix-sync imports/refreshes it from the rendered seed). The APISIX CLI
+    # always uses cert/ssl_PLACE_HOLDER.crt for the fallback, so
+    # apisix.ssl.cert/key are dead config and are intentionally absent.
     enable: true
     listen:
       - port: 9443
-    cert: /usr/local/apisix/conf/certs/apisix/server.crt
-    key: /usr/local/apisix/conf/certs/apisix/server.key
+    # TLS floor for the internal 9443 listener (nginx already enforces its own
+    # floor towards browsers).
+    ssl_protocols: "TLSv1.2 TLSv1.3"
     ssl_trusted_certificate: /tmp/ca-bundle.crt
+
+# Per-plugin global attributes.
+plugin_attr:
+  # Metrics exporter started by the prometheus plugin (used by global_rules).
+  # Reachable only on the container network: scrape target apisix:9091.
+  prometheus:
+    export_addr:
+      ip: 0.0.0.0
+      port: 9091
+    export_uri: /metrics
+    metric_prefix: apisix_
 
 # Custom nginx directives.
 # proxy_buffering off: /chat/* and /task-quiz/chat are SSE streams. APISIX
 # (nginx-based) buffers upstream responses by default, which collapses
 # token-by-token streaming into one bulk delivery.
 #
-# NOTE: `nginx_config.http.proxy_buffering` is NOT a supported key — APISIX
-# silently ignores it (verified: absent from ngx_tpl.lua and from the
-# generated nginx.conf). Arbitrary directives must go through a
-# *_configuration_snippet slot; this one lands `proxy_buffering off;` inside
-# every location block of the generated nginx.conf (verified with
-# `apisix test` + grep). SSE upstreams (app-ts/app-content) also send
-# `X-Accel-Buffering: no` as a per-response belt-and-braces.
-#
 # client_max_body_size aligns APISIX with the OpenResty API boundary (50 MB);
 # large object bytes never pass through APISIX (edge -> MinIO direct).
 nginx_config:
+  # NOTE: server_tokens is emitted by APISIX itself (nginx_config.main_configuration
+  # in the generated nginx.conf); adding it here would duplicate the directive.
   http_server_configuration_snippet: |
     client_max_body_size 50m;
   http_server_location_configuration_snippet: |

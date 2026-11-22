@@ -101,7 +101,7 @@ cache-aside，只缓存读：`board:detail:{uid}:{uuid}` 与 `board:list:{uid}:{
 
 compose 将证书目录挂到容器 `/app/certs`（宿主为 `./secrets/certs/app-content`，cert-gen 签发到这里）；APISIX 只读挂其中的 `dev-ca.crt` 到信任锚 bundle（`apisix.ssl.ssl_trusted_certificate`，**替换**默认池所以同时并入系统 CA）。首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
 
-> APISIX 3.11 限制：HTTP 上游无法做证书校验（`tls.verify` 仅支持 kafka），因此健康检查 `https_verify_certificate: false`（只加密不验身份）；upstream 节点名 `app-content` 充当 SNI 命中叶子证书 SAN。
+> APISIX 3.20：普通 https upstream 已支持 `tls.verify` + `tls.ca_certs`（3.19+），但当前未给 APISIX 挂内部 CA，因此健康检查仍 `https_verify_certificate: false`（只加密不验身份）；upstream 节点名 `app-content` 充当 SNI 命中叶子证书 SAN。
 
 ### 5.4 配置（统一数据源）
 

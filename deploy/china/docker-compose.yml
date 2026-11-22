@@ -250,13 +250,19 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
       - ALLOW_NONE_AUTHENTICATION=yes
-      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      # APISIX traditional+etcd：客户端 mTLS（证书由根 compose 的 cert-gen 统一签发）
+      - ETCD_ADVERTISE_CLIENT_URLS=https://etcd:2379
+      - ETCD_LISTEN_CLIENT_URLS=https://0.0.0.0:2379
+      - ETCD_CERT_FILE=/certs/server.crt
+      - ETCD_KEY_FILE=/certs/server.key
+      - ETCD_TRUSTED_CA_FILE=/certs/dev-ca.crt
+      - ETCD_CLIENT_CERT_AUTH=true
     volumes:
       - etcd_data:/bitnami/etcd
+      - ../../secrets/certs/etcd:/certs:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/opt/bitnami/etcd/bin/etcdctl", "endpoint", "health"]
+      test: ["CMD", "/opt/bitnami/etcd/bin/etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -327,7 +333,11 @@ services:
   # ==============================================================
 
   apisix:
-    image: apache/apisix:3.11.0-debian
+    image: atoncooper/mind-base-apisix:latest
+    pull_policy: never
+    build:
+      context: ../../apisix
+      dockerfile: Dockerfile
     container_name: mind-base-apisix
     profiles: ["", "standalone", "storage", "task", "full"]
     depends_on:
@@ -335,11 +345,15 @@ services:
         condition: service_healthy
       etcd:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:19180:9180"
     volumes:
       - ../../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ../../apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
       - ../../apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
-    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; exec /docker-entrypoint.sh docker-start"]
+      - ../../secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
+      - ../../secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
+      - ../../secrets/certs/etcd:/usr/local/apisix/conf/certs/etcd:ro
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
@@ -350,6 +364,8 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
+      # 允许为空：docker compose down/config 不应因缺密钥失败；容器 entrypoint 会在启动时强制校验。
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]

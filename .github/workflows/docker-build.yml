@@ -49,6 +49,10 @@ jobs:
             dockerfile: app-go/app-content-mcp/Dockerfile
             image: atoncooper/mind-base-app-content-mcp
             name: app-content-mcp
+          - context: ./apisix
+            dockerfile: apisix/Dockerfile
+            image: atoncooper/mind-base-apisix
+            name: apisix
           - context: ./scripts
             dockerfile: scripts/certgen.Dockerfile
             image: atoncooper/mind-base-certgen

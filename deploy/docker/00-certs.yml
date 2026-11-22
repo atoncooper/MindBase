@@ -23,6 +23,9 @@ services:
       MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
+      # APISIX 9443/9180 leaf + etcd mTLS leaf + shared CA bundle
+      MB_CERT_BUNDLE_DIR: /out/bundle
+      MB_CERT_SERVICES_DIR: /out/bundle
       # 主访问地址：写成你的域名或公网 IP（进 CN+SAN）；.env 里配置
       MB_CERT_HOST: ${MB_CERT_HOST:-mindbase}
       # 额外 SAN，逗号分隔，例如 "mb.example.com,43.123.45.67"
@@ -35,4 +38,5 @@ services:
       - ../../secrets/certs/app-content:/out/app-content   # app-content board 域证书
       - ../../secrets/certs/app-content-mcp:/out/mcp
       - ../../app-pay/certs:/out/pay                        # 例外：app-pay 自持证书
+      - ../../secrets/certs:/out/bundle                     # apisix/etcd 等服务叶子 + ca-bundle.crt
     restart: "no"

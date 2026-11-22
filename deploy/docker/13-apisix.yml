@@ -4,8 +4,14 @@ name: mb-apisix
 
 services:
   apisix:
-    image: apache/apisix:3.11.0-debian
+    image: atoncooper/mind-base-apisix:latest
+    pull_policy: never
+    build:
+      context: ../../apisix
+      dockerfile: Dockerfile
     container_name: mind-base-apisix
+    ports:
+      - "127.0.0.1:19180:9180"
     volumes:
       - ../../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ../../apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
@@ -13,8 +19,9 @@ services:
       # app-content board 域 dev-CA（apisix 信任 server2 上 app-content:8004 的 HTTPS upstream；
       # 宿主统一在 secrets/certs/app-content，容器内路径仍叫 certs/board）
       - ../../secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
-    # 清理代理环境变量，防宿主 ~/.docker/config.json 注入劫持内网流量
-    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+      # 9443/9180 TLS leaf + etcd mTLS 客户端证书
+      - ../../secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
+      - ../../secrets/certs/etcd:/usr/local/apisix/conf/certs/etcd:ro
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
@@ -25,6 +32,8 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
       - PAY_OPS_KEY=${PAY_OPS_KEY:-}
+      # 允许为空：docker compose down/config 不应因缺密钥失败；容器 entrypoint 会在启动时强制校验。
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]

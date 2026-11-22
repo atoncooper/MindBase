@@ -22,7 +22,7 @@ server / controller / ingress-gateway / warm pool）见 [40-sandbox](40-sandbox/
   Docker Hub 移除，见 scripts/minio.Dockerfile）、`milvusdb/milvus:v2.6.22`、
   `mysql:8.4`、`mongo:7`、`redis:7-alpine`、`neo4j:5-community`、
   `quay.io/coreos/etcd:v3.5.14`、
-  `apache/apisix:3.11.0-debian`、`nginx:alpine`、busybox、
+  `atoncooper/mind-base-apisix`（stock APISIX + apisix-sync）、`nginx:alpine`、busybox、
   Higress all-in-one（国内集群直连阿里云仓库无压力；海外建议自行转存）。
 
 ## 1. 一次性创建 Secret（不进 git）
@@ -67,8 +67,13 @@ kubectl -n mind-base create secret generic api-key-encryption-key \
 ```bash
 kubectl -n mind-base create configmap mysql-init-sql \
   --from-file=system.sql=db/system.sql
+# APISIX Admin/UI HTTPS leaf（9443 + 9180）——从 cert-gen 产物创建
+kubectl -n mind-base create secret generic apisix-tls \
+  --from-file=server.crt=secrets/certs/apisix/server.crt \
+  --from-file=server.key=secrets/certs/apisix/server.key \
+  --from-file=dev-ca.crt=secrets/certs/apisix/dev-ca.crt
 kubectl -n mind-base create configmap apisix-config \
-  --from-file=config.yaml=apisix/config.yaml \
+  --from-file=config.yaml=apisix/config.k8s.yaml \
   --from-file=apisix.yaml.template=apisix/apisix.yaml.template \
   --from-file=render-config.sh=apisix/render-config.sh
 kubectl -n mind-base create configmap nginx-conf \
@@ -154,7 +159,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | app-content 证书共享 | 宿主目录 `./secrets/certs/app-content` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-content（board 域），dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
 | app-pay TLS | 宿主目录 `./app-pay/certs` | Secret `app-pay-tls`（ca.crt 同时供 app-task 委托回调校验） |
 | MySQL 建表脚本 | 宿主 `db/system.sql` | ConfigMap `mysql-init-sql`（§1b kubectl 创建，改 SQL 后重建 + restart mysql） |
-| APISIX 路由 | 宿主 `apisix/*.yaml` | ConfigMap `apisix-config`（subPath 挂载；改路由后重建 ConfigMap + `rollout restart deploy/apisix`） |
+| APISIX 路由 | etcd（Dashboard/Admin API 管理） | etcd（传统模式）；ConfigMap `apisix-config` 只提供 config.yaml/seed/render 脚本，seed 仅在 etcd 为空时导入 |
 | nginx 配置 | 宿主 `nginx/*.conf` | ConfigMap `nginx-conf`（subPath；同上 restart） |
 | Higress 版本 | `:latest` + 可选 digest 钉死 | 同左；生产建议把 Deployment 的 image 改成 `@sha256:` 钉死 |
 | 数据持久化 | named volumes | PVC（mysql 10Gi×3、mongo 10Gi、redis 5Gi、etcd 5Gi、minio 20Gi、milvus 20Gi、neo4j 10Gi、higress 5Gi）；服务日志与 nginx 缓存为 emptyDir |
@@ -173,9 +178,11 @@ app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。
 kubectl -n mind-base get pods,svc,pvc
 # 日志
 kubectl -n mind-base logs deploy/app-ts -f
-# 改 APISIX 路由：编辑 apisix/apisix.yaml.template 后，重建 configmap 再滚动重启
-kubectl -n mind-base create configmap apisix-config --from-file=config.yaml=apisix/config.yaml --from-file=apisix.yaml.template=apisix/apisix.yaml.template --from-file=render-config.sh=apisix/render-config.sh --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n mind-base rollout restart deploy/apisix
+# 改 APISIX 路由：走 Admin API / 内嵌 Dashboard（写 etcd，立即生效，无需重启）
+#   kubectl -n mind-base port-forward --address 127.0.0.1 svc/apisix-admin 19180:9180
+#   （k8s 的 allow_admin 在 apisix/config.k8s.yaml，按集群管理网 CIDR 收紧）
+#   https://127.0.0.1:19180/ui/   （X-API-KEY = $APISIX_ADMIN_KEY）
+# 仅首次迁移/灾备重建时才会导入 apisix/apisix.yaml.template（etcd 为空）
 # 扩容 app-ts（无状态，可扩；注意 Milvus/DB 连接数与任务账本并发）
 kubectl -n mind-base scale deploy/app-ts --replicas=2
 ```
