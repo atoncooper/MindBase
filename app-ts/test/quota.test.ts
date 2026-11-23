@@ -338,7 +338,7 @@ describe("summary and plan value", () => {
     );
 
     const summary = await svc.summary("u1");
-    expect(summary.unit).toBe("token");
+    expect(summary.unit).toBe("credit");
     expect(summary.windows.map((w) => w.window)).toEqual(["five_hour", "day", "month"]);
     expect(summary.plan.priceYuan).toBe(18);
     expect(summary.plan.valueYuan).toBe(180);

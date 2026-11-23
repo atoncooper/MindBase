@@ -627,10 +627,22 @@ public class OrderService {
 
     /** Current user's orders (newest first, uses idx_pay_order_uid_status). */
     public List<PayOrder> listOwnedOrders(long uid, int limit) {
+        return listOwnedOrders(uid, limit, 0);
+    }
+
+    /** Paginated slice; orderNo is the stable tie-breaker for equal createdAt values. */
+    public List<PayOrder> listOwnedOrders(long uid, int limit, int offset) {
         return orderMapper.selectList(new LambdaQueryWrapper<PayOrder>()
                 .eq(PayOrder::getUid, uid)
                 .orderByDesc(PayOrder::getCreatedAt)
-                .last("LIMIT " + Math.max(1, limit)));
+                .orderByDesc(PayOrder::getOrderNo)
+                .last("LIMIT " + Math.max(1, limit) + " OFFSET " + Math.max(0, offset)));
+    }
+
+    /** Total orders for the pager (same uid predicate as listOwnedOrders). */
+    public long countOwnedOrders(long uid) {
+        return orderMapper.selectCount(new LambdaQueryWrapper<PayOrder>()
+                .eq(PayOrder::getUid, uid));
     }
 
     /** User's most recent orders (for the test console overview). limit is passed by the caller as an internal controlled constant. */

@@ -47,6 +47,8 @@ CREATED ──条件更新──► PAID ──交付(会员顺延,同事务)─
 |------|------|------|
 | GET | `/pay/products` | 在售 SKU |
 | POST | `/pay/orders` | 创建订单 `{skuCode, channel, idempotencyKey?}`，返回支付参数（MOCK 确认端点或支付宝二维码） |
+| GET | `/pay/orders` | 最近订单（兼容旧调用，最多 50 条） |
+| GET | `/pay/orders/page?page=&pageSize=` | 分页订单记录（`items/page/pageSize/total/hasMore`），独立 `/orders` 页面使用 |
 | GET | `/pay/orders/{orderNo}` | 订单详情（uid 归属校验，非本人 404 防越权） |
 | GET | `/pay/membership` | 当前用户会员态（懒过期：`expire_at > now`） |
 | POST | `/pay/mock/confirm` | 模拟支付（仅 MOCK 渠道开启时） |

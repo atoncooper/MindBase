@@ -6,6 +6,8 @@
 
 ### Changed
 
+- **会员系统统一 Credits 展示 + 独立订单记录页（2026-11-23）**：会员权益、额度页、错误文案不再对用户展示 token，统一使用 Credits（内部仍按标准 token 记账）；新增 `GET /pay/orders/page?page=&pageSize=` 分页接口和独立 `/orders` 页面，支持分页、订单详情、取消待支付订单及带订单号回跳会员中心继续支付；会员中心移除内嵌订单列表，改为入口链接。
+
 - **三档会员与 ProMax 上线（2026-11-23）**：VIP ¥48/月、SVIP ¥148/月、ProMax ¥248/月；对应标准 token 48M / 148M / 248M 每月（10× API 等值），年卡 ¥420 / ¥1,298 / ¥2,178（全年约 5.76 亿 / 17.76 亿 / 29.76 亿标准 token）。新增 `PROMAX` 档贯穿 app-pay / app-ts / app-cloud / app-sandbox / app-user Coding Plan / admin；新增 Flyway V10 更新 SKU 价格并插入 ProMax SKU。跨档升级继续按剩余时长补差（VIP 年卡老订单升级 SVIP/ProMax 年卡分别补 ¥1,140 / ¥2,020），不再允许短周期 SKU 覆盖整段会员。- **跨档会员升级改为按剩余时长补差价（2026-11-23）**：原逻辑对 VIP→SVIP 按短周期 SKU 全价叠加，`extendLocked` 会把剩余 VIP 年卡整体改成 SVIP（¥48 SVIP 月卡可升级整段年卡）。现跨档按「基准单实付 × 剩余天数 / 基准单天数」抵扣，目标 SKU 必须覆盖剩余时长，交付只补天数差（0 = 只换档不延长）；短于剩余时长的 SKU 返回 `UPGRADE_TARGET_TOO_SHORT`。同时会员对照新增年卡累计标准/原始 token（VIP 年卡 ≈17.5 亿原始 token @5:1）。- **修复支付宝付款码生成失败（2026-11-22）**：① app-pay 的 PKCS12 truststore 原先只导入内部 dev CA，JVM 无法校验支付宝沙箱 DigiCert 证书（`PKIX path building failed`）；`cert-truststore` 现以 JRE 默认 `cacerts` 为基线再追加内部 CA。② 本机 v2rayN Global 路由把 `alipaydev.com` 走了不可达代理，已加直连规则；验证 `GET /pay/orders/{orderNo}/qr` 返回 `200 image/png`。
 
 - **修复邮箱验证码被写成 `##aliyun##`（2026-11-22）**：`Verification.SendCode` 原先在全局 `sms.code_source=aliyun` 时不分渠道直接写 Aliyun 哨兵；邮箱用途也会把哨兵当验证码发进邮件，`VerifyCode` 还会对邮箱调用 `CheckSmsVerifyCode`。现哨兵与阿里云核验仅在 `channel == "sms"` 时启用，邮箱恢复本地 6 位数字码；旧的哨兵邮箱行已置为 used。

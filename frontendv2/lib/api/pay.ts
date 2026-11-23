@@ -89,6 +89,14 @@ export interface PayOrder {
     buyerUserId?: string | null;
 }
 
+export interface PayOrderPage {
+    items: PayOrder[];
+    page: number;
+    pageSize: number;
+    total: number;
+    hasMore: boolean;
+}
+
 export interface PayMembership {
     /** "VIP" | "SVIP" | "PROMAX" | null (null = no membership row) */
     tier: string | null;
@@ -132,9 +140,15 @@ export const payApi = {
         return request<PayChannelInfo[]>("/pay/channels");
     },
 
-    /** 我的订单（新→旧） */
+    /** 我的订单（新→旧，兼容旧调用） */
     listOrders(limit = 20): Promise<PayOrder[]> {
         return request<PayOrder[]>(`/pay/orders?limit=${limit}`);
+    },
+
+    /** 订单记录分页（独立 /orders 页面） */
+    listOrdersPage(page = 1, pageSize = 10): Promise<PayOrderPage> {
+        const q = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+        return request<PayOrderPage>(`/pay/orders/page?${q.toString()}`);
     },
 
     /** 取消未支付订单 */

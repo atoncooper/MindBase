@@ -1,4 +1,8 @@
-# AI 用量额度（token 口径）
+# AI 用量额度
+
+> 用户侧统一显示为 **Credits**；本文实现口径中的「标准 token」是内部归一单位，
+> 1 个内部单位在界面上显示为 1 Credit，模型单价仍决定实际扣减速度。
+（token 口径）
 
 > 状态：2026-11-22 落地。权威实现：`app-ts/src/services/quota.ts` +
 > `app-ts/src/repository/{memory,redis}/quota-counter.ts`；配置：`app-ts/config/default.yaml` 的 `quota:` 段。

@@ -33,6 +33,7 @@ import static com.mindbase.pay.dto.PayDtos.CreateOrderRequest;
 import static com.mindbase.pay.dto.PayDtos.CreateOrderResponse;
 import static com.mindbase.pay.dto.PayDtos.MembershipView;
 import static com.mindbase.pay.dto.PayDtos.MockConfirmRequest;
+import static com.mindbase.pay.dto.PayDtos.OrderPageView;
 import static com.mindbase.pay.dto.PayDtos.OrderView;
 import static com.mindbase.pay.dto.PayDtos.ComparisonRow;
 import static com.mindbase.pay.dto.PayDtos.ProductView;
@@ -102,6 +103,23 @@ public class PayUserController {
         long uid = resolveUid(xUid);
         int capped = Math.min(Math.max(limit, 1), MAX_ORDER_PAGE);
         return orderService.listOwnedOrders(uid, capped).stream().map(OrderView::from).toList();
+    }
+
+    /** Paginated order history for the dedicated /orders page. */
+    @GetMapping("/orders/page")
+    public OrderPageView ordersPage(@RequestParam(value = "page", defaultValue = "1") int page,
+                                    @RequestParam(value = "pageSize", defaultValue = "10") int pageSize,
+                                    @RequestHeader(value = "X-Uid", required = false) String xUid) {
+        long uid = resolveUid(xUid);
+        int currentPage = Math.max(page, 1);
+        int size = Math.min(Math.max(pageSize, 1), MAX_ORDER_PAGE);
+        long total = orderService.countOwnedOrders(uid);
+        int offset = (currentPage - 1) * size;
+        List<OrderView> items = orderService.listOwnedOrders(uid, size, offset).stream()
+                .map(OrderView::from)
+                .toList();
+        return new OrderPageView(items, currentPage, size, total,
+                (long) offset + items.size() < total);
     }
 
     @GetMapping("/orders/{orderNo}")

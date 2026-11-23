@@ -56,6 +56,10 @@ public final class PayDtos {
         }
     }
 
+    /** Paginated order history (dedicated /orders page). */
+    public record OrderPageView(List<OrderView> items, int page, int pageSize, long total, boolean hasMore) {
+    }
+
     /** Available payment channels (the frontend renders from this: MOCK local simulation / ALIPAY QR code). */
     public record ChannelView(String code, boolean enabled) {
     }

@@ -40,11 +40,11 @@ export function registerBoardRoutes(
       const gate = await deps.quota.peekKind(uid, "board");
       if (gate?.verdict === "quota_exceeded") {
         return reply.status(429).send({
-          detail: quotaWindowName(gate.window) + "的 AI token 额度不足，窗口重置后恢复",
+          detail: quotaWindowName(gate.window) + "的 AI Credits 额度不足，窗口重置后恢复",
           code: "QUOTA_EXCEEDED",
           kind: "board",
           window: gate.window,
-          unit: "token",
+          unit: "credit",
           used: gate.used,
           limit: gate.limit,
           resetAt: gate.resetAt,

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Crown, ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { Check, ChevronRight, Crown, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { emitAppToast } from "@/lib/app-toast";
 import {
@@ -77,7 +78,6 @@ export function MembershipView() {
     const [channels, setChannels] = useState<PayChannelInfo[]>([]);
     const [tiers, setTiers] = useState<PayTierInfo[]>([]);
     const [comparison, setComparison] = useState<PayComparisonRow[]>([]);
-    const [orders, setOrders] = useState<PayOrder[]>([]);
     // 升级换购报价（同档补差价，服务端计价）：商品卡据此显示差价与可升级态
     const [upgradeQuotes, setUpgradeQuotes] = useState<PayUpgradeQuote[]>([]);
     const [loading, setLoading] = useState(true);
@@ -106,13 +106,12 @@ export function MembershipView() {
 
     const refresh = useCallback(async () => {
         try {
-            const [m, p, c, t, cmp, o, uq] = await Promise.all([
+            const [m, p, c, t, cmp, uq] = await Promise.all([
                 payApi.getMembership(),
                 payApi.products(),
                 payApi.channels(),
                 payApi.tiers(),
                 payApi.comparison(),
-                payApi.listOrders(10),
                 payApi.upgradeQuotes(),
             ]);
             setMembership(m);
@@ -120,7 +119,6 @@ export function MembershipView() {
             setChannels(c);
             setTiers(t);
             setComparison(cmp);
-            setOrders(o);
             setUpgradeQuotes(uq);
             setLoadError(null);
         } catch (err) {
@@ -141,6 +139,42 @@ export function MembershipView() {
         }
         setQrUrl(null);
     }, []);
+
+    // Dedicated /orders page can hand a pending order back to this page:
+    // /membership?order=PO... re-opens the payment dialog for that order.
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const orderNo = new URLSearchParams(window.location.search).get("order");
+        if (!orderNo) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const order = await payApi.getOrder(orderNo);
+                if (cancelled) return;
+                setPendingSku(productFromOrder(order));
+                setActiveOrder(order);
+                setChannel(order.channel);
+                setPaying(true);
+                if (order.channel !== "MOCK") {
+                    const url = await payApi.orderQrBlobUrl(order.orderNo);
+                    if (cancelled) return;
+                    revokeQr();
+                    qrUrlRef.current = url;
+                    setQrUrl(url);
+                }
+                window.history.replaceState({}, "", "/membership");
+            } catch (err) {
+                if (!cancelled) {
+                    emitAppToast("error", err instanceof Error ? err.message : "订单加载失败");
+                }
+            } finally {
+                if (!cancelled) setPaying(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [revokeQr]);
 
     useEffect(() => () => {
         if (qrUrlRef.current) URL.revokeObjectURL(qrUrlRef.current);
@@ -275,71 +309,6 @@ export function MembershipView() {
         }
     }, [activeOrder, revokeQr, refresh]);
 
-    const cancelFromList = useCallback(async (orderNo: string) => {
-        try {
-            await payApi.cancelOrder(orderNo);
-            emitAppToast("success", "订单已取消");
-            await refresh();
-        } catch (err) {
-            emitAppToast("error", err instanceof Error ? err.message : "取消失败");
-        }
-    }, [refresh]);
-
-    /** 重新付款：未过期的待支付账单 —— 直接幂等重拉收款码（precreate 幂等）。 */
-    const resumePayment = useCallback(async (order: PayOrder) => {
-        if (isOrderExpired(order)) {
-            emitAppToast("warning", "账单已过期，请重新下单");
-            return;
-        }
-        setPendingSku(productFromOrder(order));
-        setActiveOrder(order);
-        setChannel(order.channel);
-        setPaying(true);
-        try {
-            if (order.channel !== "MOCK") {
-                const url = await payApi.orderQrBlobUrl(order.orderNo);
-                revokeQr();
-                qrUrlRef.current = url;
-                setQrUrl(url);
-            }
-        } catch (err) {
-            emitAppToast("error", err instanceof Error ? err.message : "收款码获取失败，请稍后重试");
-        } finally {
-            setPaying(false);
-        }
-    }, [revokeQr]);
-
-    /** 重新下单：过期/已关闭账单 —— 用相同 SKU 重新创建订单并进入支付。 */
-    const recreateOrder = useCallback(async (order: PayOrder) => {
-        const product = products.find((p) => p.code === order.skuCode);
-        if (!product) {
-            emitAppToast("warning", "该套餐已下架，请重新选择套餐");
-            return;
-        }
-        setPaying(true);
-        try {
-            const created = await payApi.createOrder({
-                skuCode: product.code,
-                channel: defaultChannel,
-                idempotencyKey: crypto.randomUUID(),
-            });
-            setActiveOrder(await payApi.getOrder(created.orderNo));
-            setPendingSku(product);
-            setChannel(defaultChannel);
-            if (defaultChannel !== "MOCK") {
-                const url = await payApi.orderQrBlobUrl(created.orderNo);
-                revokeQr();
-                qrUrlRef.current = url;
-                setQrUrl(url);
-            }
-            await refresh();
-        } catch (err) {
-            emitAppToast("error", err instanceof Error ? err.message : "重新下单失败");
-        } finally {
-            setPaying(false);
-        }
-    }, [products, defaultChannel, revokeQr, refresh]);
-
     const currentTier = membership?.active ? (membership.tier ?? "").toUpperCase() : "";
     const currentRank = tierRank(currentTier);
     const hasQuote = (code: string) => upgradeQuotes.some((q) => q.skuCode === code);
@@ -392,13 +361,21 @@ export function MembershipView() {
 
                     <TierComparison rows={comparison} currentTier={currentTier} tiers={tiers} />
 
-                    <OrderHistory
-                        orders={orders}
-                        onCancel={cancelFromList}
-                        onRepay={resumePayment}
-                        onRecreate={recreateOrder}
-                        disabled={paying}
-                    />
+                    <Link
+                        href="/orders"
+                        className="flex items-center justify-between rounded-2xl border border-border bg-surface px-5 py-4 transition-colors hover:bg-[#fbfbfd]"
+                    >
+                        <div className="min-w-0">
+                            <h2 className="text-[15px] font-semibold text-foreground">订单记录</h2>
+                            <p className="mt-1 text-[12px] text-tertiary">
+                                查看历史订单、支付状态与分页记录
+                            </p>
+                        </div>
+                        <span className="inline-flex items-center gap-1 text-[12px] font-medium text-accent">
+                            查看全部
+                            <ChevronRight className="h-3.5 w-3.5" />
+                        </span>
+                    </Link>
 
                     {mockOnly && (
                         <p className="flex items-center gap-1.5 text-[11px] text-tertiary">
@@ -495,7 +472,7 @@ function PlanCards({
         products[0]
     ).code;
     const targetTier = (code: string) => targetTierOf(code);
-    // 会员页的 token 权益提示按当前 SKU 价格推导（默认 VIP_MONTHLY = ¥48 → ¥480 等值）
+    // 会员页的 Credits 权益提示按当前 SKU 价格推导（默认 VIP_MONTHLY = ¥48 → ¥480 等值）
     const vipProduct = products.find((p) => p.code === "VIP_MONTHLY");
     const vipYuanLabelNum = vipProduct ? vipProduct.priceCents / 100 : 48;
     const vipYuanLabel = Number.isInteger(vipYuanLabelNum)
@@ -519,7 +496,7 @@ function PlanCards({
             <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="text-[16px] font-semibold text-foreground">选择套餐</h2>
                 <span className="text-[12px] text-tertiary">
-                    AI 额度按 token 计量 · VIP ¥{vipYuanLabel} 档约 ¥{vipValueLabel} 等值（10×）· 不同模型按单价抵扣
+                    AI 额度按 Credits 计量 · VIP ¥{vipYuanLabel} 档约 ¥{vipValueLabel} 等值（10×）· 不同模型按单价抵扣
                 </span>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -662,163 +639,6 @@ function TierComparison({
                         ))}
                     </tbody>
                 </table>
-            </div>
-        </section>
-    );
-}
-
-function OrderHistory({
-    orders,
-    onCancel,
-    onRepay,
-    onRecreate,
-    disabled,
-}: {
-    orders: PayOrder[];
-    onCancel: (orderNo: string) => void;
-    onRepay: (order: PayOrder) => void;
-    onRecreate: (order: PayOrder) => void;
-    disabled: boolean;
-}) {
-    const [copied, setCopied] = useState<string | null>(null);
-    if (orders.length === 0) return null;
-
-    const copyOrderNo = async (orderNo: string) => {
-        try {
-            await navigator.clipboard.writeText(orderNo);
-            setCopied(orderNo);
-            setTimeout(() => setCopied(null), 1500);
-        } catch {
-            /* 剪贴板不可用时静默 */
-        }
-    };
-
-    return (
-        <section>
-            <h2 className="text-[16px] font-semibold text-foreground">我的订单</h2>
-            <p className="mt-1 text-[12px] text-tertiary">完整订单信息：订单号、渠道、付款账户与各时间节点</p>
-            <div className="mt-3 space-y-3">
-                {orders.map((o) => {
-                    const expired = isOrderExpired(o);
-                    const repayable = o.status === "CREATED" && !expired;
-                    const isPaid = o.status === "PAID" || o.status === "DELIVERED";
-                    return (
-                        <div
-                            key={o.orderNo}
-                            className={cn(
-                                "rounded-2xl border bg-surface p-5",
-                                isPaid ? "border-amber-300/60" : "border-border",
-                                CARD_SHADOW
-                            )}
-                        >
-                            {/* 标题行：商品 + 金额 + 状态 */}
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex items-center gap-2">
-                                    <span className="text-[15px] font-semibold text-foreground">{o.productTitle}</span>
-                                    <span
-                                        className={cn(
-                                            "rounded-full px-2 py-0.5 text-[11px] font-medium",
-                                            o.status === "DELIVERED" && "bg-emerald-50 text-emerald-700",
-                                            repayable && "bg-amber-50 text-amber-700",
-                                            o.status === "CLOSED" && "bg-border-subtle text-tertiary",
-                                            !repayable && !isPaid && o.status !== "CLOSED" && "bg-border-subtle text-secondary"
-                                        )}
-                                    >
-                                        {STATUS_LABEL[o.status] ?? o.status}
-                                    </span>
-                                </div>
-                                <span className="text-[18px] font-semibold tracking-tight text-foreground">
-                                    <span className="text-[13px] font-normal text-secondary">¥</span>
-                                    {formatYuan(o.amountCents)}
-                                </span>
-                            </div>
-
-                            {/* 订单详情 */}
-                            <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 text-[12px] sm:grid-cols-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                    <dt className="shrink-0 text-tertiary">订单号</dt>
-                                    <dd className="min-w-0 flex items-center gap-1.5">
-                                        <code className="truncate font-mono text-[11px] text-foreground">{o.orderNo}</code>
-                                        <button
-                                            type="button"
-                                            onClick={() => copyOrderNo(o.orderNo)}
-                                            className="shrink-0 text-[11px] text-accent hover:underline"
-                                        >
-                                            {copied === o.orderNo ? "已复制" : "复制"}
-                                        </button>
-                                    </dd>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <dt className="shrink-0 text-tertiary">支付渠道</dt>
-                                    <dd className="text-foreground">{o.channel === "ALIPAY" ? "支付宝" : o.channel === "MOCK" ? "模拟支付" : o.channel}</dd>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <dt className="shrink-0 text-tertiary">创建时间</dt>
-                                    <dd className="text-secondary">{o.createdAt ? new Date(o.createdAt).toLocaleString() : "-"}</dd>
-                                </div>
-                                {o.expiresAt && (
-                                    <div className="flex items-center gap-2">
-                                        <dt className="shrink-0 text-tertiary">
-                                            {o.status === "CREATED" ? "付款有效期至" : "原有效期至"}
-                                        </dt>
-                                        <dd className={cn(expired && o.status === "CREATED" ? "text-danger" : "text-secondary")}>
-                                            {new Date(o.expiresAt).toLocaleString()}
-                                        </dd>
-                                    </div>
-                                )}
-                                {isPaid && o.paidAt && (
-                                    <div className="flex items-center gap-2">
-                                        <dt className="shrink-0 text-tertiary">付款时间</dt>
-                                        <dd className="text-secondary">{new Date(o.paidAt).toLocaleString()}</dd>
-                                    </div>
-                                )}
-                                {isPaid && o.buyerLogonId && (
-                                    <div className="flex items-center gap-2 min-w-0">
-                                        <dt className="shrink-0 text-tertiary">付款账户</dt>
-                                        <dd className="min-w-0 truncate font-medium text-foreground">{o.buyerLogonId}</dd>
-                                    </div>
-                                )}
-                            </dl>
-
-                            {/* 操作 */}
-                            <div className="mt-4 flex items-center justify-end gap-4 border-t border-border-subtle pt-3">
-                                {repayable && (
-                                    <button
-                                        type="button"
-                                        disabled={disabled}
-                                        onClick={() => onRepay(o)}
-                                        className="text-[12px] font-medium text-foreground underline underline-offset-2 hover:text-primary disabled:opacity-50"
-                                    >
-                                        重新付款
-                                    </button>
-                                )}
-                                {expired && (o.status === "CREATED" || o.status === "CLOSED") && (
-                                    <span className="text-[11px] text-tertiary">账单已过期，请重新下单</span>
-                                )}
-                                {expired && (o.status === "CREATED" || o.status === "CLOSED") && (
-                                    <button
-                                        type="button"
-                                        disabled={disabled}
-                                        onClick={() => onRecreate(o)}
-                                        className="text-[12px] font-medium text-foreground underline underline-offset-2 hover:text-primary disabled:opacity-50"
-                                    >
-                                        重新下单
-                                    </button>
-                                )}
-                                {o.status === "CREATED" && !expired && (
-                                    <button
-                                        type="button"
-                                        disabled={disabled}
-                                        onClick={() => onCancel(o.orderNo)}
-                                        className="text-[12px] text-secondary hover:text-danger disabled:opacity-50"
-                                    >
-                                        取消
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    );
-                })}
             </div>
         </section>
     );

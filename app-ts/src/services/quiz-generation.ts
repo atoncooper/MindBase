@@ -1228,8 +1228,8 @@ export class QuizGenerationService {
     if (gate?.verdict === "quota_exceeded") {
       throw new QuizGenerationError(
         gate.tier === "free"
-          ? quotaWindowName(gate.window) + "的免费出题 token 额度不足，升级会员可获得更高额度"
-          : quotaWindowName(gate.window) + "的出题 token 额度不足，窗口重置后恢复",
+          ? quotaWindowName(gate.window) + "的免费出题 Credits 额度不足，升级会员可获得更高额度"
+          : quotaWindowName(gate.window) + "的出题 Credits 额度不足，窗口重置后恢复",
         429,
       );
     }
