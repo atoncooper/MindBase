@@ -1,0 +1,235 @@
+# API: workspaces — 工作区/绑定/文件（app-cloud）
+# 仅由 api/openapi.yaml 引用；$ref 指向 ../components/common.yaml。
+paths:
+  /workspaces:
+    get:
+      tags:
+      - workspaces
+      summary: 获取工作区
+      description: 上游服务：app-cloud
+      operationId: get_workspaces
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - workspaces
+      summary: 创建/执行工作区
+      description: 上游服务：app-cloud
+      operationId: post_workspaces
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /workspaces/{workspace_id}:
+    get:
+      tags:
+      - workspaces
+      summary: 获取工作区
+      description: 上游服务：app-cloud
+      operationId: get_workspaces_workspace_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+    patch:
+      tags:
+      - workspaces
+      summary: 更新工作区
+      description: 上游服务：app-cloud
+      operationId: patch_workspaces_workspace_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+    delete:
+      tags:
+      - workspaces
+      summary: 删除工作区
+      description: 上游服务：app-cloud
+      operationId: delete_workspaces_workspace_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /workspaces/{workspace_id}/bindings:
+    post:
+      tags:
+      - workspaces
+      summary: 创建/执行绑定
+      description: 上游服务：app-cloud
+      operationId: post_workspaces_workspace_id_bindings
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /workspaces/{workspace_id}/bindings/{binding_id}:
+    delete:
+      tags:
+      - workspaces
+      summary: 删除绑定
+      description: 上游服务：app-cloud
+      operationId: delete_workspaces_workspace_id_bindings_binding_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: binding_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /workspaces/{workspace_id}/files:
+    get:
+      tags:
+      - workspaces
+      summary: 获取文件
+      description: 上游服务：app-cloud
+      operationId: get_workspaces_workspace_id_files
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []

@@ -465,7 +465,11 @@ export class MemoryAcademicStore
     }
     const project = this.projects.get(projectId);
     if (!project || project.uid !== uid) return null;
-    const next = applyProjectPatch(project, patchOrRef, Date.now());
+    // Monotonic clock: two updates in the same millisecond must still produce
+    // different optimistic-concurrency versions (CI can be much faster than a
+    // local run, so relying on Date.now() alone makes the If-Match test flaky).
+    const at = Math.max(Date.now(), project.updatedAt + 1);
+    const next = applyProjectPatch(project, patchOrRef, at);
     this.projects.set(projectId, next);
     return copy(next);
   }
@@ -478,8 +482,9 @@ export class MemoryAcademicStore
     const project = this.projects.get(projectId);
     if (!project || project.uid !== uid) return null;
     const { archivedAt: _ignored, ...rest } = project;
+    const at = Math.max(Date.now(), project.updatedAt + 1);
     const next: AcademicProject =
-      archivedAt === null ? { ...rest, updatedAt: Date.now() } : { ...project, archivedAt, updatedAt: Date.now() };
+      archivedAt === null ? { ...rest, updatedAt: at } : { ...project, archivedAt, updatedAt: at };
     this.projects.set(projectId, next);
     return copy(next);
   }
@@ -743,7 +748,7 @@ export class MemoryAcademicStore
     if (patch.title !== undefined) next.title = patch.title;
     if (patch.source !== undefined) next.source = copy(patch.source);
     if (patch.lastExport !== undefined) next.lastExport = copy(patch.lastExport);
-    next.updatedAt = Date.now();
+    next.updatedAt = Math.max(Date.now(), document.updatedAt + 1);
     this.documents.set(documentId, next);
     return copy(next);
   }
@@ -761,7 +766,7 @@ export class MemoryAcademicStore
   ): Promise<AcademicDocument | null> {
     const document = this.documents.get(documentId);
     if (!document || document.uid !== uid) return null;
-    const at = Date.now();
+    const at = Math.max(Date.now(), document.updatedAt + 1);
     const key = input.key?.trim() || sectionKeyFromTitle(input.title);
     const sections = document.sections.map(copy);
     const index = sections.findIndex((section) => section.key === key);
@@ -806,7 +811,7 @@ export class MemoryAcademicStore
     if (!document || document.uid !== uid) return null;
     const sections = document.sections.filter((section) => section.key !== sectionKey).map(copy);
     if (sections.length === document.sections.length) return copy(document);
-    const at = Date.now();
+    const at = Math.max(Date.now(), document.updatedAt + 1);
     const next: AcademicDocument = { ...copy(document), sections, updatedAt: at };
     this.documents.set(documentId, next);
     return copy(next);

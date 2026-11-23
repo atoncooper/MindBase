@@ -1,0 +1,87 @@
+# API: blindspot — 盲区实体/图/练习（app-ts）
+# 仅由 api/openapi.yaml 引用；$ref 指向 ../components/common.yaml。
+paths:
+  /blindspot/entity/{eid}:
+    get:
+      tags:
+      - blindspot
+      summary: 获取实体
+      description: 上游服务：app-ts
+      operationId: get_blindspot_entity_eid
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: eid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /blindspot/map:
+    get:
+      tags:
+      - blindspot
+      summary: 获取图谱
+      description: 上游服务：app-ts
+      operationId: get_blindspot_map
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+  /blindspot/{eid}/quiz:
+    post:
+      tags:
+      - blindspot
+      summary: 创建/执行测验
+      description: 上游服务：app-ts
+      operationId: post_blindspot_eid_quiz
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: eid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject

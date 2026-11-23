@@ -35,25 +35,17 @@ spec:
         - name: etcd
           image: quay.io/coreos/etcd:v3.5.14
           imagePullPolicy: IfNotPresent
-          command:
-            - etcd
-            - -advertise-client-urls=http://etcd:2379
-            - -listen-client-urls=http://0.0.0.0:2379
-            - -data-dir=/etcd
-          env:
-            - name: ETCD_AUTO_COMPACTION_MODE
-              value: revision
-            - name: ETCD_AUTO_COMPACTION_RETENTION
-              value: "1000"
-            - name: ETCD_QUOTA_BACKEND_BYTES
-              value: "4294967296"
-            - name: ETCD_SNAPSHOT_COUNT
-              value: "50000"
+          # 服务端参数在 deploy/config/etcd/etcd.plain.conf.yml（ConfigMap etcd-conf）。
+          command: ["etcd", "--config-file=/etc/etcd/etcd.conf.yml"]
           ports:
             - containerPort: 2379
           volumeMounts:
             - name: data
               mountPath: /etcd
+            - name: etcd-conf
+              mountPath: /etc/etcd/etcd.conf.yml
+              subPath: etcd.conf.yml
+              readOnly: true
           startupProbe:
             exec:
               command: ["etcdctl", "endpoint", "health"]
@@ -70,6 +62,10 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: etcd-conf
+          configMap:
+            name: etcd-conf
   volumeClaimTemplates:
     - metadata:
         name: data

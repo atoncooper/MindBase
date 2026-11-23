@@ -1,0 +1,199 @@
+# API: tasks — 任务视图/报名/答题（app-task、app-ts）
+# 仅由 api/openapi.yaml 引用；$ref 指向 ../components/common.yaml。
+paths:
+  /task-quiz/chat:
+    post:
+      tags:
+      - tasks
+      summary: 创建/执行对话
+      description: 上游服务：app-ts
+      operationId: post_task_quiz_chat
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /task-quiz/register:
+    post:
+      tags:
+      - tasks
+      summary: 创建/执行注册
+      description: 上游服务：app-ts
+      operationId: post_task_quiz_register
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /tasks:
+    get:
+      tags:
+      - tasks
+      summary: 获取任务
+      description: 上游服务：app-task
+      operationId: get_tasks
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+  /tasks/register:
+    post:
+      tags:
+      - tasks
+      summary: 创建/执行注册
+      description: 上游服务：app-task
+      operationId: post_tasks_register
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /tasks/{task_id}:
+    get:
+      tags:
+      - tasks
+      summary: 获取任务
+      description: 上游服务：app-task
+      operationId: get_tasks_task_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /tasks/{task_id}/answer:
+    post:
+      tags:
+      - tasks
+      summary: 创建/执行答题
+      description: 上游服务：app-content
+      operationId: post_tasks_task_id_answer
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /tasks/{task_id}/detail:
+    get:
+      tags:
+      - tasks
+      summary: 获取详情
+      description: 上游服务：app-content
+      operationId: get_tasks_task_id_detail
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []

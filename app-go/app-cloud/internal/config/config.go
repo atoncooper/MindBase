@@ -187,6 +187,7 @@ type QuotaConfig struct {
 	Free               int64  `yaml:"free"`
 	VIP                int64  `yaml:"vip"`
 	SVIP               int64  `yaml:"svip"`
+	PROMAX             int64  `yaml:"promax"`
 	MembershipBaseURL  string `yaml:"membership_base_url"`
 	MembershipAPIKey   string `yaml:"membership_api_key"`
 	MembershipCacheTTL int    `yaml:"membership_cache_ttl"`
@@ -597,6 +598,7 @@ func applyEnvOverrides(cfg *Config) {
 	atol("APPCLOUD__QUOTA__FREE", &cfg.Quota.Free)
 	atol("APPCLOUD__QUOTA__VIP", &cfg.Quota.VIP)
 	atol("APPCLOUD__QUOTA__SVIP", &cfg.Quota.SVIP)
+	atol("APPCLOUD__QUOTA__PROMAX", &cfg.Quota.PROMAX)
 	atoi("APPCLOUD__FOLDER__CACHE_TTL", &cfg.Folder.CacheTTL)
 	atoi("APPCLOUD__FOLDER__CACHE_MAX_ENTRIES", &cfg.Folder.CacheMaxEntries)
 }

@@ -82,7 +82,8 @@ CREATED ──条件更新──► PAID ──交付(会员顺延,同事务)─
 关键环境变量（详见 `.env.example` app-pay 段）：
 
 ```bash
-PAY_MYSQL_USER=app_pay            # 库 app_pay；PAY_MYSQL_PASSWORD=app-pay；宿主端口 3307
+# 用户名/库名/宿主端口是 docker-compose.yml 字面量；.env 只放密码
+PAY_MYSQL_PASSWORD=app-pay        # 库 app_pay；宿主端口 3307
 ALIPAY_ENABLED / ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PLATFORM_PUBLIC_KEY
 ALIPAY_GATEWAY_URL / ALIPAY_NOTIFY_URL
 PAY_TLS_ENABLED=true              # 应急逃生 false 仅限本机排查
@@ -323,16 +324,17 @@ cd app-pay && mvn test    # 38 个测试类 / 245 个用例（244 执行 + 性�
   `logs/pay-audit.jsonl`）；管理台统一 cookie SameSite=Lax + HttpOnly（TLS 下 Secure）+ 安全响应头。
 - **明确不做**：退款/关单/SKU 改价的直接 DB 写（红线不变，退款只经 internal 端点）。
 
-## 升级换购（同档补差价，2026-10）
+## 升级换购（同档 + 跨档补差价，2026-11）
 
-**语义**：会员有效期内，可对同档位更长周期 SKU「补差价升级」。
+**语义**：会员有效期内，可对同档位更长周期 SKU 补差价升级；跨档（如 VIP 年卡 → SVIP）按剩余时长折算抵扣，不能按短周期 SKU 全价叠加。
 
-- **差价**：应付金额 = 新 SKU 价 − 基准订单实付价（基准 = 会员 `last_order_no` 对应的 DELIVERED 订单）；
-- **时长**：交付在原到期日上顺延「新 SKU 天数 − 基准单天数」→ 总时长 = 从原购买日起的新套餐全长，已用天数不浪费；
-- **条件**：新 SKU 时长与价格均严格高于基准单；降档仍拒绝（`TIER_DOWNGRADE_BLOCKED`）；跨档（如 VIP → SVIP）为全价购买，原剩余时长保留；
-- **链式升级**：升级单交付后 `last_order_no` 自动切换为升级单，可再次按新基准升级（每次只补相邻差价，自我一致无套利）；
-- **约束**：同一会员同时仅允许一张待支付升级单（`UPGRADE_ORDER_PENDING`）；赠送/人工开通的会员无基准单，走人工流程（`UPGRADE_BASE_INVALID`）；
-- **档位墙豁免**：升级单支付确认时豁免第二道墙（同档按设计交付），权益事件标记 `UPGRADE`；
+- **同档差价**：应付 = 新 SKU 价 − 基准订单实付价（基准 = 会员 `last_order_no` 的 DELIVERED 订单）；交付在原到期日上顺延「新 SKU 天数 − 基准单天数」，总时长 = 从原购买日起的新套餐全长。
+- **跨档差价**：只升级剩余时长，应付 = 剩余天数 × (目标档位日均价 − 当前档位日均价)；到期日不变（交付天数 0）。目标 SKU 天数必须 ≥ 当前剩余天数（用于选到合适的日均价），否则 `UPGRADE_TARGET_TOO_SHORT`（例如 VIP 年卡剩 365 天不能买 SVIP 月卡）。
+- **为什么禁止短周期跨档**：`PayMembership` 只有单一 tier/expireAt，`extendLocked` 会把剩余 VIP 时长整体改成高 tier；若允许 ¥148 的 SVIP 月卡 / ¥248 的 ProMax 月卡叠加，会让整段 VIP 年卡都变成高 tier。跨档必须按剩余时长计价。
+- **降档**：仍拒绝（`TIER_DOWNGRADE_BLOCKED`）。
+- **链式升级**：升级单交付后 `last_order_no` 自动切换为升级单，可再次按新基准升级。
+- **约束**：同一会员同时仅允许一张待支付升级单（`UPGRADE_ORDER_PENDING`）；赠送/人工开通的会员无基准单，走人工流程（`UPGRADE_BASE_INVALID`）。
+- **档位墙豁免**：升级单支付确认时豁免第二道墙，权益事件标记 `UPGRADE`。
 - **接口**：`GET /pay/upgrade-quotes`（报价，前端商品卡展示差价）；建单复用 `POST /pay/orders`（服务端按同一公式计价，前端零信任）。
 
 

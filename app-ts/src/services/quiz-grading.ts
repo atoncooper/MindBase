@@ -249,7 +249,7 @@ export class QuizGradingService {
     if (this.deps.quota) {
       const ok = await this.deps.quota.consumeKind(uid, "grade");
       if (!ok) {
-        throw new QuizGenerationError("今日批改额度已用完，明日 0 点重置", 429);
+        throw new QuizGenerationError("AI token 额度不足，无法批改；窗口重置后恢复", 429);
       }
     } else {
       await this.deps.appQuiz.quotaConsume(uid, "grade");

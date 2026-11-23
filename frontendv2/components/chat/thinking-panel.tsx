@@ -56,6 +56,8 @@ interface ThinkingPanelProps {
   status: "pending" | "completed" | "failed";
   /** turn still thinking/executing AND the answer body has not started yet */
   active: boolean;
+  /** wall-clock seconds of the turn, used as a fallback when the tool steps carry no durations */
+  elapsedSeconds?: number;
 }
 
 export const ThinkingPanel = memo(function ThinkingPanel({
@@ -63,6 +65,7 @@ export const ThinkingPanel = memo(function ThinkingPanel({
   steps,
   status,
   active,
+  elapsedSeconds = 0,
 }: ThinkingPanelProps) {
   const hasThinking = !!reasoning || steps.length > 0;
   const streaming = status === "pending";
@@ -116,21 +119,22 @@ export const ThinkingPanel = memo(function ThinkingPanel({
       ),
     [steps]
   );
-  const seconds = formatSeconds(totalDurationMs);
+  const seconds = reasoning
+    ? formatSeconds(elapsedSeconds * 1000) || formatSeconds(totalDurationMs)
+    : formatSeconds(totalDurationMs);
 
-  // Header label: shimmering live wording while streaming, summary once settled.
+  // Header label: GPT-style "Thought for 12s" disclosure, with tool steps secondary.
   const label = (() => {
     if (streaming) {
-      const live = reasoning ? "正在思考" : "执行中";
-      return steps.length > 0 ? `${live} · ${steps.length} 步` : live;
+      const live = reasoning ? "思考中" : "执行中";
+      const elapsed = elapsedSeconds > 0 ? formatSeconds(elapsedSeconds * 1000) : "";
+      return [live, elapsed, steps.length > 0 ? `${steps.length} 步` : ""]
+        .filter(Boolean)
+        .join(" · ");
     }
     if (reasoning) {
-      if (steps.length > 0) {
-        return seconds
-          ? `已深度思考 · 思考了 ${seconds} · ${steps.length} 步`
-          : `已深度思考 · ${steps.length} 步`;
-      }
-      return seconds ? `已深度思考 · 思考了 ${seconds}` : "已深度思考";
+      const thought = seconds ? `思考了 ${seconds}` : "已深度思考";
+      return steps.length > 0 ? `${thought} · ${steps.length} 步` : thought;
     }
     return `已执行 · ${steps.length} 步`;
   })();
@@ -142,26 +146,34 @@ export const ThinkingPanel = memo(function ThinkingPanel({
   if (!hasThinking) return null;
 
   return (
-    <div className="mb-3">
+    <div className="mb-2.5">
       <Collapsible open={thinkingOpen} onOpenChange={(next) => setUserOpen(next)}>
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border-subtle bg-surface px-2.5 py-1 text-left text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            className="group -ml-1 inline-flex max-w-full items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-[12px] text-secondary transition-colors hover:bg-border-subtle/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
           >
-            <HeaderIcon
-              className={cn(
-                "h-3.5 w-3.5 shrink-0",
-                active ? "animate-pulse text-accent" : "text-tertiary"
+            <span className="relative grid h-4 w-4 shrink-0 place-items-center">
+              <HeaderIcon
+                className={cn(
+                  "h-3.5 w-3.5",
+                  active ? "text-accent" : "text-tertiary"
+                )}
+                aria-hidden="true"
+              />
+              {active && (
+                <span
+                  className="absolute -right-0.5 -top-0.5 h-1 w-1 animate-pulse rounded-full bg-accent"
+                  aria-hidden="true"
+                />
               )}
-              aria-hidden="true"
-            />
+            </span>
             <span className={cn("min-w-0 truncate", streaming && "chat-shimmer font-medium")}>
               {label}
             </span>
             <ChevronDown
               className={cn(
-                "h-3 w-3 shrink-0 text-tertiary transition-transform",
+                "ml-0.5 h-3 w-3 shrink-0 text-tertiary transition-transform",
                 thinkingOpen && "rotate-180"
               )}
               aria-hidden="true"
@@ -171,37 +183,38 @@ export const ThinkingPanel = memo(function ThinkingPanel({
 
         <CollapsibleContent>
           <div
-            className="mt-2 rounded-xl border border-border-subtle bg-border-subtle/40 px-3.5 py-3 text-[13px] text-secondary"
+            className="ml-[7px] mt-1 border-l border-border/80 pb-1 pl-3.5 sm:pl-4"
             role="region"
             aria-label="思考过程"
             aria-busy={active}
           >
-            {/* Model reasoning stream - Markdown, pinned to the bottom while growing. */}
             {reasoning && (
-              <div>
-                <div className="mb-1 flex items-center gap-2">
-                  <span className="text-[11px] font-medium text-tertiary">深度思考</span>
-                  <span className="ml-auto flex items-center gap-1">
+              <div className="group/reasoning">
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span className="text-[11px] font-medium tracking-wide text-tertiary">
+                    思考过程
+                  </span>
+                  <span className="ml-auto flex items-center gap-1 opacity-70 transition-opacity focus-within:opacity-100 sm:opacity-0 sm:group-hover/reasoning:opacity-100">
                     {reasoningLong && (
                       <button
                         type="button"
                         onClick={() => setReasoningExpanded((v) => !v)}
-                        className="rounded px-1 py-0.5 text-[11px] text-secondary transition-colors hover:bg-surface hover:text-foreground"
+                        className="rounded px-1 py-0.5 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
                         aria-expanded={reasoningExpanded}
                       >
-                        {reasoningExpanded ? "收起" : "展开全部"}
+                        {reasoningExpanded ? "收起" : "展开"}
                       </button>
                     )}
                     <button
                       type="button"
                       onClick={handleCopyReasoning}
-                      className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-secondary transition-colors hover:bg-surface hover:text-foreground"
+                      className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
                       aria-label={copied ? "已复制思考内容" : "复制思考内容"}
                     >
                       {copied ? (
-                        <Check className="h-2.5 w-2.5 text-success" aria-hidden="true" />
+                        <Check className="h-3 w-3 text-success" aria-hidden="true" />
                       ) : (
-                        <Copy className="h-2.5 w-2.5" aria-hidden="true" />
+                        <Copy className="h-3 w-3" aria-hidden="true" />
                       )}
                       {copied ? "已复制" : "复制"}
                     </button>
@@ -210,15 +223,15 @@ export const ThinkingPanel = memo(function ThinkingPanel({
                 <div
                   ref={reasoningScrollRef}
                   className={cn(
-                    "max-h-80 overflow-y-auto rounded-lg border border-border-subtle bg-surface px-3 py-2",
-                    reasoningLong && !reasoningExpanded && "max-h-40 overflow-hidden"
+                    "md-body pr-1 text-[13px] leading-7 text-secondary",
+                    reasoningLong &&
+                      (reasoningExpanded
+                        ? "max-h-96 overflow-y-auto"
+                        : "max-h-44 overflow-hidden")
                   )}
                   aria-label="深度思考内容"
                 >
-                  <div className="md-body text-[13px] leading-relaxed text-secondary">
-                    <Markdown>{reasoning}</Markdown>
-                  </div>
-                  {/* Streaming tail indicator: the reasoning is still arriving. */}
+                  <Markdown>{reasoning}</Markdown>
                   {status === "pending" && (
                     <span
                       className="ml-0.5 inline-block h-[1em] w-[2px] animate-pulse rounded-full bg-accent align-text-bottom"
@@ -229,28 +242,23 @@ export const ThinkingPanel = memo(function ThinkingPanel({
               </div>
             )}
 
-            {/* Section heading keeps the previous "执行过程 · N 步" wording. */}
-            {reasoning && steps.length > 0 && (
-              <div className="my-3 flex items-center gap-2 text-[11px] text-tertiary">
-                <span className="h-px flex-1 bg-border" />
-                <span>执行过程 · {steps.length} 步</span>
-                <span className="h-px flex-1 bg-border" />
-              </div>
-            )}
-            {!reasoning && steps.length > 0 && (
-              <div className="mb-1.5 text-[11px] text-tertiary">执行过程 · {steps.length} 步</div>
-            )}
-
             {steps.length > 0 && (
-              <ol className="list-none">
-                {steps.map((step, i) => (
-                  <ToolStepCard
-                    key={`${step.step}-${i}`}
-                    step={step}
-                    isLast={i === steps.length - 1}
-                  />
-                ))}
-              </ol>
+              <div className={cn(reasoning && "mt-4")}>
+                <div className="mb-1.5 flex items-center gap-2 text-[11px] text-tertiary">
+                  <span className="h-px flex-1 bg-border-subtle" />
+                  <span>执行过程 · {steps.length} 步</span>
+                  <span className="h-px flex-1 bg-border-subtle" />
+                </div>
+                <ol className="list-none space-y-1.5">
+                  {steps.map((step, i) => (
+                    <ToolStepCard
+                      key={`${step.step}-${i}`}
+                      step={step}
+                      isLast={i === steps.length - 1}
+                    />
+                  ))}
+                </ol>
+              </div>
             )}
           </div>
         </CollapsibleContent>

@@ -4,7 +4,7 @@
  * ChatAttachmentsDrawer - 聊天输入区的附件抽屉（右侧覆盖层）。
  *
  * 输入框上方不再常驻图片缩略图与会话文件 chips：待发送图片和当前会话的文档
- * 统一收进这里（工具栏「附件 N」按钮打开）。图片可预览/移除；会话文件可下载/
+ * 统一收进这里（工具栏附件菜单 → 查看附件）。图片可预览/移除；会话文件可下载/
  * 删除。Esc / 点击遮罩 / 关闭按钮收起；不做玻璃拟态/渐变，沿用浅色 token。
  */
 import { useEffect } from "react";
@@ -62,7 +62,7 @@ export function ChatAttachmentsDrawer({
                 role="dialog"
                 aria-modal="true"
                 aria-label={`附件 ${total}`}
-                className="absolute right-0 top-0 flex h-full w-[380px] max-w-[92vw] flex-col border-l border-border bg-surface shadow-[-8px_0_30px_rgba(0,0,0,0.12)]"
+                className="absolute right-0 top-0 flex h-full w-[380px] max-w-[92vw] flex-col border-l border-border bg-surface pt-[env(safe-area-inset-top)] shadow-[-8px_0_30px_rgba(0,0,0,0.12)]"
             >
                 <div className="flex items-center gap-2.5 border-b border-border-subtle px-4 py-3">
                     <Paperclip className="h-4 w-4 shrink-0 text-secondary" aria-hidden="true" />
@@ -76,7 +76,7 @@ export function ChatAttachmentsDrawer({
                         type="button"
                         onClick={onClose}
                         aria-label="关闭附件抽屉"
-                        className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground sm:h-7 sm:w-7"
                     >
                         <X className="h-4 w-4" aria-hidden="true" />
                     </button>
@@ -90,7 +90,7 @@ export function ChatAttachmentsDrawer({
                             </div>
                             <p className="mt-3 text-[13px] font-medium text-foreground">还没有附件</p>
                             <p className="mt-1 max-w-[260px] text-[12px] leading-relaxed text-secondary">
-                                用输入栏左侧的按钮上传图片或文档：待发送图片会随下一条消息发出，文档上传后会加入当前会话检索。
+                                点输入栏左侧的附件按钮，选择「上传图片」或「上传文档」：待发送图片会随下一条消息发出，文档上传后会加入当前会话检索。
                             </p>
                         </div>
                     ) : (
@@ -173,7 +173,7 @@ export function ChatAttachmentsDrawer({
                                                     <a
                                                         href={doc.download_url}
                                                         download={doc.filename}
-                                                        className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
+                                                        className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground sm:h-7 sm:w-7"
                                                         aria-label={`下载 ${doc.filename}`}
                                                         title="下载原始文件"
                                                     >
@@ -184,7 +184,7 @@ export function ChatAttachmentsDrawer({
                                                     <button
                                                         type="button"
                                                         onClick={() => onDeleteSessionFile(doc)}
-                                                        className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-danger/10 hover:text-danger"
+                                                        className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-danger/10 hover:text-danger sm:h-7 sm:w-7"
                                                         aria-label={`移除文件 ${doc.filename}`}
                                                         title="从当前会话移除"
                                                     >
@@ -200,7 +200,7 @@ export function ChatAttachmentsDrawer({
                     )}
                 </div>
 
-                <div className="border-t border-border-subtle px-4 py-2.5 text-[11px] leading-relaxed text-tertiary">
+                <div className="border-t border-border-subtle px-4 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] text-[11px] leading-relaxed text-tertiary">
                     图片随本条消息发送；会话文件在当前会话内可被检索，发送消息后仍保留。
                 </div>
             </aside>

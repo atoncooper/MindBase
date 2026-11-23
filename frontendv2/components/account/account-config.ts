@@ -65,7 +65,7 @@ export const SECTION_META: Record<SectionKey, SectionMeta> = {
     },
     "coding-plan": {
         title: "编程套餐",
-        description: "为站内 Code Agent 添加第三方编程套餐，仅 VIP / SVIP 可用。",
+        description: "为站内 Code Agent 添加第三方编程套餐，仅 VIP / SVIP / ProMax 可用。",
     },
 };
 

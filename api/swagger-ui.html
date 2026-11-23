@@ -3,37 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MindBase API 文档</title>
+    <title>MindBase API（当前版本）</title>
     <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css">
     <style>
-        :root {
-            --primary-color: #00a1d6;
-            --secondary-color: #25b8d4;
-        }
-        body {
-            margin: 0;
-            padding: 0;
-        }
-        .swagger-ui .topbar {
-            background-color: var(--primary-color);
-        }
-        .swagger-ui .topbar .download-url-wrapper {
-            display: none;
-        }
-        .swagger-ui .info .title {
-            color: var(--primary-color);
-        }
-        .swagger-ui .btn.execute {
-            background-color: var(--primary-color);
-            border-color: var(--primary-color);
-        }
-        .swagger-ui .btn.execute:hover {
-            background-color: var(--secondary-color);
-            border-color: var(--secondary-color);
-        }
+        :root { --primary-color: #00a1d6; --secondary-color: #25b8d4; }
+        body { margin: 0; padding: 0; }
+        .swagger-ui .topbar { background-color: var(--primary-color); }
+        .swagger-ui .topbar .download-url-wrapper { display: none; }
+        .swagger-ui .info .title { color: var(--primary-color); }
+        .swagger-ui .btn.execute { background-color: var(--primary-color); border-color: var(--primary-color); }
+        .swagger-ui .btn.execute:hover { background-color: var(--secondary-color); border-color: var(--secondary-color); }
+        .mb-note { max-width: 1200px; margin: 12px auto 0; padding: 10px 16px; background: #f1f7fb; border: 1px solid #cfe6f2; border-radius: 8px; color: #333; font: 13px/1.6 system-ui, sans-serif; }
     </style>
 </head>
 <body>
+    <div class="mb-note">
+        当前规格为 2026-11 Go/TS/Java 服务栈。用户 API 使用 <b>Authorization: Bearer &lt;session token&gt;</b>；
+        内部 M2M 使用 <b>apikey</b>（仅容器网络）。Servers 默认 <code>/mindbase/api/v1</code>，本地直连 APISIX 可改为
+        <code>http://127.0.0.1:9080</code>。说明见 <a href="./README.md">api/README.md</a>。拆分后的规格需通过 HTTP 打开（file:// 无法解析相对 $ref）。
+    </div>
     <div id="swagger-ui"></div>
 
     <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"></script>
@@ -44,10 +32,7 @@
                 url: "./openapi.yaml",
                 dom_id: '#swagger-ui',
                 deepLinking: true,
-                presets: [
-                    SwaggerUIBundle.presets.apis,
-                    SwaggerUIStandalonePreset
-                ],
+                presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
                 layout: "StandaloneLayout",
                 docExpansion: "list",
                 filter: true,
@@ -58,13 +43,15 @@
                 requestSnippetsEnabled: true,
                 requestSnippets: [
                     {
-                        title: "Example Request",
-                        value: "curl -X 'POST' \\\n  'http://localhost:8000/chat/ask' \\\n  -H 'Content-Type: application/json' \\\n  -d '{\n    \"question\": \"机器学习有哪些经典算法？\",\n    \"session_id\": \"your-session-id\",\n    \"folder_ids\": [123456]\n  }'"
+                        title: "Chat SSE（curl）",
+                        value: "curl -N -X POST 'https://<host>/mindbase/api/v1/chat/ask/stream' \\n  -H 'Authorization: Bearer <session-token>' \\n  -H 'Content-Type: application/json' \\n  -d '{\"question\":\"<问题>\",\"session_id\":\"<会话ID>\"}'"
+                    },
+                    {
+                        title: "Internal M2M（curl）",
+                        value: "curl -X GET 'https://apisix:9443/internal/pay/membership/<uid>' \\n  -H 'apikey: <APISIX_CONSUMER_KEY>'"
                     }
                 ],
-                onComplete: function() {
-                    console.log("Swagger UI loaded successfully");
-                }
+                onComplete: function() { console.log("MindBase API docs loaded"); }
             });
             window.ui = ui;
         };

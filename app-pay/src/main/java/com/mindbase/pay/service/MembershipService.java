@@ -201,8 +201,8 @@ public class MembershipService {
 
     /**
      * Tier write: adopt the requested tier when valid, but never downgrade while the membership is still active
-     * (an SVIP user buying a VIP monthly card must not lose the remaining SVIP benefits). Invalid tiers are
-     * ignored (keep the current one).
+     * (a ProMax user buying a VIP/SVIP monthly card must not lose the remaining higher-tier benefits).
+     * Invalid tiers are ignored (keep the current one).
      */
     private void applyTier(PayMembership membership, String requestedTier,
                            boolean stillActive, long uid, String orderNo) {
@@ -226,7 +226,7 @@ public class MembershipService {
             return null;
         }
         String t = tier.trim().toUpperCase();
-        return ("VIP".equals(t) || "SVIP".equals(t)) ? t : null;
+        return ("VIP".equals(t) || "SVIP".equals(t) || "PROMAX".equals(t)) ? t : null;
     }
 
     private static int rank(String tier) {
@@ -234,6 +234,7 @@ public class MembershipService {
             return 0;
         }
         return switch (tier) {
+            case "PROMAX" -> 3;
             case "SVIP" -> 2;
             case "VIP" -> 1;
             default -> 0;
@@ -275,7 +276,7 @@ public class MembershipService {
     }
 
     /**
-     * 当前生效档位的等级（FREE=0 / VIP=1 / SVIP=2；无会员或已过期 = 0）。
+     * 当前生效档位的等级（FREE=0 / VIP=1 / SVIP=2 / PROMAX=3；无会员或已过期 = 0）。
      * 下单时的重复购买拦截以此为准：等级 &gt;= 商品档位 → 拒绝（仅允许向上升级）。
      */
     @Transactional(readOnly = true)
@@ -310,7 +311,7 @@ public class MembershipService {
         return isActive(locked) ? rank(normalizeTierStatic(locked.getTier())) : 0;
     }
 
-    /** 档位等级（FREE=0 / VIP=1 / SVIP=2，未知档位按 0）。 */
+    /** 档位等级（FREE=0 / VIP=1 / SVIP=2 / PROMAX=3，未知档位按 0）。 */
     public static int tierRank(String tier) {
         return rank(normalizeTierStatic(tier));
     }
@@ -320,6 +321,6 @@ public class MembershipService {
             return null;
         }
         String t = tier.trim().toUpperCase();
-        return ("VIP".equals(t) || "SVIP".equals(t)) ? t : null;
+        return ("VIP".equals(t) || "SVIP".equals(t) || "PROMAX".equals(t)) ? t : null;
     }
 }

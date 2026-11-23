@@ -1,0 +1,517 @@
+# API: content-ops — 收藏夹、ASR、构建编排（app-user bili 域）
+# 仅由 api/openapi.yaml 引用；$ref 指向 ../components/common.yaml。
+paths:
+  /asr/content:
+    get:
+      tags:
+      - content-ops
+      summary: 获取content
+      description: 上游服务：app-user
+      operationId: get_asr_content
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+  /asr/create:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行创建
+      description: 上游服务：app-user
+      operationId: post_asr_create
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /asr/reasr:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行reasr
+      description: 上游服务：app-user
+      operationId: post_asr_reasr
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /asr/status/{task_id}:
+    get:
+      tags:
+      - content-ops
+      summary: 获取状态
+      description: 上游服务：app-user
+      operationId: get_asr_status_task_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /asr/update:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行update
+      description: 上游服务：app-user
+      operationId: post_asr_update
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /asr/versions:
+    get:
+      tags:
+      - content-ops
+      summary: 获取版本
+      description: 上游服务：app-user
+      operationId: get_asr_versions
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+  /favorites/organize/clean-invalid:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行clean-invalid
+      description: 上游服务：app-user
+      operationId: post_favorites_organize_clean_invalid
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /favorites/organize/execute:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行执行
+      description: 上游服务：app-user
+      operationId: post_favorites_organize_execute
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /favorites/organize/preview:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行预览
+      description: 上游服务：app-user
+      operationId: post_favorites_organize_preview
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /favorites/v2/list:
+    get:
+      tags:
+      - content-ops
+      summary: 获取列表
+      description: 上游服务：app-user
+      operationId: get_favorites_v2_list
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+  /favorites/v2/media/{media_id}/videos:
+    get:
+      tags:
+      - content-ops
+      summary: 获取视频
+      description: 上游服务：app-user
+      operationId: get_favorites_v2_media_media_id_videos
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: media_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /favorites/v2/sync:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行同步
+      description: 上游服务：app-user
+      operationId: post_favorites_v2_sync
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /favorites/v2/video/{bvid}/pages:
+    get:
+      tags:
+      - content-ops
+      summary: 获取分P
+      description: 上游服务：app-user
+      operationId: get_favorites_v2_video_bvid_pages
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: bvid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /favorites/v2/{folder_id}:
+    delete:
+      tags:
+      - content-ops
+      summary: 删除v2
+      description: 上游服务：app-user
+      operationId: delete_favorites_v2_folder_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /favorites/v2/{folder_id}/selected:
+    patch:
+      tags:
+      - content-ops
+      summary: 更新选中
+      description: 上游服务：app-user
+      operationId: patch_favorites_v2_folder_id_selected
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /knowledge/build:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行构建
+      description: 上游服务：app-user
+      operationId: post_knowledge_build
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /knowledge/build/active:
+    get:
+      tags:
+      - content-ops
+      summary: 获取活跃任务
+      description: 上游服务：app-user
+      operationId: get_knowledge_build_active
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+  /knowledge/build/status/{task_id}:
+    get:
+      tags:
+      - content-ops
+      summary: 获取状态
+      description: 上游服务：app-user
+      operationId: get_knowledge_build_status_task_id
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /knowledge/folders/sync:
+    post:
+      tags:
+      - content-ops
+      summary: 创建/执行同步
+      description: 上游服务：app-user
+      operationId: post_knowledge_folders_sync
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject

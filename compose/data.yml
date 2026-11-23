@@ -1,0 +1,267 @@
+# 数据组件（被根 docker-compose.yml include）：mysql（主/任务/支付/测试）、redis、mongo、milvus、neo4j、etcd、minio。
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks:
+    - mind-base-net
+services:
+
+  mysql:
+    <<: *defaults
+    image: mysql:8.4
+    container_name: mind-base-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=mind_base
+      - MYSQL_USER=mind_base
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 4g
+    cpus: 2.0
+    volumes:
+      - ../deploy/config/mysql/conf.d/00-base.cnf:/etc/mysql/conf.d/00-base.cnf:ro
+      - ../deploy/config/mysql/conf.d/10-tls.cnf:/etc/mysql/conf.d/10-tls.cnf:ro
+      - ../deploy/config/mysql/conf.d/95-binlog.cnf:/etc/mysql/conf.d/95-binlog.cnf:ro
+      - ../deploy/config/mysql/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
+      - mysql_data:/var/lib/mysql
+      - ../db/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app-task-mysql:
+    <<: *defaults
+    image: mysql:8.4
+    container_name: mind-base-app-task-mysql
+    profiles: ["", "task", "full"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_task
+      - MYSQL_USER=app_task
+      - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 768m
+    cpus: 1.0
+    volumes:
+      - ../deploy/config/mysql/conf.d/00-base.cnf:/etc/mysql/conf.d/00-base.cnf:ro
+      - ../deploy/config/mysql/conf.d/95-binlog.cnf:/etc/mysql/conf.d/95-binlog.cnf:ro
+      - ../deploy/config/mysql/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
+      - app_task_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${APPTASK_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app-pay-mysql:
+    <<: *defaults
+    image: mysql:8.4
+    container_name: mind-base-app-pay-mysql
+    profiles: ["", "pay", "full"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_pay
+      - MYSQL_USER=app_pay
+      - MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
+    ports:
+      - "127.0.0.1:3307:3306"
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 2g
+    cpus: 1.0
+    volumes:
+      - ../deploy/config/mysql/conf.d/00-base.cnf:/etc/mysql/conf.d/00-base.cnf:ro
+      - ../deploy/config/mysql/conf.d/10-tls.cnf:/etc/mysql/conf.d/10-tls.cnf:ro
+      - ../deploy/config/mysql/conf.d/95-binlog.cnf:/etc/mysql/conf.d/95-binlog.cnf:ro
+      - ../deploy/config/mysql/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
+      - app_pay_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${PAY_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    <<: *defaults
+    image: redis:7-alpine
+    container_name: mind-base-redis
+    ports:
+      - "6379:6379"
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 1g
+    cpus: 1.0
+    environment:
+      - REDIS_CONF=/usr/local/etc/redis/redis.conf
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD required}
+    volumes:
+      - redis_data:/data
+      - ../secrets/certs/redis:/certs:ro
+      - ../deploy/config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ../deploy/config/redis/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/certs/dev-ca.crt", "-a", "${REDIS_PASSWORD:-mind-base}", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    <<: *defaults
+    image: mongo:7
+    container_name: mind-base-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+      - MONGO_TLS=1
+      - MONGO_TMPL=/opt/mindbase/mongod.tmpl.conf
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 1g
+    cpus: 1.0
+    volumes:
+      - mongo_data:/data/db
+      - ../secrets/certs/mongo:/tls:ro
+      - ../deploy/config/mongodb/mongod.tmpl.conf:/opt/mindbase/mongod.tmpl.conf:ro
+      - ../deploy/config/mongodb/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--tls", "--tlsAllowInvalidCertificates", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  milvus:
+    <<: *defaults
+    image: milvusdb/milvus:v2.6.22
+    container_name: mind-base-milvus
+    profiles: ["", "storage", "full"]
+    command: milvus run standalone
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+      # Milvus 读取的是 MINIO_ACCESS_KEY_ID / MINIO_SECRET_ACCESS_KEY（不是 MINIO_ACCESS_KEY）。
+      - MINIO_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+      - ../deploy/config/milvus/milvus.yaml:/milvus/configs/milvus.yaml:ro
+      - ../secrets/certs/milvus:/certs:ro
+      - ../secrets/certs/etcd:/etcd-certs:ro
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  neo4j:
+    <<: *defaults
+    image: neo4j:5-community
+    container_name: mind-base-neo4j
+    profiles: ["", "storage", "full"]
+    ports:
+      - "7474:7474"   # Browser UI (dev/debug only)
+      - "7687:7687"   # Bolt protocol (app connects here)
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-mind-base}
+      - NEO4J_dbms_ssl_policy_bolt_enabled=true
+      - NEO4J_dbms_ssl_policy_bolt_base__directory=/certs/bolt
+      - NEO4J_dbms_ssl_policy_bolt_private__key=private.key
+      - NEO4J_dbms_ssl_policy_bolt_public__certificate=public.crt
+      - NEO4J_dbms_ssl_policy_bolt_client__auth=NONE
+      - NEO4J_server_bolt_tls__level=REQUIRED
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - ../secrets/certs/neo4j:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  etcd:
+    <<: *defaults
+    image: quay.io/coreos/etcd:v3.5.14
+    container_name: mind-base-etcd
+    profiles: ["", "standalone", "storage", "task", "full"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    command: ["etcd", "--config-file=/etc/etcd/etcd.conf.yml"]
+    mem_limit: 1g
+    cpus: 1.0
+    volumes:
+      - etcd_data:/etcd
+      - ../secrets/certs/etcd:/certs:ro
+      - ../deploy/config/etcd/etcd.conf.yml:/etc/etcd/etcd.conf.yml:ro
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    <<: *defaults
+    image: atoncooper/mind-base-minio:latest
+    pull_policy: missing
+    container_name: mind-base-minio
+    profiles: ["", "standalone", "storage", "sandbox", "full"]
+    ports:
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6380
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
+      - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
+      - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
+      - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
+      - MINIO_NOTIFY_WEBHOOK_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_WEBHOOK_ENDPOINT_clouddrive=https://app-cloud:8007/internal/cloud/minio/events
+      - MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_clouddrive=${MINIO_EVENT_TOKEN:-dev-minio-event-token}
+      - MINIO_NOTIFY_WEBHOOK_QUEUE_LIMIT_clouddrive=10000
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+      - ../secrets/certs/minio:/root/.minio/certs:ro
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app-pay-test-mysql:
+    <<: *defaults
+    image: mysql:8.4
+    container_name: mind-base-app-pay-test-mysql
+    profiles: ["pay-test", "full"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+      - MYSQL_DATABASE=app_pay_test
+      - MYSQL_USER=app_pay_test
+      - MYSQL_PASSWORD=app-pay-test
+    ports:
+      - "127.0.0.1:18306:3306"
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 512m
+    cpus: 1.0
+    volumes:
+      - ../deploy/config/mysql/conf.d/00-base.cnf:/etc/mysql/conf.d/00-base.cnf:ro
+      - ../deploy/config/mysql/conf.d/95-binlog.cnf:/etc/mysql/conf.d/95-binlog.cnf:ro
+      - ../deploy/config/mysql/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
+      - app_pay_test_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

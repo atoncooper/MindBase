@@ -44,12 +44,15 @@ public class ProductService implements ApplicationRunner {
     private final TwoLevelCache cache;
 
     private static final List<PayProduct> DEFAULT_SKUS = List.of(
-            sku("VIP_MONTHLY", "Membership · Monthly", 30, 1800, 10, "VIP"),
-            sku("VIP_QUARTERLY", "Membership · Quarterly", 90, 4500, 20, "VIP"),
-            sku("VIP_YEARLY", "Membership · Yearly", 365, 15800, 30, "VIP"),
-            sku("SVIP_MONTHLY", "Super Membership · Monthly", 30, 4800, 40, "SVIP"),
-            sku("SVIP_QUARTERLY", "Super Membership · Quarterly", 90, 12000, 50, "SVIP"),
-            sku("SVIP_YEARLY", "Super Membership · Yearly", 365, 42000, 60, "SVIP")
+            sku("VIP_MONTHLY", "Membership · Monthly", 30, 4800, 10, "VIP"),
+            sku("VIP_QUARTERLY", "Membership · Quarterly", 90, 12000, 20, "VIP"),
+            sku("VIP_YEARLY", "Membership · Yearly", 365, 42000, 30, "VIP"),
+            sku("SVIP_MONTHLY", "Super Membership · Monthly", 30, 14800, 40, "SVIP"),
+            sku("SVIP_QUARTERLY", "Super Membership · Quarterly", 90, 37000, 50, "SVIP"),
+            sku("SVIP_YEARLY", "Super Membership · Yearly", 365, 129800, 60, "SVIP"),
+            sku("PROMAX_MONTHLY", "ProMax Membership · Monthly", 30, 24800, 70, "PROMAX"),
+            sku("PROMAX_QUARTERLY", "ProMax Membership · Quarterly", 90, 62000, 80, "PROMAX"),
+            sku("PROMAX_YEARLY", "ProMax Membership · Yearly", 365, 217800, 90, "PROMAX")
     );
 
     private static PayProduct sku(String code, String title, int days, long priceCents, int sort, String tier) {

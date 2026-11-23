@@ -143,7 +143,7 @@ function EditableUserMessage({
 
   return (
     <div className="flex flex-col items-end gap-2">
-      <div className="w-[78%] rounded-[18px] rounded-br-md border border-accent/40 bg-surface px-4 py-2.5 focus-within:border-accent">
+      <div className="w-[85%] rounded-[18px] rounded-br-md border border-accent/40 bg-surface px-3.5 py-2.5 focus-within:border-accent sm:w-[78%] sm:px-4">
         <textarea
           ref={textareaRef}
           value={draft}
@@ -328,6 +328,20 @@ function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
   );
 }
 
+function UserEditButton({ onEdit }: { onEdit: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onEdit}
+      title="编辑并重新发送（此轮之后的对话将被移除）"
+      aria-label="编辑消息"
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tertiary opacity-100 transition-colors hover:bg-border-subtle hover:text-foreground focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+    >
+      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  );
+}
+
 function ChatMessage({
   role,
   content,
@@ -414,41 +428,42 @@ function ChatMessage({
       );
     }
     return (
-      <div className="group flex items-center justify-end gap-1.5" role="article" aria-roledescription="用户消息">
-        {onEdit && (
-          <button
-            type="button"
-            onClick={onEdit}
-            title="编辑并重新发送（此轮之后的对话将被移除）"
-            aria-label="编辑消息"
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tertiary opacity-100 transition-colors hover:bg-border-subtle hover:text-foreground md:opacity-0 md:group-hover:opacity-100"
-          >
-            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        )}
-        <div className="max-w-[78%]">
+      <div
+        className="group flex justify-end"
+        role="article"
+        aria-roledescription="用户消息"
+      >
+        <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5 sm:max-w-[78%]">
           {images && images.length > 0 && (
-            <div className="mb-1.5 flex flex-wrap justify-end gap-2">
+            <div className="flex max-w-full flex-wrap justify-end gap-1.5">
               {images.map((src, i) => (
                 <button
                   key={i}
                   type="button"
                   onClick={() => onImageOpen?.(src)}
-                  className="overflow-hidden rounded-xl border border-border transition-transform hover:scale-[1.02]"
+                  className="max-w-full overflow-hidden rounded-2xl border border-border bg-surface shadow-[0_1px_2px_rgba(60,64,67,0.08)] transition-transform hover:scale-[1.015]"
                   title="点击查看大图"
                 >
                   <img
                     src={src}
                     alt={`附件 ${i + 1}`}
-                    className="max-h-48 object-cover"
+                    className="max-h-48 max-w-full object-cover sm:max-h-64"
                   />
                 </button>
               ))}
             </div>
           )}
           {content && (
-            <div className="whitespace-pre-wrap break-words rounded-[18px] rounded-br-md bg-[#dce8fb] px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
-              {content}
+            <div className="flex max-w-full items-center justify-end gap-2">
+              <div className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-[18px] rounded-br-[6px] bg-[#dce8fb] px-3.5 py-2.5 text-[15px] leading-relaxed text-foreground shadow-[0_1px_2px_rgba(60,64,67,0.06)] sm:px-4">
+                {content}
+              </div>
+              {onEdit && <UserEditButton onEdit={onEdit} />}
+            </div>
+          )}
+          {!content && onEdit && (
+            <div className="flex justify-end">
+              <UserEditButton onEdit={onEdit} />
             </div>
           )}
         </div>
@@ -456,7 +471,7 @@ function ChatMessage({
     );
   }
 
-  // ---- Assistant message: avatar-led, full-width, no bubble ----
+// ---- Assistant message: avatar-led, full-width, no bubble ----
   return (
     <div
       className="group flex gap-3"
@@ -478,6 +493,7 @@ function ChatMessage({
           steps={safeReasoningSteps}
           status={status}
           active={isPending && !content}
+          elapsedSeconds={elapsedSeconds}
         />
 
         {/* Task plan (plan tool): live checklist above the answer body. DAG
@@ -507,11 +523,10 @@ function ChatMessage({
             </div>
           )}
 
-          {/* Live running row. ALWAYS rendered while the turn is pending - even
-              when text/reasoning is already on screen - so a long tool call,
-              plan step or delegation never looks like a silently dead stream.
-              Sits under the answer body, above interaction/sources. */}
-          {isPending && (
+          {/* Live running row. Reasoning already has its own GPT-style
+              "思考中 · 12s" disclosure, so don't duplicate it before the answer
+              body starts; tool-only turns and text streaming still get the row. */}
+          {isPending && !(reasoning && !content) && (
             <div
               className={`${content ? "mt-1.5 " : ""}flex h-7 items-center gap-2.5 text-[12px] text-tertiary`}
               role="status"

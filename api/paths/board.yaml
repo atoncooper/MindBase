@@ -1,0 +1,174 @@
+# API: board — 板子 CRUD/置顶（app-content）
+# 仅由 api/openapi.yaml 引用；$ref 指向 ../components/common.yaml。
+paths:
+  /board/boards:
+    get:
+      tags:
+      - board
+      summary: 获取白板
+      description: 上游服务：app-content
+      operationId: get_board_boards
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - board
+      summary: 创建/执行白板
+      description: 上游服务：app-content
+      operationId: post_board_boards
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+  /board/boards/{uuid}:
+    get:
+      tags:
+      - board
+      summary: 获取白板
+      description: 上游服务：app-content
+      operationId: get_board_boards_uuid
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: uuid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - board
+      summary: 更新白板
+      description: 上游服务：app-content
+      operationId: put_board_boards_uuid
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: uuid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject
+    delete:
+      tags:
+      - board
+      summary: 删除白板
+      description: 上游服务：app-content
+      operationId: delete_board_boards_uuid
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: uuid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+  /board/boards/{uuid}/pin:
+    patch:
+      tags:
+      - board
+      summary: 更新pin
+      description: 上游服务：app-content
+      operationId: patch_board_boards_uuid_pin
+      responses:
+        '200':
+          description: 成功
+        '400':
+          $ref: ../components/common.yaml#responses/BadRequest
+        '401':
+          $ref: ../components/common.yaml#responses/Unauthorized
+        '404':
+          $ref: ../components/common.yaml#responses/NotFound
+        '409':
+          $ref: ../components/common.yaml#responses/Conflict
+        '429':
+          $ref: ../components/common.yaml#responses/TooManyRequests
+      parameters:
+      - name: uuid
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#schemas/JsonObject

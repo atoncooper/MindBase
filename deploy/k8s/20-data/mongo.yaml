@@ -40,7 +40,13 @@ spec:
                 name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
+          # 生产标准：entrypoint 渲染模板并按 Pod cgroup 内存计算 WiredTiger cache。
+          command: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
           env:
+            - name: MONGO_TLS
+              value: "0"
+            - name: MONGO_TMPL
+              value: /opt/mindbase/mongod.tmpl.conf
             # ⚠️ mongo 镜像只认 MONGO_INITDB_*（compose 由 ${MONGO_USER:-admin} 映射而来）；
             # 直接 envFrom 传 MONGO_USER 镜像不识别 → 无认证启动 → 带凭据的客户端全部
             # AuthenticationFailed（历史事故）。取值走 defaults，与各服务连接串同源；
@@ -50,12 +56,20 @@ spec:
                 configMapKeyRef: { name: mindbase-defaults, key: MONGO_USER }
             - name: MONGO_INITDB_ROOT_PASSWORD
               valueFrom:
-                configMapKeyRef: { name: mindbase-defaults, key: MONGO_PASSWORD }
+                secretKeyRef: { name: mindbase-env, key: MONGO_PASSWORD }
           ports:
             - containerPort: 27017
           volumeMounts:
             - name: data
               mountPath: /data/db
+            - name: mongo-conf
+              mountPath: /opt/mindbase/mongod.tmpl.conf
+              subPath: mongod.tmpl.conf
+              readOnly: true
+            - name: mongo-conf
+              mountPath: /opt/mindbase/entrypoint-autosize.sh
+              subPath: entrypoint.sh
+              readOnly: true
           startupProbe:
             exec:
               command: ["mongosh", "--eval", "db.adminCommand('ping')"]
@@ -77,6 +91,10 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { cpu: 500m, memory: 1Gi }
+      volumes:
+        - name: mongo-conf
+          configMap:
+            name: mongo-conf
   volumeClaimTemplates:
     - metadata:
         name: data

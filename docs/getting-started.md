@@ -273,7 +273,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # OpenResty → 前
 
 ## 7. 常见问题
 
-**端口被占用。** 常见冲突：3000（compose `frontend` 与本地 `npm run dev` 二选一，或用 `FRONTEND_PORT` 改容器端口）、8000（compose `app-ts` 与本地 dev，可用 `APP_TS_PORT` 改）、80/443（OpenResty；根 compose 固定映射，Windows 上常被 IIS/其他服务占用，需先停占用进程或改 `docker-compose.yml`；`docker-compose.client.yml` 支持 `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT`）、3001（compose app-admin UI 与 frontend-admin `pnpm dev`）、8016、3306。先 `docker compose stop <服务>` 再用本地进程。
+**端口被占用。** 常见冲突：3000（compose `frontend` 与本地 `npm run dev` 二选一，或改 `docker-compose.yml` 的 `ports:`）、8000（compose `app-ts` 与本地 dev，或改 compose 端口映射）、80/443（OpenResty；根 compose 固定映射，Windows 上常被 IIS/其他服务占用，需先停占用进程或改 `docker-compose.yml`）、3001（compose app-admin UI 与 frontend-admin `pnpm dev`）、8016、3306。先 `docker compose stop <服务>` 再用本地进程。
 
 **`docker compose` 启动直接报 `err_APISIX_CONSUMER_KEY_not_set_in_.env`。** 这是 compose 的强制校验，按 §2.3 / §2.4 填 `.env`。`PAY_OPS_KEY` 自 2026-11-03 起为**可选**（仅 app-admin「退款复核」用；留空则该页 404 隐藏，不再触发 compose 校验）。
 
@@ -302,7 +302,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # OpenResty → 前
 ## 8. 相关文档
 
 - 架构与配置：[architecture.md](architecture.md)（服务清单 / 端口 / 网关路由，权威）、[configuration.md](configuration.md)（配置入口与密钥清单）、[project-structure.md](project-structure.md)（目录索引）、[features.md](features.md)（功能清单）、[api.md](api.md)（API 概览）。
-- 运行与部署：[setup-guide.md](setup-guide.md)（只用 Docker 跑起来）、[deployment.md](deployment.md)（生产 / HTTPS / 备份）、[client-compose.md](client-compose.md)（单人客户端 compose）、[faq.md](faq.md)。
+- 运行与部署：[setup-guide.md](setup-guide.md)（只用 Docker 跑起来）、[deployment.md](deployment.md)（生产 / HTTPS / 备份）、[faq.md](faq.md)。
 - 专题：[academic-agent.md](academic-agent.md)（学术 Agent）、[code-execution.md](code-execution.md)（`run_code` 沙箱与降级）、[app-admin.md](app-admin.md)（分享审核 / 沙箱管理代理）。
 
 完整文档索引见 [docs/README.md](README.md)。

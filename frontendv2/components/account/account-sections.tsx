@@ -38,6 +38,7 @@ import {
 import {
     formatCountdown,
     formatDate,
+    formatTokens,
     formatYuanMicro,
     membershipTier,
     quotaPercent,
@@ -158,7 +159,7 @@ export function MembershipSection({
     tiers: PayTierInfo[];
 }) {
     const tier = membershipTier(membership);
-    const paid = tier === "VIP" || tier === "SVIP";
+    const paid = tier === "VIP" || tier === "SVIP" || tier === "PROMAX";
     const info = tiers.find((t) => t.tier.toUpperCase() === tier);
     const expire =
         membership?.active && membership.expireAt
@@ -284,12 +285,10 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
         );
     }
 
-    const chat =
-        quota.kinds.find((k) => k.kind === "chat") ??
-        quota.kinds.find((k) => k.kind === "chat_anon");
-    const percent = chat ? quotaPercent(chat) : 0;
-    const unlimited = chat ? chat.limit < 0 : false;
-    const remaining = chat?.remainingPercent ?? Math.max(0, 100 - percent);
+    const day = quota.windows?.find((w) => w.window === "day");
+    const percent = day?.usedPercent ?? 0;
+    const unlimited = day ? day.limit < 0 : false;
+    const remaining = day?.remainingPercent ?? Math.max(0, 100 - percent);
     const tone = percent >= 100 ? "danger" : percent >= 80 ? "warning" : "info";
     const cost = quota.cost;
 
@@ -309,7 +308,7 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
                     <CardHeader
                         icon={<Gauge className="h-5 w-5" />}
                         title="今日概览"
-                        description={`${formatCountdown(cost.resetAt)} · 每日 0 点重置`}
+                        description={`${day ? formatCountdown(day.resetAt) : "—"} · 每日 0 点重置`}
                     />
                     <div className="px-5 pb-5">
                         <div className="flex items-end justify-between gap-3">
@@ -326,13 +325,13 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
                                 >
                                     {percent}%
                                 </span>
-                                <span className="text-[12px] text-secondary">AI 问答已用</span>
+                                <span className="text-[12px] text-secondary">AI token 已用</span>
                             </div>
                             <span className="pb-1 text-[11px] tabular-nums text-tertiary">
-                                {chat
+                                {day
                                     ? unlimited
                                         ? "不限量"
-                                        : `${chat.used}/${chat.limit}`
+                                        : formatTokens(day.used) + "/" + formatTokens(day.limit)
                                     : "—"}
                             </span>
                         </div>
@@ -341,14 +340,14 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
                             {unlimited ? "当前档位不限量" : `剩余 ${remaining}%`}
                         </p>
                         <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-border-subtle pt-3">
-                            <MetaItem label="已用次数" value={chat ? String(chat.used) : "—"} />
+                            <MetaItem label="已用 token" value={day ? formatTokens(day.used) : "—"} />
                             <MetaItem
-                                label="剩余额度"
+                                label="剩余 token"
                                 value={
-                                    chat
+                                    day
                                         ? unlimited
                                             ? "不限量"
-                                            : String(Math.max(0, chat.limit - chat.used))
+                                            : formatTokens(Math.max(0, day.limit - day.used))
                                         : "—"
                                 }
                             />
@@ -374,17 +373,14 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
                                 hint: "全能力合计",
                             },
                             {
-                                label: "省流阈值",
-                                value:
-                                    cost.softMicroYuan > 0
-                                        ? formatYuanMicro(cost.softMicroYuan)
-                                        : "—",
-                                hint: "超过后进入 L1",
+                                label: "用量状态",
+                                value: cost.level === "L1" ? "L1 省流" : "L0 全量",
+                                hint: "按当日 token 额度百分比切换",
                             },
                             {
-                                label: "熔断阈值",
-                                value: formatYuanMicro(cost.guardMicroYuan),
-                                hint: cost.guardEnabled ? "超过当日冻结" : "未启用",
+                                label: "成本熔断",
+                                value: cost.guardEnabled ? formatYuanMicro(cost.guardMicroYuan) : "未启用",
+                                hint: cost.guardEnabled ? "token 窗口之外的兜底" : "token 窗口为主口径",
                             },
                         ].map((row) => (
                             <div
@@ -408,7 +404,7 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
                 <CardHeader
                     icon={<BarChart3 className="h-5 w-5" />}
                     title="各能力用量"
-                    description="仅统计成功的调用，失败与重试不消耗额度。"
+                    description="按 token 统计；所有能力共享同一额度池，失败与重试不消耗。"
                 />
                 <div className="px-5 pb-3">
                     {quota.kinds.length === 0 ? (
@@ -427,7 +423,7 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
 
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[#f8f9fa] px-4 py-3">
                 <p className="text-[12px] leading-relaxed text-secondary">
-                    配额按自然日 0 点重置，展示已用百分比；成本按价格快照折算，仅供参考。
+                    额度按 token 计量：5 小时滚动 + 每日 0 点 + 每月 1 日；成本按价格快照折算，仅供参考。
                 </p>
                 <GoogleLinkButton href="/quota" variant="text">
                     打开完整用量页
@@ -439,7 +435,6 @@ export function QuotaSection({ quota }: { quota: QuotaSummary | null }) {
 
 function QuotaKindRow({ kind, last }: { kind: QuotaKindSummary; last: boolean }) {
     const label = QUOTA_KIND_LABELS[kind.kind] ?? kind.kind;
-    const unlimited = kind.limit < 0;
     const percent = quotaPercent(kind);
     const tone = percent >= 100 ? "danger" : percent >= 80 ? "warning" : "info";
 
@@ -453,10 +448,10 @@ function QuotaKindRow({ kind, last }: { kind: QuotaKindSummary; last: boolean })
                         percent >= 100 ? "text-danger" : "text-secondary",
                     )}
                 >
-                    {unlimited ? "不限量" : `${percent}% · ${kind.used}/${kind.limit}`}
+                    {formatTokens(kind.used)} token · 占今日 {percent}%
                 </span>
             </div>
-            {!unlimited && <ProgressBar value={percent} tone={tone} className="mt-2" />}
+            <ProgressBar value={percent} tone={tone} className="mt-2" />
         </div>
     );
 }

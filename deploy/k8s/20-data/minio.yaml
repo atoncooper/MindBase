@@ -45,6 +45,14 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
+            # 镜像只认 MINIO_ROOT_*；.env 用 MINIO_ACCESS_KEY/SECRET_KEY 命名，
+            # 这里映射一次（凭据只存在 Secret，不进 ConfigMap）。
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MINIO_ACCESS_KEY }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MINIO_SECRET_KEY }
             - name: MINIO_NOTIFY_REDIS_ENABLE_clouddrive
               value: "on"
             - name: MINIO_NOTIFY_REDIS_FORMAT_clouddrive
@@ -53,7 +61,7 @@ spec:
               value: redis:6379
             - name: MINIO_NOTIFY_REDIS_PASSWORD_clouddrive
               valueFrom:
-                configMapKeyRef: { name: mindbase-defaults, key: REDIS_PASSWORD }
+                secretKeyRef: { name: mindbase-env, key: REDIS_PASSWORD }
             - name: MINIO_NOTIFY_REDIS_KEY_clouddrive
               value: minio:events:clouddrive
             - name: MINIO_NOTIFY_REDIS_EVENTS_clouddrive

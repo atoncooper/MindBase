@@ -160,9 +160,16 @@ services:
       - MYSQL_DATABASE=mind_base
       - MYSQL_USER=${MYSQL_USER:-mind_base}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
+    # 生产标准：00-base 硬化 + 按 cgroup 内存/CPU 自动 sizing（entrypoint）。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 4g
+    cpus: 2.0
     volumes:
       - mysql_data:/var/lib/mysql
       - ../../db/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ../config/mysql/conf.d/00-base.cnf:/etc/mysql/conf.d/00-base.cnf:ro
+      - ../config/mysql/conf.d/95-binlog.cnf:/etc/mysql/conf.d/95-binlog.cnf:ro
+      - ../config/mysql/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
@@ -177,16 +184,16 @@ services:
     container_name: mind-base-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
-    command: >
-      redis-server
-      --requirepass ${REDIS_PASSWORD:-mind-base}
-      --notify-keyspace-events Ex
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --save 900 1
-      --save 300 10
+    # 生产标准：静态配置 + 按 cgroup 内存自动 maxmemory；密码仍由 .env 注入。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 1g
+    cpus: 1.0
+    environment:
+      - REDIS_CONF=/usr/local/etc/redis/redis.conf
     volumes:
       - redis_data:/data
+      - ../config/redis/redis.plain.conf:/usr/local/etc/redis/redis.conf:ro
+      - ../config/redis/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
@@ -204,8 +211,15 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+      - MONGO_TLS=0
+    # 生产标准：auth 开启；entrypoint 渲染模板并按 cgroup 内存计算 WiredTiger cache。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 1g
+    cpus: 1.0
     volumes:
       - mongo_data:/data/db
+      - ../config/mongodb/mongod.tmpl.conf:/opt/mindbase/mongod.tmpl.conf:ro
+      - ../config/mongodb/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]

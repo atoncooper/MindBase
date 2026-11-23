@@ -11,8 +11,15 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+      - MONGO_TLS=0
+    # 生产标准：auth 开启；entrypoint 渲染模板并按 cgroup 内存计算 WiredTiger cache。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 512m
+    cpus: 1.0
     volumes:
       - mongo_data:/data/db
+      - ../../deploy/config/mongodb/mongod.tmpl.conf:/opt/mindbase/mongod.tmpl.conf:ro
+      - ../../deploy/config/mongodb/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]

@@ -105,13 +105,13 @@ minio:
   # minio.accessKeyID and minio.secretAccessKey together are used for identity authentication to access the MinIO or S3 service.
   # This configuration must be set identical to the environment variable MINIO_ACCESS_KEY_ID, which is necessary for starting MinIO or S3.
   # The default value applies to MinIO or S3 service that started with the default docker-compose.yml file.
-  accessKeyID: minioadmin
+  accessKeyID: ""   # 由 MINIO_ACCESS_KEY env 注入（密钥不进配置文件）
   # Secret key used to encrypt the signature string and verify the signature string on server. It must be kept strictly confidential and accessible only to the MinIO or S3 server and users.
   # Environment variable: MINIO_SECRET_ACCESS_KEY or minio.secretAccessKey
   # minio.accessKeyID and minio.secretAccessKey together are used for identity authentication to access the MinIO or S3 service.
   # This configuration must be set identical to the environment variable MINIO_SECRET_ACCESS_KEY, which is necessary for starting MinIO or S3.
   # The default value applies to MinIO or S3 service that started with the default docker-compose.yml file.
-  secretAccessKey: minioadmin
+  secretAccessKey: ""   # 由 MINIO_SECRET_KEY env 注入（密钥不进配置文件）
   useSSL: true # Switch value to control if to access the MinIO or S3 service through SSL. (MinIO is TLS-only, shared dev CA)
   ssl:
     tlsCACert: /certs/dev-ca.crt # shared dev CA
@@ -1007,7 +1007,7 @@ common:
     superUsers: 
     # default password for root user. The maximum length is 72 characters. 
     # Large numeric passwords require double quotes to avoid yaml parsing precision issues.
-    defaultRootPassword: Milvus
+    defaultRootPassword: "" # 本栈 authorizationEnabled=false；启用认证时用 Secret/环境变量注入，不写死默认口令
     rootShouldBindRole: false # Whether the root user should bind a role when the authorization is enabled.
     enablePublicPrivilege: true # Whether to enable public privilege
     exprEnabled: false # Whether to enable the /expr endpoint for debugging. When enabled, only root user can access it via HTTP Basic Auth on Proxy nodes.

@@ -21,9 +21,10 @@ import (
 
 // Membership tiers consumed by the Coding Plan gate.
 const (
-	TierFree = "free"
-	TierVIP  = "vip"
-	TierSVIP = "svip"
+	TierFree   = "free"
+	TierVIP    = "vip"
+	TierSVIP   = "svip"
+	TierPROMAX = "promax"
 )
 
 // membershipCacheTTL is the short in-process cache for app-pay membership
@@ -77,7 +78,7 @@ func NewMembershipClient(cfg config.AppPayConfig) *MembershipClient {
 	}
 }
 
-// Tier returns "free" | "vip" | "svip". Errors are fail-closed: the caller
+// Tier returns "free" | "vip" | "svip" | "promax". Errors are fail-closed: the caller
 // must reject the request (never assume free and proceed).
 func (c *MembershipClient) Tier(ctx context.Context, uid int64) (string, error) {
 	if uid <= 0 {
@@ -119,6 +120,8 @@ func membershipTier(reply *membershipReply) string {
 	switch strings.ToUpper(strings.TrimSpace(*reply.Tier)) {
 	case "VIP":
 		return TierVIP
+	case "PROMAX":
+		return TierPROMAX
 	case "SVIP":
 		return TierSVIP
 	default:

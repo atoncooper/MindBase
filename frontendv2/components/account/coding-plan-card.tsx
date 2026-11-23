@@ -7,7 +7,7 @@
  * 主色 #0b57d0、正文 #202124 / 次要 #5f6368、40px 圆形图标底、4px 细进度条、
  * 胶囊按钮；不使用玻璃拟态或渐变。
  *
- * VIP/SVIP 用户可以添加第三方编程套餐（OpenCode Zen/Go、Kimi Coding 或
+ * VIP/SVIP/ProMax 用户可以添加第三方编程套餐（OpenCode Zen/Go、Kimi Coding 或
  * 自定义 OpenAI/Anthropic 兼容端点），供站内对话 / Code Agent 使用；free
  * 只看到升级提示（链 /membership）。所有请求经 lib/api/coding-plan.ts，组件
  * 不直接 fetch。API Key 只写不读：列表仅展示后端返回的 api_key_masked，编辑
@@ -118,7 +118,7 @@ interface Props {
 
 export function CodingPlanCard({ membership, onToast }: Props) {
     const tier = (membership?.tier ?? "").toUpperCase();
-    const isVip = Boolean(membership?.active) && (tier === "VIP" || tier === "SVIP");
+    const isVip = Boolean(membership?.active) && (tier === "VIP" || tier === "SVIP" || tier === "PROMAX");
 
     const [plans, setPlans] = useState<CodingPlan[]>([]);
     // YAML provider catalog (labels + default Base URLs) served with the plans.
@@ -262,13 +262,13 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                             </span>
                             <div className="min-w-0">
                                 <h3 className="text-sm font-medium" style={{ color: C.text }}>
-                                    Coding Plan 仅 VIP/SVIP 可用
+                                    Coding Plan 仅 VIP/SVIP/ProMax 可用
                                 </h3>
                                 <p
                                     className="mt-1 text-xs leading-relaxed"
                                     style={{ color: C.text2 }}
                                 >
-                                    VIP/SVIP 可添加 OpenCode Zen/Go、Kimi Coding 或自定义
+                                    VIP/SVIP/ProMax 可添加 OpenCode Zen/Go、Kimi Coding 或自定义
                                     OpenAI / Anthropic 兼容端点；在聊天模型选择器中切到 Coding Plan 即可使用套餐额度。
                                 </p>
                                 <Link
@@ -578,7 +578,7 @@ function CardHeader({ action }: { action?: ReactNode }) {
                         Coding Plan
                     </h2>
                     <p className="mt-0.5 text-xs leading-relaxed" style={{ color: C.text2 }}>
-                        为站内对话 / Code Agent 提供第三方编程套餐（VIP/SVIP）
+                        为站内对话 / Code Agent 提供第三方编程套餐（VIP/SVIP/ProMax）
                     </p>
                 </div>
             </div>

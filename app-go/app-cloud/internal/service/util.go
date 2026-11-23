@@ -151,7 +151,7 @@ func TierStatusForTier(tier string, active bool) string {
 		return "pending_low"
 	}
 	switch strings.ToLower(strings.TrimSpace(tier)) {
-	case "vip", "svip":
+	case "vip", "svip", "promax":
 		return "pending"
 	default:
 		return "pending_low"

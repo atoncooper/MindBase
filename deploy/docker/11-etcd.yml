@@ -6,23 +6,12 @@ services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
     container_name: mind-base-etcd
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    command: >
-      etcd
-      -advertise-client-urls=https://etcd:2379
-      -listen-client-urls=https://0.0.0.0:2379
-      -data-dir=/etcd
-      -cert-file=/certs/server.crt
-      -key-file=/certs/server.key
-      -trusted-ca-file=/certs/dev-ca.crt
-      -client-cert-auth
+    # 服务端参数在 deploy/config/etcd/etcd.conf.yml。
+    command: ["etcd", "--config-file=/etc/etcd/etcd.conf.yml"]
     volumes:
       - etcd_data:/etcd
       - ../../secrets/certs/etcd:/certs:ro
+      - ../../deploy/config/etcd/etcd.conf.yml:/etc/etcd/etcd.conf.yml:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]

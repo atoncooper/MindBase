@@ -39,7 +39,7 @@ const (
 
 // Coding Plan business errors — the router maps them to HTTP status codes.
 var (
-	ErrCodingPlanVIPOnly       = errors.New("Coding Plan 仅 VIP/SVIP 可用")
+	ErrCodingPlanVIPOnly       = errors.New("Coding Plan 仅 VIP/SVIP/ProMax 可用")
 	ErrMembershipUnavailable   = errors.New("会员校验服务暂不可用，请稍后重试")
 	ErrCodingPlanNotFound      = errors.New("Coding Plan 不存在")
 	ErrCodingPlanLimit         = errors.New("最多添加 5 个 Coding Plan")
@@ -142,7 +142,7 @@ func RequireVIPTier(ctx context.Context, membership *MembershipClient, uid int64
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrMembershipUnavailable, err)
 	}
-	if tier != TierVIP && tier != TierSVIP {
+	if tier != TierVIP && tier != TierSVIP && tier != TierPROMAX {
 		return ErrCodingPlanVIPOnly
 	}
 	return nil

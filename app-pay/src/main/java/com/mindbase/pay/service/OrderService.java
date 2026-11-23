@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -185,7 +186,7 @@ public class OrderService {
         PayOrder upgradeFrom = null;
 
         if (memberActive && productRank < currentRank) {
-            String currentTier = currentRank == 2 ? "SVIP" : currentRank == 1 ? "VIP" : "FREE";
+            String currentTier = tierName(currentRank);
             audit.audit("PURCHASE_TIER_BLOCKED", "uid", uid, "current", currentTier,
                     "sku", product.getCode(), "product_tier", product.getTier());
             log.info("[PAY] purchase_tier_blocked uid={} current={} sku={} product_tier={}",
@@ -197,6 +198,13 @@ public class OrderService {
             upgradeFrom = resolveUpgradeBase(locked, product);
             amountCents = product.getPriceCents() - upgradeFrom.getAmountCents();
             durationDays = product.getDurationDays() - upgradeFrom.getDurationDays();
+        } else if (memberActive && productRank > currentRank) {
+            // 跨档升级不能按短周期 SKU 全价叠加：那会把剩余 VIP 年卡整体变成
+            // SVIP。这里只把「剩余时长」升档，按日均价差补钱，不延长到期日。
+            CrossTierUpgrade up = resolveCrossTierUpgrade(locked, product, now);
+            upgradeFrom = up.base();
+            amountCents = up.amountCents();
+            durationDays = up.durationDays();
         }
 
         // 同 uid 建单冷却：排在档位墙之后 —— 重复购买的老用户应看到明确的
@@ -278,6 +286,67 @@ public class OrderService {
         return message.contains("uk_pay_order_uid_slot");
     }
 
+    private static String tierName(int rank) {
+        return switch (rank) {
+            case 3 -> "PROMAX";
+            case 2 -> "SVIP";
+            case 1 -> "VIP";
+            default -> "FREE";
+        };
+    }
+
+    /** 跨档升级结果：基准单、补差金额、需要顺延的天数（0 = 仅换档，不延长）。 */
+    private record CrossTierUpgrade(PayOrder base, long amountCents, int durationDays) {
+    }
+
+    /**
+     * 跨档升级（VIP → SVIP/ProMax）：只升级「剩余时长」，按
+     * 剩余天数 × (目标档位日均价 − 当前档位日均价) 补差；到期日不变（交付天数 0）。
+     *
+     * <p>不能直接按短周期 SKU 全价交付：PayMembership 只有单一 tier/expireAt，
+     * extendLocked 会把剩余 VIP 时长整体改成新 tier。因此必须把剩余时长纳入计价，
+     * 且禁止目标周期短于剩余时长（例如 VIP 年卡剩余 365 天不能买 SVIP 月卡）。
+     */
+    private CrossTierUpgrade resolveCrossTierUpgrade(PayMembership locked, PayProduct product, LocalDateTime now) {
+        if (locked.getLastOrderNo() == null || locked.getLastOrderNo().isBlank()) {
+            throw ApiException.conflict("UPGRADE_BASE_INVALID",
+                    "当前会员无可用升级基准（赠送/人工开通的会员请联系客服处理）");
+        }
+        PayOrder old = selectByOrderNo(locked.getLastOrderNo());
+        if (old == null || old.getStatus() != PayOrder.OrderStatus.DELIVERED
+                || old.getDurationDays() <= 0 || old.getAmountCents() <= 0) {
+            throw ApiException.conflict("UPGRADE_BASE_INVALID",
+                    "升级基准订单无效，请联系客服处理");
+        }
+        long remainingDays = remainingDays(locked.getExpireAt(), now);
+        if (remainingDays <= 0) {
+            throw ApiException.conflict("UPGRADE_BASE_INVALID", "当前会员已过期，请重新购买");
+        }
+        if (product.getDurationDays() < remainingDays) {
+            throw ApiException.conflict("UPGRADE_TARGET_TOO_SHORT",
+                    "当前会员剩余 " + remainingDays + " 天，目标套餐仅 " + product.getDurationDays()
+                            + " 天；请选择不短于剩余时长的套餐");
+        }
+        // 只升级「剩余时长」：按目标档位日均价 − 当前档位日均价补差，
+        // 不再延长到期日（否则用户要为已用掉的旧套餐天数重复付费）。
+        double currentDaily = (double) old.getAmountCents() / old.getDurationDays();
+        double targetDaily = (double) product.getPriceCents() / product.getDurationDays();
+        long amountCents = Math.max(0, Math.round(remainingDays * (targetDaily - currentDaily)));
+        if (amountCents <= 0) {
+            throw ApiException.conflict("UPGRADE_NO_DIFFERENCE",
+                    "目标套餐价格不高于当前剩余权益，无法生成补差价订单");
+        }
+        return new CrossTierUpgrade(old, amountCents, 0);
+    }
+
+    private static long remainingDays(LocalDateTime expireAt, LocalDateTime now) {
+        long millis = Duration.between(now, expireAt).toMillis();
+        if (millis <= 0) {
+            return 0;
+        }
+        return (long) Math.ceil(millis / 86_400_000.0);
+    }
+
     /**
      * 升级换购基准单解析：会员必须由一张 DELIVERED 订单交付（last_order_no），
      * 且新 SKU 时长/价格严格更高；否则 409。基准单的剩余时长通过差价补偿，
@@ -329,20 +398,36 @@ public class OrderService {
             return List.of();
         }
         int currentRank = MembershipService.tierRank(m.getTier());
+        LocalDateTime now = LocalDateTime.now(clock);
         List<UpgradeQuote> quotes = new ArrayList<>();
         for (PayProduct p : productService.listActive()) {
-            if (MembershipService.tierRank(p.getTier()) != currentRank) {
-                continue; // 只报同档（跨档全价购买走普通流程）
+            int productRank = MembershipService.tierRank(p.getTier());
+            if (productRank < currentRank) {
+                continue; // 降档不报
             }
-            if (p.getDurationDays() <= old.getDurationDays()
-                    || p.getPriceCents() <= old.getAmountCents()) {
+            if (productRank == currentRank) {
+                // 同档：时长/价格严格更高的 SKU 才可补差价
+                if (p.getDurationDays() <= old.getDurationDays()
+                        || p.getPriceCents() <= old.getAmountCents()) {
+                    continue;
+                }
+                int days = p.getDurationDays() - old.getDurationDays();
+                quotes.add(new UpgradeQuote(p.getCode(), p.getTitle(), p.getTier(), days,
+                        p.getPriceCents() - old.getAmountCents(), old.getAmountCents(),
+                        p.getPriceCents(),
+                        m.getExpireAt().plusDays(days).toLocalDate().toString()));
                 continue;
             }
-            int days = p.getDurationDays() - old.getDurationDays();
-            quotes.add(new UpgradeQuote(p.getCode(), p.getTitle(), p.getTier(), days,
-                    p.getPriceCents() - old.getAmountCents(), old.getAmountCents(),
-                    p.getPriceCents(),
-                    m.getExpireAt().plusDays(days).toLocalDate().toString()));
+            // 跨档：按剩余时长折算抵扣；目标周期短于剩余时长的 SKU 不报价
+            try {
+                CrossTierUpgrade up = resolveCrossTierUpgrade(m, p, now);
+                int days = up.durationDays();
+                quotes.add(new UpgradeQuote(p.getCode(), p.getTitle(), p.getTier(), days,
+                        up.amountCents(), old.getAmountCents(), p.getPriceCents(),
+                        m.getExpireAt().plusDays(days).toLocalDate().toString()));
+            } catch (ApiException ignored) {
+                // 当前剩余时长覆盖不了该 SKU / 无差价：该商品卡保持不可选
+            }
         }
         return quotes;
     }

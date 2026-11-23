@@ -47,6 +47,12 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
+            # DSN derived from the Secret password (envFrom values are invisible to $(VAR)).
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MYSQL_PASSWORD }
+            - name: APPKG__RDBMS__URL
+              value: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql:3306/mind_base"
             - name: KG__URI
               value: "bolt://neo4j:7687"
             - name: APPKG__LOG__OUTPUT

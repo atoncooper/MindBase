@@ -1,0 +1,74 @@
+# =============================================================================
+# MySQL 8.4 — base profile (all environments), loaded as /etc/mysql/conf.d/00-base.cnf
+# =============================================================================
+# Scope:安全/格式/日志/会话默认值。**不含**凭据（root/app 口令由 MYSQL_* env 注入）。
+# 容量类参数（buffer pool / redo / connections / binlog）在 90/91/92 号 profile，
+# 由 compose/K8s 按环境额外挂载；本文件与 profile 文件互不重复。
+# 校验：mysqld --validate-config（容器内）或启动日志无 [ERROR]；改完必须重启 mysqld。
+[mysqld]
+# --- 身份/网络 ---------------------------------------------------------------
+# 容器网络内监听；对外只经 compose 127.0.0.1 / 集群 Service 暴露。
+bind-address                     = 0.0.0.0
+skip-name-resolve                = ON
+# 8.4 默认已启用 mysqlx，业务不用，关闭以少开一个端口与线程。
+mysqlx                           = OFF
+# 连接层防打满：单连接错误超过阈值直接拒绝，避免半开连接耗尽内存。
+max-connect-errors               = 100000
+connect-timeout                  = 10
+wait-timeout                     = 600
+interactive-timeout              = 600
+
+# --- 字符集 / 排序 / 时区 ----------------------------------------------------
+# 显式固定 utf8mb4，避免基础镜像升级改变默认排序规则导致索引漂移。
+character-set-server             = utf8mb4
+collation-server                 = utf8mb4_0900_ai_ci
+character-set-client-handshake  = FALSE
+# 容器内默认 TZ=UTC；显式固定，防止宿主/镜像时区变化让 DATETIME 语义漂移。
+default-time-zone                = '+00:00'
+
+# --- SQL 模式 ----------------------------------------------------------------
+# 与 MySQL 8 默认一致（显式写出，避免基础镜像/云厂商模板改动默认值）。
+sql_mode = ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+
+# --- 包体 / 临时表 / 连接级 buffer -------------------------------------------
+# 业务最大报文：笔记 256KB、board 8MB、JSON API <1MB；64MB 留足余量且防滥用。
+max-allowed-packet               = 64M
+tmp-table-size                   = 32M
+max-heap-table-size              = 32M
+sort-buffer-size                 = 2M
+join-buffer-size                 = 2M
+read-buffer-size                 = 1M
+read-rnd-buffer-size             = 2M
+group-concat-max-len             = 1048576
+
+# --- InnoDB 安全默认 ---------------------------------------------------------
+# 事务提交刷盘（崩溃不丢已提交事务）；O_DIRECT 避免双缓冲（容器 overlay 上仍有效）。
+innodb-flush-log-at-trx-commit   = 1
+innodb-flush-method              = O_DIRECT
+innodb-doublewrite               = ON
+innodb-autoinc-lock-mode         = 2
+innodb-stats-on-metadata         = OFF
+innodb-print-all-deadlocks       = ON
+# 单实例无 binlog 依赖时可降低；有 binlog 时保持默认 ROW。
+
+# --- 服务器侧加固 -----------------------------------------------------------
+# 禁用 LOAD DATA LOCAL INFILE / SELECT ... INTO OUTFILE（业务不使用，减攻击面）。
+local-infile                     = OFF
+secure-file-priv                 = NULL
+# 禁止符号链接表（容器数据卷场景不需要）。
+skip-symbolic-links
+# 日志时间统一 UTC，跨时区排障/和 binlog 对齐。
+log-timestamps                   = UTC
+
+# --- 慢查询 / 错误日志 -------------------------------------------------------
+# 慢日志写数据卷（容器 stdout 留给 error log）。日志轮转由运维 logrotate 处理：
+#   /var/lib/mysql/slow.log（见 deploy/config/README.md「运维」）。
+slow-query-log                   = ON
+slow-query-log-file              = /var/lib/mysql/slow.log
+long-query-time                  = 1
+log-queries-not-using-indexes    = OFF
+log-error-verbosity              = 2
+# 性能指标：生产开启；dev/低配 profile（90 号）会关闭 performance_schema。
+performance-schema               = ON
+# 容量类参数（buffer pool/redo/connections/IO/thread cache）不写死：
+# entrypoint-autosize.sh 按容器 cgroup 内存上限与 CPU 核数生成 99-auto-sizing.cnf。

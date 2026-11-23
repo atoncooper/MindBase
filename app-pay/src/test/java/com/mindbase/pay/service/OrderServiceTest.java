@@ -27,7 +27,9 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Semaphore;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,6 +105,39 @@ class OrderServiceTest {
         o.setTier("SVIP");
         o.setStatus(PayOrder.OrderStatus.DELIVERED);
         return o;
+    }
+
+    /** 跨档升级用例基建：VIP 年卡有效会员 + DELIVERED 年卡基准单。 */
+    private com.mindbase.pay.model.PayMembership lockedVipMember(String baseOrderNo) {
+        var m = new com.mindbase.pay.model.PayMembership();
+        m.setUid(10086L);
+        m.setTier("VIP");
+        m.setExpireAt(NOW.plusDays(365));
+        m.setLastOrderNo(baseOrderNo);
+        return m;
+    }
+
+    private PayOrder deliveredVipYearlyOrder(String orderNo) {
+        PayOrder o = new PayOrder();
+        o.setOrderNo(orderNo);
+        o.setUid(10086L);
+        o.setSkuCode("VIP_YEARLY");
+        o.setDurationDays(365);
+        o.setAmountCents(15800);
+        o.setTier("VIP");
+        o.setStatus(PayOrder.OrderStatus.DELIVERED);
+        return o;
+    }
+
+    private PayProduct svipYearlyProduct() {
+        PayProduct p = new PayProduct();
+        p.setCode("SVIP_YEARLY");
+        p.setTitle("Super Membership · Yearly");
+        p.setDurationDays(365);
+        p.setPriceCents(42000);
+        p.setTier("SVIP");
+        p.setStatus(PayProduct.ProductStatus.ACTIVE);
+        return p;
     }
 
     private PayProduct yearlyProduct() {
@@ -298,6 +333,74 @@ class OrderServiceTest {
         assertThat(order.getDurationDays()).isEqualTo(335);
         assertThat(order.getUpgradeFromOrderNo()).isEqualTo("PO-BASE");
         verify(orderMapper).insert(order);
+    }
+
+    @Test
+    void crossTierUpgradeCreditsRemainingVipYear() {
+        // VIP 年卡剩余 365 天，升级 SVIP 年卡：抵扣 VIP 年卡全额 15800，
+        // 实付 42000 − 15800 = 26200；不额外延长（expireAt 直接换成 SVIP 年卡终点）
+        stubMockChannel();
+        when(membershipService.isActive(any())).thenReturn(true);
+        when(membershipService.lockActiveMembershipForUpdate(10086L))
+                .thenReturn(lockedVipMember("VIP-BASE"));
+        when(productService.requireActive("SVIP_YEARLY")).thenReturn(svipYearlyProduct());
+        when(productService.expireAtFrom(any(LocalDateTime.class))).thenReturn(NOW.plusMinutes(30));
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(deliveredVipYearlyOrder("VIP-BASE"));
+
+        OrderService.CreatedOrder outcome =
+                service.createOrder(10086L, "SVIP_YEARLY", PayOrder.PayChannel.MOCK, null);
+        PayOrder order = outcome.order();
+
+        assertThat(order.getAmountCents()).isEqualTo(26200L);
+        assertThat(order.getDurationDays()).isZero();
+        assertThat(order.getUpgradeFromOrderNo()).isEqualTo("VIP-BASE");
+        verify(orderMapper).insert(order);
+    }
+
+    @Test
+    void crossTierShortSkuIsRejectedWhenVipRemainingLonger() {
+        // VIP 年卡剩 365 天，SVIP 月卡只有 30 天：不能把剩余一年整体变成 SVIP 一个月
+        when(membershipService.isActive(any())).thenReturn(true);
+        when(membershipService.lockActiveMembershipForUpdate(10086L))
+                .thenReturn(lockedVipMember("VIP-BASE"));
+        PayProduct monthly = new PayProduct();
+        monthly.setCode("SVIP_MONTHLY");
+        monthly.setTitle("Super Membership · Monthly");
+        monthly.setDurationDays(30);
+        monthly.setPriceCents(4800);
+        monthly.setTier("SVIP");
+        monthly.setStatus(PayProduct.ProductStatus.ACTIVE);
+        when(productService.requireActive("SVIP_MONTHLY")).thenReturn(monthly);
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(deliveredVipYearlyOrder("VIP-BASE"));
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "SVIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("剩余 365 天");
+        verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    @Test
+    void crossTierQuoteOnlyOffersSkuCoveringRemainingTerm() {
+        when(membershipService.findByUid(10086L)).thenReturn(Optional.of(lockedVipMember("VIP-BASE")));
+        when(membershipService.isActive(any())).thenReturn(true);
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(deliveredVipYearlyOrder("VIP-BASE"));
+        PayProduct monthly = new PayProduct();
+        monthly.setCode("SVIP_MONTHLY");
+        monthly.setTitle("Super Membership · Monthly");
+        monthly.setDurationDays(30);
+        monthly.setPriceCents(4800);
+        monthly.setTier("SVIP");
+        monthly.setStatus(PayProduct.ProductStatus.ACTIVE);
+        PayProduct yearly = svipYearlyProduct();
+        when(productService.listActive()).thenReturn(List.of(monthly, yearly));
+
+        var quotes = service.quoteUpgrades(10086L);
+
+        assertThat(quotes).hasSize(1);
+        assertThat(quotes.get(0).skuCode()).isEqualTo("SVIP_YEARLY");
+        assertThat(quotes.get(0).amountCents()).isEqualTo(26200L);
+        assertThat(quotes.get(0).durationDays()).isZero();
     }
 
     @Test

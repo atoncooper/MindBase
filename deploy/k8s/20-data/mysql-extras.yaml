@@ -37,7 +37,7 @@ spec:
         - name: mysql
           image: mysql:8.4
           imagePullPolicy: IfNotPresent
-          args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+          command: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
           envFrom:
             - configMapRef:
                 name: mindbase-defaults
@@ -49,6 +49,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
+            - name: mysql-conf
+              mountPath: /etc/mysql/conf.d/00-base.cnf
+              subPath: 00-base.cnf
+              readOnly: true
+            - name: mysql-conf
+              mountPath: /etc/mysql/conf.d/95-binlog.cnf
+              subPath: 95-binlog.cnf
+              readOnly: true
+            - name: mysql-conf
+              mountPath: /opt/mindbase/entrypoint-autosize.sh
+              subPath: entrypoint.sh
+              readOnly: true
           startupProbe:
             exec:
               command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
@@ -62,6 +74,10 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: mysql-conf
+          configMap:
+            name: mysql-conf
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -108,7 +124,7 @@ spec:
         - name: mysql
           image: mysql:8.4
           imagePullPolicy: IfNotPresent
-          args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+          command: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
           envFrom:
             - configMapRef:
                 name: mindbase-defaults
@@ -120,6 +136,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
+            - name: mysql-conf
+              mountPath: /etc/mysql/conf.d/00-base.cnf
+              subPath: 00-base.cnf
+              readOnly: true
+            - name: mysql-conf
+              mountPath: /etc/mysql/conf.d/95-binlog.cnf
+              subPath: 95-binlog.cnf
+              readOnly: true
+            - name: mysql-conf
+              mountPath: /opt/mindbase/entrypoint-autosize.sh
+              subPath: entrypoint.sh
+              readOnly: true
           startupProbe:
             exec:
               command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
@@ -133,6 +161,10 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: mysql-conf
+          configMap:
+            name: mysql-conf
   volumeClaimTemplates:
     - metadata:
         name: data

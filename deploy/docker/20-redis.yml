@@ -8,16 +8,16 @@ services:
     container_name: mind-base-redis
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
-    command: >
-      redis-server
-      --requirepass ${REDIS_PASSWORD:-mind-base}
-      --notify-keyspace-events Ex
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --save 900 1
-      --save 300 10
+    # 生产标准：静态配置 + 按 cgroup 内存自动 maxmemory；密码仍由 .env 注入。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    mem_limit: 1g
+    cpus: 1.0
+    environment:
+      - REDIS_CONF=/usr/local/etc/redis/redis.conf
     volumes:
       - redis_data:/data
+      - ../../deploy/config/redis/redis.plain.conf:/usr/local/etc/redis/redis.conf:ro
+      - ../../deploy/config/redis/entrypoint-autosize.sh:/opt/mindbase/entrypoint-autosize.sh:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]

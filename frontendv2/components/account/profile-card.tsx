@@ -1,9 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ImagePlus, Loader2, Pencil } from "lucide-react";
+import {
+    AtSign,
+    BadgeCheck,
+    Cake,
+    CalendarDays,
+    Check,
+    FileText,
+    Globe,
+    ImagePlus,
+    Languages,
+    Loader2,
+    Mail,
+    MapPin,
+    Pencil,
+    ShieldCheck,
+    SlidersHorizontal,
+    UserRound,
+} from "lucide-react";
 import { Select } from "@/components/ui/select";
-import { userApi, type ProfileData } from "@/lib/api";
+import { userApi, type PayMembership, type ProfileData } from "@/lib/api";
 import {
     FormCard,
     EditButton,
@@ -20,6 +37,7 @@ const LANG_LABELS: Record<string, string> = { zh: "中文", en: "English" };
 
 interface Props {
     profile: ProfileData;
+    membership?: PayMembership | null;
     onUpdated: (p: ProfileData) => void;
     onToast: (msg: string, type: "success" | "error") => void;
 }
@@ -48,7 +66,7 @@ function toForm(p: ProfileData): FormState {
     };
 }
 
-export function ProfileCard({ profile, onUpdated, onToast }: Props) {
+export function ProfileCard({ profile, membership, onUpdated, onToast }: Props) {
     const [editing, setEditing] = useState(false);
     const [form, setForm] = useState<FormState>(() => toForm(profile));
     const [saving, setSaving] = useState(false);
@@ -105,8 +123,8 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
 
     return (
         <FormCard
-            title="基本资料"
-            description="昵称、头像与公开资料会展示在个人中心。"
+            title="公开资料"
+            description="头像、昵称与简介会展示在个人中心与公开页面；其他字段用于个性化。"
             action={
                 editing ? undefined : (
                     <EditButton
@@ -236,27 +254,7 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
                     </Field>
                 </div>
             ) : (
-                <dl className="divide-y divide-border-subtle">
-                    <ViewRow label="昵称" value={profile.nickname} />
-                    <ViewRow label="简介" value={profile.bio} />
-                    <ViewRow label="生日" value={profile.birthday} />
-                    <ViewRow
-                        label="性别"
-                        value={
-                            profile.gender ? GENDER_LABELS[profile.gender] ?? profile.gender : null
-                        }
-                    />
-                    <ViewRow label="地区" value={profile.location} />
-                    <ViewRow label="时区" value={profile.timezone} />
-                    <ViewRow
-                        label="语言"
-                        value={
-                            profile.language
-                                ? LANG_LABELS[profile.language] ?? profile.language
-                                : null
-                        }
-                    />
-                </dl>
+                <ProfileView profile={profile} membership={membership} onEdit={enterEdit} />
             )}
         </FormCard>
     );
@@ -271,11 +269,193 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     );
 }
 
-function ViewRow({ label, value }: { label: string; value: string | null | undefined }) {
+function displayDate(value: string | null | undefined): string | null {
+    if (!value) return null;
+    const date = new Date(value.length === 10 ? value + "T00:00:00" : value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+}
+
+function ProfileView({
+    profile,
+    membership,
+    onEdit,
+}: {
+    profile: ProfileData;
+    membership?: PayMembership | null;
+    onEdit: () => void;
+}) {
+    const name = profile.nickname?.trim() || "MindBase 用户";
+    const initial = name.slice(0, 1).toUpperCase();
+    const fields = [
+        profile.nickname,
+        profile.avatar,
+        profile.bio,
+        profile.birthday,
+        profile.gender,
+        profile.location,
+        profile.timezone,
+        profile.language,
+    ];
+    const filled = fields.filter((v) => Boolean(v && String(v).trim())).length;
+    const percent = Math.round((filled / fields.length) * 100);
+    const joined = displayDate(profile.created_at);
+    const birthday = displayDate(profile.birthday);
+    const tier = membership?.active ? (membership.tier ?? "").toUpperCase() : "";
+    const tierLabel = tier === "PROMAX" ? "ProMax" : tier;
+    const language = profile.language ? LANG_LABELS[profile.language] ?? profile.language : null;
+    const gender = profile.gender ? GENDER_LABELS[profile.gender] ?? profile.gender : null;
+
     return (
-        <div className="flex items-baseline gap-4 px-5 py-2.5">
-            <dt className="w-20 shrink-0 text-[12px] font-medium text-secondary">{label}</dt>
-            <dd className="min-w-0 flex-1 text-[13px] text-foreground">
+        <div className="space-y-4 p-5">
+            <div className="relative overflow-hidden rounded-2xl border border-border-subtle bg-[#fbfcfe] p-5 sm:p-6">
+                <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full bg-accent/5 blur-3xl" />
+                <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center">
+                    <div className="shrink-0">
+                        {profile.avatar ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                                src={profile.avatar}
+                                alt={name}
+                                className="h-20 w-20 rounded-full object-cover shadow-sm ring-4 ring-white sm:h-24 sm:w-24"
+                            />
+                        ) : (
+                            <span className="grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-[#e8f0fe] to-[#fef7e0] text-2xl font-medium text-[#3c4043] shadow-sm ring-4 ring-white sm:h-24 sm:w-24">
+                                {initial}
+                            </span>
+                        )}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                            <h3 className="truncate text-[22px] font-medium leading-8 text-foreground">
+                                {name}
+                            </h3>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-secondary">
+                                UID {profile.uid}
+                            </span>
+                            {tier && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-300/60">
+                                    <ShieldCheck className="h-3 w-3" />
+                                    {tierLabel} 会员
+                                </span>
+                            )}
+                            {profile.email_verified && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+                                    <BadgeCheck className="h-3 w-3" />
+                                    已验证
+                                </span>
+                            )}
+                        </div>
+                        <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-secondary">
+                            {profile.bio || "还没有简介。添加一句介绍，让个人主页更容易被记住。"}
+                        </p>
+                        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-tertiary">
+                            {profile.email && (
+                                <span className="inline-flex items-center gap-1.5">
+                                    <Mail className="h-3.5 w-3.5" />
+                                    {profile.email}
+                                </span>
+                            )}
+                            {joined && (
+                                <span className="inline-flex items-center gap-1.5">
+                                    <CalendarDays className="h-3.5 w-3.5" />
+                                    加入于 {joined}
+                                </span>
+                            )}
+                            <span className="inline-flex items-center gap-1.5">
+                                <ShieldCheck className="h-3.5 w-3.5" />
+                                {profile.status === "active" || !profile.status ? "账户状态正常" : profile.status}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div className="w-full shrink-0 rounded-xl border border-border-subtle bg-surface/80 p-3 sm:w-44">
+                        <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-secondary">资料完整度</span>
+                            <span className="font-medium text-foreground">{percent}%</span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border-subtle">
+                            <div
+                                className="h-full rounded-full bg-accent transition-[width]"
+                                style={{ width: percent + "%" }}
+                            />
+                        </div>
+                        <button
+                            type="button"
+                            onClick={onEdit}
+                            className="mt-2.5 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
+                        >
+                            {percent >= 100 ? "修改资料" : "继续完善 →"}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-3">
+                <InfoCard icon={<UserRound className="h-4 w-4" />} title="公开资料">
+                    <InfoRow icon={<FileText className="h-3.5 w-3.5" />} label="简介" value={profile.bio} />
+                    <InfoRow icon={<Cake className="h-3.5 w-3.5" />} label="生日" value={birthday} />
+                    <InfoRow icon={<UserRound className="h-3.5 w-3.5" />} label="性别" value={gender} />
+                    <InfoRow icon={<MapPin className="h-3.5 w-3.5" />} label="地区" value={profile.location} />
+                </InfoCard>
+
+                <InfoCard icon={<SlidersHorizontal className="h-4 w-4" />} title="偏好设置">
+                    <InfoRow icon={<Globe className="h-3.5 w-3.5" />} label="时区" value={profile.timezone} />
+                    <InfoRow icon={<Languages className="h-3.5 w-3.5" />} label="语言" value={language} />
+                    <InfoRow icon={<CalendarDays className="h-3.5 w-3.5" />} label="加入" value={joined} />
+                </InfoCard>
+
+                <InfoCard icon={<AtSign className="h-4 w-4" />} title="账户">
+                    <InfoRow icon={<AtSign className="h-3.5 w-3.5" />} label="UID" value={String(profile.uid)} />
+                    <InfoRow icon={<Mail className="h-3.5 w-3.5" />} label="邮箱" value={profile.email} />
+                    <InfoRow
+                        icon={<ShieldCheck className="h-3.5 w-3.5" />}
+                        label="状态"
+                        value={profile.status === "active" || !profile.status ? "正常" : profile.status}
+                    />
+                </InfoCard>
+            </div>
+        </div>
+    );
+}
+
+function InfoCard({
+    icon,
+    title,
+    children,
+}: {
+    icon: React.ReactNode;
+    title: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <section className="rounded-xl border border-border-subtle bg-surface p-4">
+            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-foreground">
+                <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent-soft text-accent">
+                    {icon}
+                </span>
+                {title}
+            </div>
+            <dl className="space-y-1.5">{children}</dl>
+        </section>
+    );
+}
+
+function InfoRow({
+    icon,
+    label,
+    value,
+}: {
+    icon: React.ReactNode;
+    label: string;
+    value: string | null | undefined;
+}) {
+    return (
+        <div className="flex items-start gap-2 rounded-lg px-1.5 py-1.5">
+            <span className="mt-0.5 text-tertiary">{icon}</span>
+            <dt className="w-14 shrink-0 text-[12px] text-secondary">{label}</dt>
+            <dd className="min-w-0 flex-1 text-[12px] leading-relaxed text-foreground">
                 {value || <span className="text-tertiary">未设置</span>}
             </dd>
         </div>

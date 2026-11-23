@@ -42,6 +42,7 @@ export const EVENT_TYPE_OPTIONS = Object.entries(EVENT_TYPE_META).map(([value, m
 export const TIER_META: Record<string, { label: string; color: string }> = {
   VIP: { label: "VIP", color: "gold" },
   SVIP: { label: "SVIP", color: "purple" },
+  PROMAX: { label: "ProMax", color: "magenta" },
 };
 
 export const REFUND_STATUS_META: Record<string, { label: string; color: string }> = {

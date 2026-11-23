@@ -1,0 +1,133 @@
+# 入口网关（被根 docker-compose.yml include）：openresty（外部 TLS/缓存/静态）、apisix（API 网关）、
+# higress（AI 网关，+higress-tls TLS sidecar）。
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks:
+    - mind-base-net
+services:
+
+  openresty:
+    profiles: ["", "standalone", "storage", "full"]
+    image: openresty/openresty:1.27.1.2-alpine
+    container_name: mind-base-openresty
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PURGE_TOKEN=${PURGE_TOKEN:-dev-purge-token}
+      - HLS_REDIS_HOST=redis
+      - HLS_REDIS_PORT=6380
+      - HLS_REDIS_DB=1
+      - HLS_REDIS_PASSWORD=${REDIS_PASSWORD:-mind-base}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /var/cache/openresty && chmod 0777 /var/cache/openresty && exec /usr/local/openresty/bin/openresty -g 'daemon off;'
+    volumes:
+      - ../openresty/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ../openresty/locations.conf:/etc/openresty/locations.conf:ro
+      - ../openresty/public-page-cache.conf:/etc/openresty/public-page-cache.conf:ro
+      - ../openresty/lua:/etc/openresty/lua:ro
+      - ../secrets/certs/openresty:/etc/openresty/certs:ro
+      - certbot_www:/var/www/certbot
+      - openresty_cache:/var/cache/openresty
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_started
+      apisix:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/_edge/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      mind-base-net:
+        aliases:
+          - nginx
+
+  higress-tls:
+    image: openresty/openresty:1.27.1.2-alpine
+    container_name: mind-base-higress-tls
+    profiles: ["ai", "full"]
+    network_mode: "service:higress"
+    depends_on:
+      higress:
+        condition: service_started
+    volumes:
+      - ../openresty/tls-front/higress.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ../secrets/certs/higress:/certs:ro
+    restart: unless-stopped
+
+  apisix:
+    <<: *defaults
+    image: atoncooper/mind-base-apisix:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub
+    build:
+      context: ../apisix
+      dockerfile: Dockerfile
+    container_name: mind-base-apisix
+    profiles: ["", "standalone", "storage", "task", "full"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      etcd:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:19180:9180"
+    volumes:
+      - ../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ../apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
+      - ../apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
+      - ../secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
+      - ../secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
+      - ../secrets/certs/etcd:/usr/local/apisix/conf/certs/etcd:ro
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
+      - PAY_OPS_KEY=${PAY_OPS_KEY:-}
+      - PAY_INTERNAL_KEY=${PAY_INTERNAL_KEY:-}
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  higress:
+    <<: *defaults
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+    container_name: mind-base-higress
+    profiles: ["ai", "full"]
+    environment:
+      - GATEWAY_HTTP_PORT=8080
+      - GATEWAY_HTTPS_PORT=8443
+      - CONSOLE_PORT=8001
+      - NO_PROXY=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+      - no_proxy=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18443:8443"
+      - "18081:8001"
+    volumes:
+      - ../data/higress:/data
+      - ../data/higress/logs:/var/log/proxy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8001/ || wget -qO /dev/null http://127.0.0.1:8001/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s

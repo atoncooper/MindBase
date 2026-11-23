@@ -104,6 +104,7 @@ docker compose --profile full up -d
 | API 前缀、鉴权、SSE 与错误约定 | [docs/api.md](docs/api.md) |
 | 目录结构、依赖方向、测试矩阵 | [docs/project-structure.md](docs/project-structure.md) |
 | 配置项与密钥 | [docs/configuration.md](docs/configuration.md) |
+| AI 用量额度（token / 5h / 日 / 月） | [docs/ai-quota.md](docs/ai-quota.md) |
 | 生产部署与运维 | [docs/deployment.md](docs/deployment.md) |
 | 科研工作台与学术 Agent | [docs/academic-agent.md](docs/academic-agent.md) |
 | 管理台（分享审核 / 沙箱运维） | [docs/app-admin.md](docs/app-admin.md) |

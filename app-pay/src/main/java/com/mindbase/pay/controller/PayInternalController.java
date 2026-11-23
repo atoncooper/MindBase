@@ -60,11 +60,11 @@ public class PayInternalController {
     /** Operations compensation activation/extension: reason is required and recorded as an ADMIN_GRANT audit event. */
     @PostMapping("/grant")
     public MembershipView grant(@Valid @RequestBody GrantRequest req) {
-        // tier optional: blank = keep existing/default; only VIP|SVIP accepted
+        // tier optional: blank = keep existing/default; only VIP|SVIP|PROMAX accepted
         String tier = req.tier() == null || req.tier().isBlank() ? null : req.tier().trim().toUpperCase();
-        if (tier != null && !"VIP".equals(tier) && !"SVIP".equals(tier)) {
+        if (tier != null && !"VIP".equals(tier) && !"SVIP".equals(tier) && !"PROMAX".equals(tier)) {
             // 400 contract error (previously an IllegalArgumentException was swallowed into a 500, polluting 5xx monitoring)
-            throw ApiException.badRequest("INVALID_TIER", "tier must be VIP or SVIP");
+            throw ApiException.badRequest("INVALID_TIER", "tier must be VIP, SVIP or PROMAX");
         }
         // 幂等（requestId）+ 日额度原子熔断 + 会员扩展：同一事务，超限 429、重放不重复加天数
         log.info("[PAY] admin_grant uid={} days={} tier={} request_id={} reason={}",

@@ -14,6 +14,7 @@
 | [architecture.md](architecture.md) | 所有人 | 系统架构总览：服务清单/端口、OpenResty → APISIX 路由、数据归属、配置体系、CI |
 | [openresty-edge.md](openresty-edge.md) | 运维/后端 | OpenResty 边缘层：TLS/负载均衡/多级缓存、软 purge、APISIX 上游与扩容、运维速查 |
 | [configuration.md](configuration.md) | 所有人 | 配置体系：各服务 YAML 入口、共享 `env`、Higress AI 网关、密钥清单 |
+| [../api/README.md](../api/README.md) | **完整 API 参考**：OpenAPI 规格 + Swagger UI + 端点/鉴权/内部 M2M 清单 |
 | [deployment.md](deployment.md) | DevOps / SRE | 生产部署：Docker、HTTPS、监控、备份与升级 |
 
 ## 二、按主题深入
@@ -26,7 +27,6 @@
 | [configuration.md](configuration.md) | 分层配置与共享环境变量约定 |
 | [logging.md](logging.md) | app-ts 日志规范：结构化字段、请求关联、脱敏、轮转/压缩/保留、访问日志与排障命令 |
 | [service-key-auth.md](service-key-auth.md) | 服务间 API Key 体系：app-user（auth 路由）签发 + APISIX 校验、防串用、演进方向 |
-| [client-compose.md](client-compose.md) | `docker-compose.client.yml` 客户端部署：与服务端 compose 的差异、裁剪与降级行为 |
 | [deployment.md](deployment.md) | 生产部署、HTTPS（Caddy）、监控与备份 |
 
 ### 2.2 AI 与 Agent
@@ -38,6 +38,7 @@
 | [temp-files.md](temp-files.md) | agent 解析临时文件：下载→本地→解析→整轮结束程序删除、uid/轮次隔离、预算与 fd 上限、崩溃 sweep、配置与运维 |
 | [mikro-orm.md](mikro-orm.md) | app-ts MongoDB 的 MikroORM 采用说明与分阶段迁移计划 |
 | [chat-models.md](chat-models.md) | 聊天模型选择：`config/model.json` 目录格式、GET /chat/models、网关路由/默认模型/计价与前端行为 |
+| [ai-quota.md](ai-quota.md) | AI 用量额度：标准 token、5h/日/月三层窗口、模型抵扣倍率、¥48≈¥480 / 三档 10×、配置/API/迁移与调参 |
 
 ### 2.3 业务服务（app-*）
 

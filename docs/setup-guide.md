@@ -177,7 +177,7 @@ curl -s http://127.0.0.1:8017/health      # 沙箱控制层（需先启 sandbox�
 
 ## 8. 常见问题
 
-**3000 / 80 端口打不开。** 容器还在构建或启动：`docker compose ps` 看状态，`docker compose logs -f nginx frontend` 看日志。80/443 被别的程序占用时先停掉占用进程；也可在 `.env` 设 `FRONTEND_PORT=3001` 改前端端口。只想跑轻量核心栈可用 [client-compose.md](client-compose.md)。
+**3000 / 80 端口打不开。** 容器还在构建或启动：`docker compose ps` 看状态，`docker compose logs -f nginx frontend` 看日志。80/443 被别的程序占用时先停掉占用进程；需要换端口时改 `docker-compose.yml` 里 `frontend` 的 `ports:`。
 
 **有容器 unhealthy / Exited。** 先 `docker compose ps` 找出异常服务，再 `docker compose logs -f <服务名>`。最常见原因：缺 `secrets/api_key_encryption_key`（3.1）、`APISIX_CONSUMER_KEY` 为空导致 apisix 渲染失败（3.3，看 apisix 日志 `[apisix-config]`）、`AI_GATEWAY__API_KEY` 留空。
 

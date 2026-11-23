@@ -157,7 +157,7 @@ const OUTCOME: Record<string, { label: string; color: string }> = {
   canceled: { label: "已取消", color: "default" },
 };
 
-const TIER_LABEL: Record<string, string> = { free: "免费", vip: "VIP", svip: "SVIP" };
+const TIER_LABEL: Record<string, string> = { free: "免费", vip: "VIP", svip: "SVIP", promax: "ProMax" };
 
 /** 审计动作发起者（控制层 actor 字段）→ 中文标签。 */
 const ACTOR_LABEL: Record<string, string> = {

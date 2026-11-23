@@ -1,5 +1,11 @@
 # 生产部署指南
 
+> 编排结构：根 `docker-compose.yml` 只做 `include` + 共享 volumes/network；模块按职责拆分：
+> `data`（数据组件）、`apps`（业务服务）、`gateway`（openresty/apisix/higress）、`certs`（证书）、
+> `sandbox`（opensandbox-server）、`tools`（调试工具）。需要 Docker Compose **≥ 2.20**；
+> 改服务请改对应模块文件，日常命令不变（`docker compose up -d`）。
+
+
 > 单机 Docker Compose 生产部署（HTTPS、监控、备份、扩容、沙箱）。Kubernetes 见
 > [deploy/k8s/README.md](../deploy/k8s/README.md)；服务/端口/路由/数据归属的权威版本见
 > [architecture.md](architecture.md)，配置体系见 [configuration.md](configuration.md)。
@@ -249,7 +255,7 @@ git checkout <last-good-commit> && docker compose build && docker compose up -d
 | app-ts 功能降级 | Mongo/Milvus/Redis 不可用时启动日志出现 `memory fallback` / `[RAG] ... degraded`；服务仍可用但数据不落/检索受限，修复依赖后重启 |
 | 沙箱不可用 | 未开 `--profile sandbox` 或 `SANDBOX_ENABLED` 非 true；`/ready` 失败（MySQL ping）；`OPENSANDBOX_API_KEY` 两侧不一致；查 `logs app-sandbox opensandbox-server` |
 | 管理台 3001 打不开 | 仅回环：`ssh -L 3001:127.0.0.1:3001 user@host` 后访问 http://127.0.0.1:3001；`APPADMIN__SECURITY__IP_ALLOWLIST` 会拦截来源 IP |
-| 端口冲突 | 在 `.env` 覆盖 `MYSQL_PORT`/`MONGO_PORT`/`REDIS_PORT`/`FRONTEND_PORT` 等；`docker compose ps` 查看占用 |
+| 端口冲突 | 改 `docker-compose.yml` 对应服务的 `ports:` 字面量（不再经 .env）；`docker compose ps` 查看占用 |
 | 内存/磁盘告警 | Milvus/Neo4j/MinIO 为大件：`docker stats`、`docker system df -v`；必要时迁数据卷到更大磁盘 |
 
 ## 相关文档

@@ -171,9 +171,10 @@ type AppPayConfig struct {
 // TierLimit is one quota dimension across membership tiers. Values are in the
 // unit named by the quota kind (counts, bytes or CPU-seconds).
 type TierLimit struct {
-	Free int64 `yaml:"free"`
-	VIP  int64 `yaml:"vip"`
-	SVIP int64 `yaml:"svip"`
+	Free   int64 `yaml:"free"`
+	VIP    int64 `yaml:"vip"`
+	SVIP   int64 `yaml:"svip"`
+	PROMAX int64 `yaml:"promax"`
 }
 
 type ArtifactsConfig struct {
@@ -348,6 +349,7 @@ func applyEnvOverrides(cfg *Config) {
 			setInt64(prefix+"FREE", &limit.Free)
 			setInt64(prefix+"VIP", &limit.VIP)
 			setInt64(prefix+"SVIP", &limit.SVIP)
+			setInt64(prefix+"PROMAX", &limit.PROMAX)
 			cfg.Quota.Limits[kind] = limit
 		}
 	}

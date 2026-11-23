@@ -15,6 +15,7 @@ import { payApi, type PayMembership } from "@/lib/api";
 const TIER_BADGE: Record<string, string> = {
     VIP: "bg-amber-100 text-amber-800 ring-amber-300",
     SVIP: "bg-zinc-900 text-amber-200 ring-zinc-700",
+    PROMAX: "bg-zinc-950 text-amber-100 ring-amber-500/40",
 };
 
 export function SettingsView() {
@@ -78,7 +79,7 @@ export function SettingsView() {
                             </h2>
                         </div>
                         <p className="mt-2 text-[13px] leading-relaxed text-secondary">
-                            开通 VIP / SVIP 获取更高的模型调用配额与优先调度。
+                            开通 VIP / SVIP / ProMax 获取更高的模型调用配额与优先调度。
                         </p>
                         <div className="mt-3 flex items-center gap-2">
                             {loaded ? (

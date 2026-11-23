@@ -172,7 +172,7 @@ env 双下划线嵌套；godotenv 自工作目录向上找项目根 `.env`（进
 | `CONTENTMCP__LOG__FILE` | `/app/logs/app-content-mcp.log` | 文件路径（Output 含 file 时生效，lumberjack 轮转） |
 | `CONTENTMCP__LOG__FILE_MAX_SIZE` / `_MAX_BACKUPS` / `_MAX_AGE` / `_COMPRESS` | 100 / 7 / 30 / false | 轮转参数 |
 
-`.env` 侧（compose 插值名，非服务直接读取）：`CONTENT_MCP_UID`、`CONTENT_MCP_AUTH_TOKEN`、`CONTENT_MCP_TLS_ENABLED`、`CONTENT_MCP_BEARER_ALLOWED_TOOLS`（可选）、
+compose 侧：`CONTENT_MCP_UID`、`CONTENT_MCP_TLS_ENABLED`、`CONTENT_MCP_BEARER_ALLOWED_TOOLS` 已是 `docker-compose.yml` 字面量（不再是 `.env` 项）；只有 `CONTENT_MCP_AUTH_TOKEN`（密钥）留在 `.env`，
 `APP_CONTENT_MCP_PORT`（宿主调试口）。**http 模式 fail-closed**：`AUTH_TOKEN` 与 `SERVICE_API_KEY` 双缺则拒绝启动。
 
 命令行 `--transport` / `--http-addr` 可覆盖同名 env（容器 ENTRYPOINT 已固定为 http）。
@@ -265,7 +265,7 @@ app-content-mcp:
 启动 / 构建：
 
 ```bash
-# 与主栈一起（默认 profile 已包含；先在 .env 填 CONTENT_MCP_UID / CONTENT_MCP_AUTH_TOKEN）
+# 与主栈一起（默认 profile 已包含；外部 Bearer 宿主才需要 .env 的 CONTENT_MCP_AUTH_TOKEN，UID 等已固定在前端 compose）
 docker compose up -d app-content-mcp
 # 或随 content-mcp profile
 docker compose --profile content-mcp up -d app-content-mcp

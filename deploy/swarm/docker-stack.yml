@@ -75,6 +75,22 @@ configs:
     file: ${MB_ROOT:-/srv/mindbase}/apisix/render-config.sh
   mysql_init_sql:
     file: ${MB_ROOT:-/srv/mindbase}/db/system.sql
+  etcd_conf:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/etcd/etcd.conf.yml
+  redis_conf:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/redis/redis.plain.conf
+  mysql_base_conf:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/mysql/conf.d/00-base.cnf
+  mysql_entry:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/mysql/entrypoint-autosize.sh
+  redis_entry:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/redis/entrypoint-autosize.sh
+  mongo_tmpl:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/mongodb/mongod.tmpl.conf
+  mongo_entry:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/mongodb/entrypoint-autosize.sh
+  mysql_binlog_conf:
+    file: ${MB_ROOT:-/srv/mindbase}/deploy/config/mysql/conf.d/95-binlog.cnf
 
 # ---------------------------------------------------------------
 # Swarm secrets（等价 compose 的 secrets/api_key_encryption_key bind mount；
@@ -124,20 +140,11 @@ services:
   # ==============================================================
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    command: >
-      etcd
-      -advertise-client-urls=https://etcd:2379
-      -listen-client-urls=https://0.0.0.0:2379
-      -data-dir=/etcd
-      -cert-file=/certs/server.crt
-      -key-file=/certs/server.key
-      -trusted-ca-file=/certs/dev-ca.crt
-      -client-cert-auth
+    # 服务端参数在 deploy/config/etcd/etcd.conf.yml（configs 挂载）。
+    command: ["etcd", "--config-file=/etc/etcd/etcd.conf.yml"]
+    configs:
+      - source: etcd_conf
+        target: /etc/etcd/etcd.conf.yml
     volumes:
       - etcd_data:/etcd
       - ${MB_ROOT:-/srv/mindbase}/secrets/certs/etcd:/certs:ro
@@ -148,6 +155,10 @@ services:
       retries: 5
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
       restart_policy:
         condition: any
         delay: 5s
@@ -228,14 +239,21 @@ services:
 
   mysql:
     image: mysql:8.4
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
       - MYSQL_DATABASE=mind_base
-      - MYSQL_USER=${MYSQL_USER:-mind_base}
+      - MYSQL_USER=mind_base
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
     configs:
       - source: mysql_init_sql
         target: /docker-entrypoint-initdb.d/01-init.sql
+      - source: mysql_base_conf
+        target: /etc/mysql/conf.d/00-base.cnf
+      - source: mysql_entry
+        target: /opt/mindbase/entrypoint-autosize.sh
+      - source: mysql_binlog_conf
+        target: /etc/mysql/conf.d/95-binlog.cnf
     volumes:
       - mysql_data:/var/lib/mysql
     stop_grace_period: 30s
@@ -246,6 +264,10 @@ services:
       retries: 5
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4g
       restart_policy:
         condition: any
         delay: 5s
@@ -264,12 +286,20 @@ services:
   # app-task 独立 MySQL（schema 由 app-task db.Migrate 自建）
   app-task-mysql:
     image: mysql:8.4
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
     environment:
       - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
       - MYSQL_DATABASE=app_task
-      - MYSQL_USER=${APPTASK_MYSQL_USER:-app_task}
+      - MYSQL_USER=app_task
       - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    # 生产标准：00-base 硬化 + entrypoint 按 cgroup 内存/CPU 自动 sizing。
+    configs:
+      - source: mysql_base_conf
+        target: /etc/mysql/conf.d/00-base.cnf
+      - source: mysql_entry
+        target: /opt/mindbase/entrypoint-autosize.sh
+      - source: mysql_binlog_conf
+        target: /etc/mysql/conf.d/95-binlog.cnf
     volumes:
       - app_task_mysql_data:/var/lib/mysql
     stop_grace_period: 30s
@@ -299,12 +329,20 @@ services:
   # docker service update --publish-add 或 SSH 隧道，勿长期开公网）
   app-pay-mysql:
     image: mysql:8.4
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
     environment:
       - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
       - MYSQL_DATABASE=app_pay
-      - MYSQL_USER=${PAY_MYSQL_USER:-app_pay}
+      - MYSQL_USER=app_pay
       - MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    # 生产标准：00-base 硬化 + entrypoint 按 cgroup 内存/CPU 自动 sizing。
+    configs:
+      - source: mysql_base_conf
+        target: /etc/mysql/conf.d/00-base.cnf
+      - source: mysql_entry
+        target: /opt/mindbase/entrypoint-autosize.sh
+      - source: mysql_binlog_conf
+        target: /etc/mysql/conf.d/95-binlog.cnf
     volumes:
       - app_pay_mysql_data:/var/lib/mysql
     stop_grace_period: 30s
@@ -332,7 +370,15 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-mind-base}", "--notify-keyspace-events", "Ex", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "900 1", "--save", "300 10"]
+    # 生产标准：静态配置 + 按 cgroup 内存自动 maxmemory；密码仍由 .env 注入。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
+    environment:
+      - REDIS_CONF=/usr/local/etc/redis/redis.conf
+    configs:
+      - source: redis_conf
+        target: /usr/local/etc/redis/redis.conf
+      - source: redis_entry
+        target: /opt/mindbase/entrypoint-autosize.sh
     volumes:
       - redis_data:/data
     healthcheck:
@@ -342,6 +388,10 @@ services:
       retries: 5
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
       restart_policy:
         condition: any
         delay: 5s
@@ -359,9 +409,17 @@ services:
 
   mongo:
     image: mongo:7
+    # 生产标准：auth 开启；entrypoint 渲染模板并按 cgroup 内存计算 WiredTiger cache。
+    entrypoint: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_TLS=0
+      - MONGO_INITDB_ROOT_USERNAME=admin
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+    configs:
+      - source: mongo_tmpl
+        target: /opt/mindbase/mongod.tmpl.conf
+      - source: mongo_entry
+        target: /opt/mindbase/entrypoint-autosize.sh
     volumes:
       - mongo_data:/data/db
     stop_grace_period: 30s
@@ -372,6 +430,10 @@ services:
       retries: 5
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
       restart_policy:
         condition: any
         delay: 5s

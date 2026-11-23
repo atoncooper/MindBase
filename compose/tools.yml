@@ -1,0 +1,30 @@
+# 调试工具（被根 docker-compose.yml include，profiles: tools）。
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks:
+    - mind-base-net
+services:
+
+  redis-commander:
+    <<: *defaults
+    image: rediscommander/redis-commander:latest
+    container_name: mind-base-redis-ui
+    profiles: ["tools", "full"]
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-mind-base}
+
+  mongo-express:
+    <<: *defaults
+    image: mongo-express:latest
+    container_name: mind-base-mongo-ui
+    profiles: ["tools", "full"]
+    ports:
+      - "8082:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASSWORD:-mind-base}
+      - ME_CONFIG_MONGODB_URL=mongodb://admin:${MONGO_PASSWORD:-mind-base}@mongo:27017/
+      - ME_CONFIG_BASICAUTH=false

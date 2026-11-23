@@ -82,8 +82,11 @@ class GatewayConfigRegressionTest {
     }
 
     @Test
-    void payUserRouteStripsBearerTokenBeforeUpstream() {
-        // 支付服务不需要用户 token；减少会话凭据在服务间传播面
-        assertThat(apisix).contains("remove: [X-Uid, X-Roles, Authorization]");
+    void payUserRouteKeepsBearerForForwardAuth() {
+        // proxy-rewrite 在 forward-auth 之前执行；若先 remove Authorization，
+        // forward-auth 读不到 Bearer，不会注入 X-Uid，app-pay 直接 401。
+        assertThat(apisix).contains("remove: [X-Uid, X-Roles]");
+        assertThat(apisix).doesNotContain("remove: [X-Uid, X-Roles, Authorization]");
+        assertThat(apisix).contains("request_headers: [Authorization]");
     }
 }

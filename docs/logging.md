@@ -162,7 +162,6 @@ docker compose exec app-ts sh -c 'cat /app/logs/app-ts.log | jq -r "select(.leve
 | compose | app-ts 卷 | 说明 |
 |---|---|---|
 | `docker-compose.yml`（服务端） | `app_ts_logs:/app/logs` | 与 app-go/app-pay 各服务同模式；`LOG__DIR=/app/logs` |
-| `docker-compose.client.yml`（单用户） | `app_ts_logs:/app/logs` | 同上，同样启用文件 sink |
 
 - 卷随 `docker compose down` 保留，`down -v` 会删除（生产严禁随意清理）。
 - 需要集中采集时以 stdout 为准；文件卷用于容器重启后仍可查历史、以及无日志驱动环境下的兜底。

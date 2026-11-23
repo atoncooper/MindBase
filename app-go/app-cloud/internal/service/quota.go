@@ -127,6 +127,8 @@ func (s *QuotaService) tierOrDefault(tier string, active bool) string {
 		return "free"
 	}
 	switch strings.ToUpper(strings.TrimSpace(tier)) {
+	case "PROMAX":
+		return "promax"
 	case "SVIP":
 		return "svip"
 	case "VIP":
@@ -166,6 +168,8 @@ func (s *QuotaService) QuotaFor(ctx context.Context, uid int64) (int64, string, 
 		return s.cfg.Quota.Free, "free", err
 	}
 	switch tier {
+	case "promax":
+		return s.cfg.Quota.PROMAX, tier, nil
 	case "svip":
 		return s.cfg.Quota.SVIP, tier, nil
 	case "vip":

@@ -22,6 +22,12 @@ export class MemoryQuotaCounter implements QuotaCounterStore {
     return this.live(key)?.value ?? 0;
   }
 
+  async sum(keys: string[]): Promise<number | null> {
+    let total = 0;
+    for (const key of keys) total += this.live(key)?.value ?? 0;
+    return total;
+  }
+
   async consume(key: string, limit: number, ttlSeconds: number): Promise<ConsumeResult | null> {
     if (limit < 0) return { allowed: true, count: 0 };
     const cur = this.live(key)?.value ?? 0;
@@ -35,6 +41,14 @@ export class MemoryQuotaCounter implements QuotaCounterStore {
     const next = (this.live(key)?.value ?? 0) + delta;
     this.values.set(key, { value: next, expiresAt: Date.now() + ttlSeconds * 1000 });
     return next;
+  }
+
+  async addMany(entries: Array<{ key: string; delta: number; ttlSeconds: number }>): Promise<boolean | null> {
+    for (const entry of entries) {
+      const next = (this.live(entry.key)?.value ?? 0) + entry.delta;
+      this.values.set(entry.key, { value: next, expiresAt: Date.now() + Math.max(1, entry.ttlSeconds) * 1000 });
+    }
+    return true;
   }
 
   async close(): Promise<void> {

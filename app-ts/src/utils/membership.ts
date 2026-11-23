@@ -29,8 +29,9 @@ const log = createLogger("MEMBERSHIP");
 export const TIER_FREE = "free";
 export const TIER_VIP = "vip";
 export const TIER_SVIP = "svip";
+export const TIER_PROMAX = "promax";
 
-const VALID_TIERS = new Set([TIER_VIP, TIER_SVIP]);
+const VALID_TIERS = new Set([TIER_VIP, TIER_SVIP, TIER_PROMAX]);
 
 /** 成功结果 TTL 抖动范围（±15%）。 */
 const SUCCESS_TTL_JITTER_MIN = 0.85;
@@ -235,7 +236,7 @@ function startBackgroundRefresh(uid: string, stale: CacheEntry): Promise<Resolve
       cacheSet(uid, outcome.tier, "app-pay", now + successTtlMs());
       return { tier: outcome.tier, source: "app-pay" };
     }
-    // 保留最后一次权威值（不把已知 VIP/SVIP 降级成 fallback free）。
+    // 保留最后一次权威值（不把已知 VIP/SVIP/PROMAX 降级成 fallback free）。
     cacheSet(uid, stale.tier, stale.source, now + failureTtlMs());
     return { tier: stale.tier, source: stale.source };
   })();
@@ -253,7 +254,7 @@ async function resolveFromUpstream(uid: string): Promise<ResolvedTier> {
 }
 
 /**
- * Return the membership tier for `uid` (`free` | `vip` | `svip`).
+ * Return the membership tier for `uid` (`free` | `vip` | `svip` | `promax`).
  * Must never throw and never block long: the chat admission path calls
  * this on every turn.
  */

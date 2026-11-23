@@ -14,7 +14,7 @@ import { parseDocument } from "../doc-parser/index.js";
 import type { OcrClient } from "../doc-parser/ocr.js";
 import type { ModelCapabilityRegistry } from "../llm/model-capabilities.js";
 import { EXAM_BLUEPRINTS, blueprintTotal, blueprintScoredTotal, blueprintExamTotal, getBlueprint, type ExamBlueprint } from "./quiz-exam-blueprints.js";
-import type { QuotaService } from "./quota.js";
+import { quotaWindowName, type QuotaService } from "./quota.js";
 import type { QuizResumePlan, QuizResumeStore } from "../repository/quiz-resume.js";
 import { MemoryQuizResumeStore } from "../repository/memory/quiz-resume.js";
 
@@ -1228,8 +1228,8 @@ export class QuizGenerationService {
     if (gate?.verdict === "quota_exceeded") {
       throw new QuizGenerationError(
         gate.tier === "free"
-          ? `今日免费出题额度已用完（${gate.limit} 批/日），升级会员可获得更高额度`
-          : `今日出题额度已用完（${gate.limit} 批/日），明日 0 点重置`,
+          ? quotaWindowName(gate.window) + "的免费出题 token 额度不足，升级会员可获得更高额度"
+          : quotaWindowName(gate.window) + "的出题 token 额度不足，窗口重置后恢复",
         429,
       );
     }

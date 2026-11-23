@@ -18,6 +18,8 @@ export const viewport: Viewport = {
   themeColor: "#fbfbfd",
   width: "device-width",
   initialScale: 1,
+  // Android 键盘弹出时压缩布局视口（iOS 由 100dvh 自行处理）
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({

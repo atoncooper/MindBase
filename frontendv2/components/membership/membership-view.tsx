@@ -49,13 +49,15 @@ function isOrderExpired(o: PayOrder): boolean {
     return new Date(o.expiresAt).getTime() <= Date.now();
 }
 
-/** 档位等级：FREE=0 / VIP=1 / SVIP=2。 */
+/** 档位等级：FREE=0 / VIP=1 / SVIP=2 / PROMAX=3。 */
 function targetTierOf(code: string): string {
-    return code.startsWith("SVIP_") ? "SVIP" : "VIP";
+    if (code.startsWith("PROMAX_")) return "PROMAX";
+    if (code.startsWith("SVIP_")) return "SVIP";
+    return "VIP";
 }
 function tierRank(t: string): number {
     const u = (t ?? "").toUpperCase();
-    return u === "SVIP" ? 2 : u === "VIP" ? 1 : 0;
+    return u === "PROMAX" ? 3 : u === "SVIP" ? 2 : u === "VIP" ? 1 : 0;
 }
 
 /** 从订单构造 PayDialog 需要的商品信息（重新付款场景：不再依赖 SKU 目录）。 */
@@ -340,7 +342,12 @@ export function MembershipView() {
 
     const currentTier = membership?.active ? (membership.tier ?? "").toUpperCase() : "";
     const currentRank = tierRank(currentTier);
-    const isBlockedProduct = (p: PayProduct) => tierRank((p.code.startsWith("SVIP_") ? "SVIP" : "VIP")) <= currentRank;
+    const hasQuote = (code: string) => upgradeQuotes.some((q) => q.skuCode === code);
+    const isBlockedProduct = (p: PayProduct) => {
+        const rank = tierRank(targetTierOf(p.code));
+        if (currentRank === 0) return rank === 0; // 免费用户可直接购买任意付费档
+        return !hasQuote(p.code);
+    };
     const selectable = products.filter((p) => !isBlockedProduct(p));
     const selectedProduct =
         products.find((p) => p.code === selectedSku && !isBlockedProduct(p)) ?? selectable[0] ?? null;
@@ -374,7 +381,7 @@ export function MembershipView() {
                         >
                             {paying
                                 ? "处理中…"
-                                : `开通 ${selectedProduct.title}（${tierRank(targetTierOf(selectedProduct.code)) > 1 ? "SVIP" : "VIP"}）`}
+                                : `开通 ${selectedProduct.title}（${targetTierOf(selectedProduct.code)}）`}
                         </button>
                     )}
                     {selectedProduct === null && currentRank > 0 && (
@@ -423,7 +430,8 @@ export function MembershipView() {
 /** 黑金 Hero —— 当前会员状态。 */
 function MembershipHero({ membership }: { membership: PayMembership | null }) {
     const tier = membership?.active ? (membership.tier ?? "").toUpperCase() : "";
-    const isPaid = tier === "VIP" || tier === "SVIP";
+    const isPaid = tier === "VIP" || tier === "SVIP" || tier === "PROMAX";
+    const tierLabel = tier === "PROMAX" ? "ProMax" : tier;
     return (
         <section className="relative overflow-hidden rounded-[20px] bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-800 p-7 sm:p-8">
             <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-amber-400/10 blur-3xl" />
@@ -437,7 +445,7 @@ function MembershipHero({ membership }: { membership: PayMembership | null }) {
                     {isPaid ? (
                         <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1">
                             <span className="bg-gradient-to-r from-amber-200 via-yellow-400 to-amber-200 bg-clip-text text-[26px] font-semibold tracking-tight text-transparent">
-                                {tier} 会员
+                                {tierLabel} 会员
                             </span>
                             {membership?.expireAt && (
                                 <span className="text-[12px] text-zinc-400">
@@ -486,21 +494,33 @@ function PlanCards({
         (best, p) => (monthly(p) < monthly(best) ? p : best),
         products[0]
     ).code;
-    const targetTier = (code: string) => (code.startsWith("SVIP_") ? "SVIP" : "VIP");
+    const targetTier = (code: string) => targetTierOf(code);
+    // 会员页的 token 权益提示按当前 SKU 价格推导（默认 VIP_MONTHLY = ¥48 → ¥480 等值）
+    const vipProduct = products.find((p) => p.code === "VIP_MONTHLY");
+    const vipYuanLabelNum = vipProduct ? vipProduct.priceCents / 100 : 48;
+    const vipYuanLabel = Number.isInteger(vipYuanLabelNum)
+        ? String(vipYuanLabelNum)
+        : vipYuanLabelNum.toFixed(2);
+    const vipValueYuan = vipYuanLabelNum * 10;
+    const vipValueLabel = Number.isInteger(vipValueYuan) ? String(vipValueYuan) : vipValueYuan.toFixed(2);
     const currentRank = tierRank(currentTier);
     // 升级换购报价（同档补差价）：skuCode → quote；有报价的同档 SKU 可选（补差价升级）
     const quoteFor = (code: string) => upgradeQuotes.find((q) => q.skuCode === code);
     const isBlocked = (p: PayProduct) => {
+        if (currentRank === 0) return false; // 免费用户可直接购买任意付费档
         const rank = tierRank(targetTier(p.code));
-        if (rank > currentRank) return false;
-        if (rank === currentRank) return !quoteFor(p.code); // 有差价报价的同档 = 可升级
+        // 会员有效期内：同档/跨档都必须有服务端报价才可买；跨档没有报价
+        // 说明剩余时长超过该 SKU 周期，不能按短周期全价叠加。
+        if (rank >= currentRank) return !quoteFor(p.code);
         return true; // 降档
     };
     return (
         <section>
-            <div className="flex items-baseline gap-2">
+            <div className="flex flex-wrap items-baseline gap-2">
                 <h2 className="text-[16px] font-semibold text-foreground">选择套餐</h2>
-                <span className="text-[12px] text-tertiary">按需选择周期，开通立即生效</span>
+                <span className="text-[12px] text-tertiary">
+                    AI 额度按 token 计量 · VIP ¥{vipYuanLabel} 档约 ¥{vipValueLabel} 等值（10×）· 不同模型按单价抵扣
+                </span>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {products.map((p) => {
@@ -508,7 +528,10 @@ function PlanCards({
                     const on = p.code === (selectedCode ?? products[0]?.code) && !isBlocked(p);
                     const best = p.code === bestCode && !isBlocked(p);
                     const blocked = isBlocked(p);
-                    const sameTier = tierRank(targetTier(p.code)) === currentRank;
+                    const rank = tierRank(targetTier(p.code));
+                    const sameTier = rank === currentRank;
+                    const higherTier = rank > currentRank;
+                    const payableCents = quote ? quote.amountCents : p.priceCents;
                     return (
                         <button
                             key={p.code}
@@ -542,17 +565,21 @@ function PlanCards({
                                             ? `补差价升级 ¥${formatYuan(quote.amountCents)}`
                                             : sameTier
                                                 ? "当前档位"
-                                                : "档位不高于现有"}
+                                                : higherTier
+                                                    ? "剩余时长超过该套餐"
+                                                    : "档位不高于现有"}
                                     </span>
                                 ) : null}
                             </div>
                             <p className="mt-1.5 text-[24px] font-semibold tracking-tight text-foreground">
                                 <span className="text-[14px] font-normal text-secondary">¥</span>
-                                {formatYuan(p.priceCents)}
+                                {formatYuan(payableCents)}
                             </p>
                             <p className="mt-1 text-[11px] text-tertiary">
                                 {quote
-                                    ? `升级补 ${p.durationDays} 天（总时长至 ${quote.newExpireAt}）· 原价 ¥${formatYuan(p.priceCents)}`
+                                    ? quote.durationDays > 0
+                                        ? `补差价升级 · 延长 ${quote.durationDays} 天至 ${quote.newExpireAt}（原价 ¥${formatYuan(p.priceCents)}）`
+                                        : `补差价升级 · 剩余时长直接升档（原价 ¥${formatYuan(p.priceCents)}）`
                                     : `${p.durationDays} 天 · 折合 ¥${formatYuan(monthly(p))}/月`}
                             </p>
                             {on && (
@@ -579,10 +606,11 @@ function TierComparison({
     tiers: PayTierInfo[];
 }) {
     if (rows.length === 0) return null;
-    const cols: { key: "free" | "vip" | "svip"; tier: string }[] = [
+    const cols: { key: "free" | "vip" | "svip" | "promax"; tier: string }[] = [
         { key: "free", tier: "FREE" },
         { key: "vip", tier: "VIP" },
         { key: "svip", tier: "SVIP" },
+        { key: "promax", tier: "PROMAX" },
     ];
     const nameOf = (tier: string) => tiers.find((t) => t.tier === tier)?.name ?? tier;
     return (

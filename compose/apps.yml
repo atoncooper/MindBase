@@ -1,0 +1,576 @@
+# 业务服务（被根 docker-compose.yml include）：frontend(+frontend-tls)、app-ts、app-user、app-cloud、app-content、
+# app-content-mcp、app-kg、app-sandbox(+sandbox-tls)、app-task、app-pay、app-pay-test、app-admin-api、app-admin。
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks:
+    - mind-base-net
+services:
+
+  frontend:
+    <<: *defaults
+    profiles: ["", "standalone", "storage", "full", "task"]
+    image: atoncooper/mind-base-frontend:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../frontendv2
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://localhost
+        NEXT_PUBLIC_API_PREFIX: /mindbase/api/v1
+        NEXT_PUBLIC_APISIX_HOST: nginx:80
+        MINIO_PROXY_DEST: http://nginx:80
+    container_name: mind-base-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=https://localhost
+      - NEXT_PUBLIC_API_PREFIX=/mindbase/api/v1
+      - NEXT_PUBLIC_APISIX_HOST=nginx:80
+      - MINIO_PROXY_DEST=http://nginx:80
+      - SHARE_DOMAIN=minbase.top
+      - SHARE_PUBLIC_IP=
+      - INTERNAL_API_URL=https://openresty:443
+      - NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+    volumes:
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  frontend-tls:
+    image: openresty/openresty:1.27.1.2-alpine
+    container_name: mind-base-frontend-tls
+    profiles: ["", "standalone", "storage", "full", "task"]
+    network_mode: "service:frontend"
+    depends_on:
+      frontend:
+        condition: service_started
+    volumes:
+      - ../openresty/tls-front/frontend.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ../secrets/certs/frontend:/certs:ro
+    restart: unless-stopped
+
+  sandbox-tls:
+    image: openresty/openresty:1.27.1.2-alpine
+    container_name: mind-base-sandbox-tls
+    profiles: ["sandbox", "full"]
+    network_mode: "service:app-sandbox"
+    depends_on:
+      app-sandbox:
+        condition: service_started
+    volumes:
+      - ../openresty/tls-front/sandbox.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ../secrets/certs/sandbox:/certs:ro
+    restart: unless-stopped
+
+  app-ts:
+    <<: *defaults
+    image: atoncooper/mind-base-app-ts:latest
+    pull_policy: missing
+    build:
+      context: ..
+      dockerfile: app-ts/Dockerfile
+    container_name: mind-base-app-ts
+    profiles: ["", "ts", "full"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - AI_GATEWAY__BASE_URL=http://106.53.220.71:18080/v1
+      - LANGCHAIN_TRACING_V2=true
+      - LANGSMITH_TRACING=true
+      - LANGSMITH_PROJECT=MindBase
+      - LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+      - SANDBOX__ENABLED=true
+      - SANDBOX__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - LOG__DIR=/app/logs
+      - NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+      - APP_AUTH__BASE_URL=https://app-user:8006
+      - APP_BILI__BASE_URL=https://app-user:8006
+      - APP_USER_SETTINGS__BASE_URL=https://app-user:8006
+      - APP_TASK__BASE_URL=https://apisix:9443
+      - TASK_QUIZ__EXECUTOR_URL=https://apisix:9443/internal/quiz/generate-llm
+      - APP_PAY__BASE_URL=https://apisix:9443/internal/pay
+      - APP_QUIZ__BASE_URL=https://apisix:9443/internal/quiz
+      - SANDBOX__BASE_URL=https://apisix:9443/internal/sandbox
+      - CONTENT_MCP__URL=https://app-content-mcp:8019/mcp
+      - SERVER__TLS__ENABLED=true
+      - SERVER__TLS__CERT=/app/certs/server.crt
+      - SERVER__TLS__KEY=/app/certs/server.key
+      - KG_GRPC__TLS__ENABLED=true
+      - KG_GRPC__TLS__CA_FILE=/etc/ssl/certs/ca-certificates.crt
+      - MILVUS__ADDRESS=milvus:19530
+      - MILVUS__SSL=true
+      - MILVUS__TLS__ROOT_CERT=/app/certs/dev-ca.crt
+      - MILVUS__TLS__SERVER_NAME=milvus
+      - MINIO__ENDPOINT=https://minio:9000
+      - MINIO__SECURE=true
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    volumes:
+      - app_ts_logs:/app/logs
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - ../secrets/certs/app-ts:/app/certs:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app-user:
+    <<: *defaults
+    image: atoncooper/mind-base-app-user:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-go/app-user
+      dockerfile: Dockerfile
+    container_name: mind-base-app-user
+    profiles: ["", "user", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - EMAIL__ENABLED=true
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - WECHAT__ENABLED=false
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=
+      - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+      - APPAUTH__APP_PAY__BASE_URL=https://apisix:9443
+      - APPSETTINGS__APP_CLOUD__BASE_URL=https://app-cloud:8007
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - APPBILI__ASR__BASE_URL=http://106.53.220.71:18080/api/v1
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPBILI__LOG__OUTPUT=both
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MINIO__ENDPOINT=
+      - MINIO__ACCESS_KEY=
+      - MINIO__SECRET_KEY=
+      - MINIO__BUCKET=
+      - MINIO__PUBLIC_ENDPOINT=
+      - MINIO__PUBLIC_HOST=
+      - MINIO_ACCESS_KEY=
+      - MINIO_SECRET_KEY=
+      - APP_CLOUD_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - APPSETTINGS__LOG__OUTPUT=both
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - TLS__CERT_FILE=/certs/server.crt
+      - TLS__KEY_FILE=/certs/server.key
+      - EMAIL__FROM_EMAIL=onboarding@resend.dev
+      - MYSQL_TLS_MODE=skip-verify
+    ports:
+      - "127.0.0.1:8006:8006"
+    volumes:
+      - app_user_logs:/app/logs
+      - ../secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+      - ../secrets/certs/app-user:/certs:ro
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    mem_limit: 512m
+
+  app-sandbox:
+    <<: *defaults
+    image: atoncooper/mind-base-app-sandbox:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build app-sandbox
+    build:
+      context: ../app-go/app-sandbox
+      dockerfile: Dockerfile
+    container_name: mind-base-app-sandbox
+    profiles: ["sandbox", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy   # artifacts.store=minio uploads executed outputs here
+      opensandbox-server:
+        condition: service_healthy
+        required: false   # SANDBOX_RUNTIME_TYPE=fake 时可单独调试控制层
+    env_file:
+      - ../.env
+    environment:
+      - SANDBOX__DATABASE__DSN=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - SANDBOX__AUTH__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
+      - SANDBOX__RUNTIME__TYPE=opensandbox
+      - SANDBOX__RUNTIME__OPENSANDBOX__LIFECYCLE_BASE_URL=http://opensandbox-server:8080/v1
+      - SANDBOX__RUNTIME__OPENSANDBOX__API_KEY=${OPENSANDBOX_API_KEY:-}
+      - SANDBOX__RUNTIME__IMAGE=python:3.12
+      - SANDBOX__RUNTIME__RESOURCES__CPU=250m
+      - SANDBOX__RUNTIME__RESOURCES__MEMORY=256Mi
+      - MINIO__ENDPOINT=https://minio:9000
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - SANDBOX__ARTIFACTS__STORE=minio
+      - SANDBOX__MINIO__BUCKET=sandbox-artifacts
+      - SANDBOX__MINIO__PUBLIC_ENDPOINT=/minio-proxy
+      - SANDBOX__ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
+      - MYSQL_TLS_MODE=skip-verify
+      - SANDBOX__LOG__OUTPUT=both
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+      restart_policy:
+        condition: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8017:8017"
+    volumes:
+      - app_sandbox_logs:/app/logs
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  app-kg:
+    <<: *defaults
+    image: atoncooper/mind-base-app-kg:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-go/app-kg
+      dockerfile: Dockerfile
+    container_name: mind-base-app-kg
+    profiles: ["", "kg", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - APPKG__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - KG__URI=bolt+s://neo4j:7687
+      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
+      - MYSQL_TLS_MODE=skip-verify
+      - APPKG__LOG__OUTPUT=both
+      - APPKG__SERVER__INTERNAL_TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+      - APPKG__SERVER__TLS__ENABLED=true
+      - APPKG__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPKG__SERVER__TLS__KEY=/app/certs/server.key
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    ports:
+      - "127.0.0.1:8013:8013"
+      - "127.0.0.1:8014:8014"
+    volumes:
+      - app_kg_logs:/app/logs
+      - ../secrets/certs/app-kg:/app/certs:ro
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  app-cloud:
+    <<: *defaults
+    image: atoncooper/mind-base-app-cloud:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-go/app-cloud
+      dockerfile: Dockerfile
+    profiles: ["", "cloud", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - APPCLOUD__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MYSQL_TLS_MODE=skip-verify
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - AI_GATEWAY__BASE_URL=http://106.53.220.71:18080/v1
+      - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
+      - APPCLOUD__LOG__OUTPUT=both
+      - APPCLOUD__SERVER__TLS__ENABLED=true
+      - APPCLOUD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPCLOUD__SERVER__TLS__KEY=/app/certs/server.key
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - APPCLOUD__ATTEST__SECRET=${APP_CLOUD_ATTEST_SECRET:-}
+      - APPCLOUD__KG__TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+      - MINIO__PUBLIC_ENDPOINT=https://localhost/mindbase/api/v1/media
+      - MINIO__EVENT_TOKEN=${MINIO_EVENT_TOKEN:-dev-minio-event-token}
+      - APPCLOUD__ORPHAN__AUTO_DELETE=true
+      - APPCLOUD__ORPHAN__GRACE_HOURS=48
+      - APPCLOUD__UPLOAD__SWEEP_INTERVAL_SECONDS=5
+      - APPCLOUD__UPLOAD__SWEEP_BATCH=200
+      - APPCLOUD__UPLOAD__SWEEP_VISIBILITY_SECONDS=60
+      - APPCLOUD__UPLOAD__SWEEP_RECENT_GUARD_SECONDS=300
+      - APPCLOUD__ADMIN_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+    ports:
+      - "127.0.0.1:8007-8009:8007"
+    volumes:
+      - app_cloud_logs:/app/logs
+      - ../secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+      - ../secrets/certs/app-cloud:/app/certs:ro
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  app-content:
+    <<: *defaults
+    image: atoncooper/mind-base-app-content:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-go/app-content
+      dockerfile: Dockerfile
+    container_name: mind-base-app-content
+    profiles: ["", "content", "note", "quiz", "board", "full"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - CONTENT__DATABASE__MYSQL__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - CONTENT__DATABASE__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - CONTENT__DATABASE__MONGO__DATABASE=mind_base
+      - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
+      - CONTENT__DATABASE__REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
+      - CONTENT__LOG__OUTPUT=both
+      - CONTENT__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENT__SERVER__TLS__CERT=/app/certs/server.crt
+      - CONTENT__SERVER__TLS__KEY=/app/certs/server.key
+      - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - MYSQL_TLS_MODE=skip-verify
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    ports:
+      - "127.0.0.1:8004:8004"
+    volumes:
+      - app_content_logs:/app/logs
+      - ../secrets/certs/app-content:/app/certs
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  app-task:
+    <<: *defaults
+    image: atoncooper/app-task:latest
+    container_name: mind-base-app-task
+    profiles: ["", "task", "full"]
+    depends_on:
+      apisix:
+        condition: service_healthy
+      app-task-mysql:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - APPTASK__RDBMS__URL=mysql+aiomysql://app_task:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
+      - APPTASK__APP__BASE_URL=https://apisix:9443
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9443
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPTASK__HTTP_EXECUTOR__CA_FILE=/app/pay-certs/ca.crt
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      - APPTASK__LOG__OUTPUT=both
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - NO_PROXY=localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-content-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - app_task_logs:/app/logs
+      - ../app-pay/certs:/app/pay-certs:ro
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - app_task_certs:/app/certs
+
+  app-pay:
+    <<: *defaults
+    image: atoncooper/mind-base-app-pay:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-pay
+      dockerfile: Dockerfile
+    container_name: mind-base-app-pay
+    profiles: ["", "pay", "full"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      app-pay-mysql:
+        condition: service_healthy
+      cert-truststore:
+        condition: service_completed_successfully
+    env_file:
+      - ../.env
+    environment:
+      - APPTASK_BASE_URL=https://apisix:9443
+      - JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai -Djavax.net.ssl.trustStore=/app/certs/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12
+      - ALIPAY_ENABLED=true
+      - ALIPAY_GATEWAY_URL=https://openapi-sandbox.dl.alipaydev.com/gateway.do
+      - ALIPAY_NOTIFY_URL=
+    command:
+      - --spring.profiles.active=docker
+      - --pay.rdbms.url=jdbc:mysql://app-pay-mysql:3306/app_pay?sslMode=REQUIRED&useSSL=true&requireSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=true&connectTimeout=3000&socketTimeout=15000
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - app_pay_logs:/app/logs
+      - ../app-pay/certs:/app/certs:ro
+
+  app-content-mcp:
+    <<: *defaults
+    image: atoncooper/mind-base-app-content-mcp:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-go/app-content-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-content-mcp
+    profiles: ["", "content-mcp", "full"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    environment:
+      - CONTENTMCP__UPSTREAM__BASE_URL=https://apisix:9443
+      - CONTENTMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__UPSTREAM__UID=
+      - CONTENTMCP__SERVER__AUTH_TOKEN=${CONTENT_MCP_AUTH_TOKEN:-}
+      - CONTENTMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__SERVER__TLS__ENABLED=true
+      - CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS=
+      - CONTENTMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENTMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - CONTENTMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - CONTENTMCP__LOG__OUTPUT=both
+      - CONTENTMCP__LOG__FILE=/app/logs/app-content-mcp.log
+    ports:
+      - "127.0.0.1:8019:8019"
+    volumes:
+      - app_content_mcp_logs:/app/logs
+      - ../secrets/certs/app-content-mcp:/app/certs
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  app-pay-test:
+    <<: *defaults
+    image: atoncooper/mind-base-app-pay:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-pay
+      dockerfile: Dockerfile
+    container_name: mind-base-app-pay-test
+    profiles: ["pay-test", "full"]
+    depends_on:
+      app-pay-test-mysql:
+        condition: service_healthy
+    command: ["--spring.profiles.active=test"]
+    ports:
+      - "127.0.0.1:18002:8002"
+    volumes:
+      - app_pay_test_logs:/app/logs
+      - ../app-pay/certs:/app/certs:ro
+
+  app-admin-api:
+    <<: *defaults
+    image: atoncooper/mind-base-app-admin:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../app-go/app-admin
+      dockerfile: Dockerfile
+      args:
+        GOPROXY: "https://goproxy.cn,direct"
+    container_name: mind-base-app-admin-api
+    profiles: ["", "admin", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      app-cloud:
+        condition: service_started  # app-cloud 先跑 Migrate（moderation 列归属 cloud-back）
+        required: false             # app-cloud 属默认 profile；显式 --profile admin 时不应因缺它而拒绝解析
+      app-user:
+        condition: service_started  # users / RBAC 表由 app-user 建立，admin 只读
+        required: false             # 独立部署时 app-user 可在另一套 compose 中运行
+      app-sandbox:
+        condition: service_started
+        required: false             # sandbox 管理是可选面板；未启动时管理页显示未配置
+      app-pay-mysql:
+        condition: service_healthy
+        required: false             # 支付运营是可选面板；未启用支付时 /api/pay/* 返回 503
+    env_file:
+      - ../.env
+    environment:
+      - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MYSQL_TLS_MODE=skip-verify
+      - APPADMIN__SEED__USERNAME=admin
+      - APPADMIN__SEED__PASSWORD=${APPADMIN__SEED__PASSWORD:-app-admin}
+      - APPADMIN__SECURITY__IP_ALLOWLIST=
+      - APPADMIN__SECURITY__TRUSTED_PROXIES=172.16.0.0/12
+      - APPADMIN__CLOUD_REVIEW__BASE_URL=https://app-cloud:8007
+      - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+      - APPADMIN__SANDBOX_ADMIN__BASE_URL=https://app-sandbox:8443
+      - APPADMIN__SANDBOX_ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
+      - APPADMIN__PAY_RDBMS__URL=${PAY_ADMIN_RDBMS_URL:-mysql+aiomysql://app_pay:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay}
+      - APPADMIN__PAY__OPS__BASE_URL=https://apisix:9443
+      - APPADMIN__PAY__OPS__KEY=${PAY_OPS_KEY:-}
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - APPADMIN__SERVER__TLS__ENABLED=true
+      - APPADMIN__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPADMIN__SERVER__TLS__KEY=/app/certs/server.key
+      - APPADMIN__PAY__AUDIT_FILE=/app/logs/pay-audit.jsonl
+      - APPADMIN__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:8016:8016"
+    volumes:
+      - app_admin_logs:/app/logs
+      - ../secrets/certs/app-admin:/app/certs:ro
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  app-admin:
+    <<: *defaults
+    image: atoncooper/mind-base-app-admin-ui:latest
+    pull_policy: never
+    build:
+      context: ..
+      dockerfile: frontend-admin/Dockerfile
+    container_name: mind-base-app-admin-ui
+    profiles: ["", "admin", "full"]
+    depends_on:
+      app-admin-api:
+        condition: service_started
+    ports:
+      - "127.0.0.1:3001:80"
+    volumes:
+      - ../secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro

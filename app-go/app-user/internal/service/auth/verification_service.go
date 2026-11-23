@@ -83,9 +83,11 @@ func (v *Verification) SendCode(ctx context.Context, uid int64, target, purpose 
 		return err
 	}
 	code := ""
-	if v.sms.UsesAliyunGeneratedCode() {
-		// Aliyun generates and verifies the code: our DB only needs a sentinel
+	if channel == "sms" && v.sms.UsesAliyunGeneratedCode() {
+		// Aliyun generates and verifies the SMS code: our DB only needs a sentinel
 		// row for rate limits / attempts / invalidation, never the real code.
+		// Email purposes must always get a real local numeric code, otherwise the
+		// email body would literally contain "##aliyun##".
 		code = "##aliyun##"
 	} else {
 		var err error
@@ -213,7 +215,8 @@ func (v *Verification) VerifyCode(target, purpose, code string, uid int64) (int6
 		slog.Warn("[VERIFY] brute-force cap reached", "target", target, "purpose", purpose)
 		return 0, errors.New("验证码错误次数过多，请重新获取")
 	}
-	if v.sms.UsesAliyunGeneratedCode() {
+	channel, _ := v.channel(purpose)
+	if channel == "sms" && v.sms.UsesAliyunGeneratedCode() {
 		vctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		ok, err := v.sms.CheckCode(vctx, target, code)

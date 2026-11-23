@@ -148,6 +148,7 @@ interface QuotaBlockInfo {
   code: string;
   message: string;
   kind?: string;
+  window?: "five_hour" | "day" | "month";
   resetAt?: number;
   upgradeSku?: string;
 }
@@ -196,7 +197,7 @@ const MessageRow = memo(function MessageRow({
 
   return (
     <div
-      className="mx-auto w-full max-w-[768px] px-5 pb-5"
+      className="mx-auto w-full max-w-[768px] px-3 pb-4 sm:px-5 sm:pb-5"
       data-message-id={message.id}
     >
       <ChatMessage
@@ -255,7 +256,8 @@ interface ChatViewProps {
 
 export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewProps = {}) {
   const router = useRouter();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 手机默认收起（侧栏是覆盖式抽屉）；桌面由下面的 media query 打开。
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -266,6 +268,20 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   const [quotaBlock, setQuotaBlock] = useState<QuotaBlockInfo | null>(null);
   // 今日用量角标（/quota/summary）：挂载时与每轮结束后刷新
   const [quotaSummary, setQuotaSummary] = useState<QuotaSummary | null>(null);
+
+  // 移动端适配：md+ 默认展开常驻侧栏，<768px 默认收起，避免首屏被 288px 抽屉盖住。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 768px)");
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial layout comes from the browser viewport; no external system
+    setSidebarOpen(mq.matches);
+    const onChange = (event: MediaQueryListEvent) => {
+      // 只在切到手机宽度时强制收起；桌面端保留用户手动折叠的选择。
+      if (!event.matches) setSidebarOpen(false);
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   const refreshQuota = useCallback(async () => {
     try {
@@ -926,11 +942,17 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
             onError: (message: string, meta?: { code?: string; detail?: Record<string, unknown> }) => {
               flushStream();
               if (meta?.code === "QUOTA_EXCEEDED" || meta?.code === "COST_GUARD") {
-                const detail = (meta.detail ?? {}) as { kind?: string; resetAt?: number; upgradeSku?: string };
+                const detail = (meta.detail ?? {}) as {
+                  kind?: string;
+                  window?: "five_hour" | "day" | "month";
+                  resetAt?: number;
+                  upgradeSku?: string;
+                };
                 setQuotaBlock({
                   code: meta.code,
                   message,
                   kind: detail.kind,
+                  window: detail.window,
                   resetAt: typeof detail.resetAt === "number" ? detail.resetAt : undefined,
                   upgradeSku: detail.upgradeSku,
                 });
@@ -1373,6 +1395,12 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       setDraftAcademicProjectId(projectId);
       setActiveSessionId(null);
       setEditingMessageId(null);
+      if (
+        typeof window !== "undefined" &&
+        window.matchMedia("(max-width: 767px)").matches
+      ) {
+        setSidebarOpen(false);
+      }
       // URL 上的 academic_project 只是入口提示；本次选择已记入草稿，清掉参数。
       if (academicProjectId) {
         router.replace(
@@ -1464,7 +1492,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       }));
 
   return (
-    <div className="relative flex h-[100dvh] max-h-[100dvh] w-full overflow-hidden overscroll-none">
+    <div className="relative flex h-[100dvh] max-h-[100dvh] w-full overflow-hidden overscroll-none pt-[env(safe-area-inset-top)]">
       <ChatSidebar
         sessions={sidebarSessions}
         activeSessionId={activeSessionId ?? undefined}
@@ -1528,7 +1556,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               scrollerRef={(ref) => {
                 scrollerRef.current = ref instanceof HTMLElement ? ref : null;
               }}
-              className="h-full [scrollbar-gutter:stable]"
+              className="chat-scrollbar h-full"
               style={{ height: "100%" }}
               data={messages}
               firstItemIndex={firstItemIndex}
@@ -1543,7 +1571,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               alignToBottom
               components={{
                 Header: () => (
-                  <div className="mx-auto w-full max-w-[768px] px-5 pt-6">
+                  <div className="mx-auto w-full max-w-[768px] px-3 pt-4 sm:px-5 sm:pt-6">
                     {(activeSession?.historyPage ?? 1) > 1 && (
                       <div className="mb-5 flex justify-center">
                         <button
@@ -1596,7 +1624,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         </div>
 
         {/* Input area - bottom padding keeps clear of the iOS home indicator */}
-        <div className="relative z-10 shrink-0 px-5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="relative z-10 shrink-0 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-5">
           <div className="mx-auto max-w-[768px]">
             {/* 文件级问答提示：/chat?upload_uuid= 进入时只基于该文件回答 */}
             {uploadUuid && (
@@ -1617,15 +1645,21 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               </div>
             )}
             {(() => {
-              const chatKind = quotaSummary?.enabled
-                ? quotaSummary.kinds.find((k) => k.kind === "chat")
+              const day = quotaSummary?.enabled
+                ? quotaSummary.windows?.find((w) => w.window === "day")
                 : undefined;
-              if (!chatKind || chatKind.limit < 0) return null;
-              const ratio = chatKind.limit > 0 ? chatKind.used / chatKind.limit : 0;
+              const fiveHour = quotaSummary?.enabled
+                ? quotaSummary.windows?.find((w) => w.window === "five_hour")
+                : undefined;
+              if (!day || day.limit < 0) return null;
+              const ratio = day.limit > 0 ? day.used / day.limit : 0;
               return (
-                <div className="mb-1 flex justify-end px-1 text-xs text-secondary">
-                  今日 AI 用量 {chatKind.usedPercent ?? 0}%
-                  {ratio >= 0.8 ? " · 额度即将用完" : ""}
+                <div className="mb-1 flex justify-end gap-3 px-1 text-xs text-secondary">
+                  <span>今日 token 用量 {day.usedPercent ?? 0}%</span>
+                  {fiveHour && fiveHour.used > 0 && (
+                    <span>5 小时窗口 {fiveHour.usedPercent ?? 0}%</span>
+                  )}
+                  {ratio >= 0.8 ? <span>· 额度即将用完</span> : null}
                 </div>
               );
             })()}
@@ -1638,9 +1672,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
                   <p className="font-medium text-foreground">{quotaBlock.message}</p>
                   <p className="mt-0.5 text-xs text-secondary">
                     {quotaBlock.resetAt
-                      ? `重置时间：${new Date(quotaBlock.resetAt).toLocaleString()} · `
+                      ? `${quotaBlock.window === "five_hour" ? "5 小时滚动窗口" : quotaBlock.window === "month" ? "本月" : "今日"}重置：${new Date(quotaBlock.resetAt).toLocaleString()} · `
                       : ""}
-                    升级会员可获得更高每日额度与会员优先队列
+                    token 额度按模型折算；升级会员可获得更高额度与会员优先队列
                   </p>
                 </div>
                 <a

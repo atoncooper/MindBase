@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { KgService } from "../../../kg/service.js";
 import { KgServiceError } from "../../../kg/service.js";
 import { getRequestContext } from "../../../context/request-context.js";
-import type { QuotaService } from "../../../services/quota.js";
+import { quotaWindowName, type QuotaService } from "../../../services/quota.js";
 
 /**
  * KG routes — a contract-mirror of the Python /knowledge/kg/* surface so the
@@ -58,14 +58,16 @@ export function registerKgRoutes(app: FastifyInstance, deps: { kg: KgService; qu
       if (gate?.verdict === "quota_exceeded") {
         return reply.status(429).send({
           detail: gate.tier === "free"
-            ? `今日免费 KG 构建额度已用完（${gate.limit} 次/日），升级会员可获得更多额度`
-            : `今日 KG 构建额度已用完（${gate.limit} 次/日），明日 0 点重置`,
+            ? quotaWindowName(gate.window) + "的免费 KG 构建 token 额度不足，升级会员可获得更多额度"
+            : quotaWindowName(gate.window) + "的 KG 构建 token 额度不足，窗口重置后恢复",
           code: "QUOTA_EXCEEDED",
           kind: "kg_build",
+          window: gate.window,
+          unit: "token",
           used: gate.used,
           limit: gate.limit,
           resetAt: gate.resetAt,
-          upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+          upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : gate.tier === "vip" ? "SVIP_MONTHLY" : "PROMAX_MONTHLY",
         });
       }
     }

@@ -23,7 +23,7 @@
 - 信任注入：
   - Go 服务：挂载 ca-bundle.crt 覆盖 /etc/ssl/certs/ca-certificates.crt，SSL_CERT_FILE 指向它；
   - Node（app-ts）：同上挂载 + NODE_EXTRA_CA_CERTS；Milvus SDK 另外显式传 tls.rootCertPath；
-  - Java（app-pay）：一次性 cert-truststore 容器用 keytool 生成 app-pay/certs/truststore.p12（PKCS12, changeit），经 JAVA_TOOL_OPTIONS 注入；
+  - Java（app-pay）：一次性 cert-truststore 容器用 keytool 生成 app-pay/certs/truststore.p12（PKCS12, changeit），**先导入 JRE 默认 cacerts（公网 CA，支付宝/微信等出站必需），再追加内部 dev CA**，经 JAVA_TOOL_OPTIONS 注入；只导入内部 CA 会导致 PKIX path building failed；
   - OpenResty：proxy_ssl_verify on + proxy_ssl_trusted_certificate /etc/openresty/certs/dev-ca.crt。
 
 ## 2. 最终加密矩阵
@@ -93,7 +93,7 @@
 
 1. **APISIX 3.20**：ssl.listen 里 enable_http2 已废弃（去掉）；9443 证书必须由声明式 `ssls` 按 SNI 提供（`apisix/render-config.sh` 注入 PEM，证书缺失时删掉整块）；`apisix.ssl.cert/key` 不参与该 listener（CLI 固定使用 `cert/ssl_PLACE_HOLDER.crt` 占位，已在 3.11→3.20 升级时删除这两个死配置）。
 2. **Milvus TLS 与 REST 冲突**：proxy HTTP 监听与外部 gRPC 共用 19530 时 Milvus 要求 tlsMode=0，否则报 proxy server(http) and external grpc server share the same port, tls mode must be 0；因此 proxy.http.enabled: false（本栈不用 Milvus REST）。
-3. **Milvus 配置必须完整**：`deploy/docker/milvus-config.yaml` 是镜像默认配置的**完整副本**（只改 minio/TLS/etcd 几行），由根 compose 挂载到 `/milvus/configs/milvus.yaml`；`deploy/k8s/20-data/milvus.yaml` 是 K8s StatefulSet 清单（kustomize resource），两者不是同一类文件，不要把服务端配置塞进 k8s 清单目录。曾用被截断的半份文件挂载 → 启动 30s 后 panic: context canceled / proxy 端口 bind 失败（极难定位），损坏时直接重新从镜像拷默认配置再改。
+3. **Milvus 配置必须完整**：`deploy/config/milvus/milvus.yaml` 是镜像默认配置的**完整副本**（只改 minio/TLS/etcd 几行），由根 compose 挂载到 `/milvus/configs/milvus.yaml`；`deploy/k8s/20-data/milvus.yaml` 是 K8s StatefulSet 清单（kustomize resource），两者不是同一类文件，不要把服务端配置塞进 k8s 清单目录。曾用被截断的半份文件挂载 → 启动 30s 后 panic: context canceled / proxy 端口 bind 失败（极难定位），损坏时直接重新从镜像拷默认配置再改。
 4. **Milvus 客户端统一入口**：src/clients/milvus-client.ts 的 createMilvusClient() 是进程内唯一 MilvusClient 工厂（chunk store + KG entity index 共用），避免两处 TLS/SNI 漂移。
 5. **etcd mTLS**：etcd 客户端证书需要 clientAuth EKU；SAN 必须含 etcd（Milvus 用 endpoint 主机名做 serverName）。旧叶子删除后重签（gen-certs.sh 的 alias 刷新只认 app-ts，删目录最稳）。
 6. **Redis 双端口**：MinIO bucket notify 不支持 rediss://（too many colons in address），所以保留 6380 明文仅供 MinIO；业务客户端全部 rediss://。

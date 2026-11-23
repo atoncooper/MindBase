@@ -48,11 +48,25 @@ spec:
           env:
             - name: MYSQL_DATABASE
               value: mind_base
+          # 生产标准：entrypoint 按 Pod cgroup 内存/CPU 生成 99-auto-sizing.cnf。
+          command: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
             - name: init-sql
               mountPath: /docker-entrypoint-initdb.d
+            - name: mysql-conf
+              mountPath: /etc/mysql/conf.d/00-base.cnf
+              subPath: 00-base.cnf
+              readOnly: true
+            - name: mysql-conf
+              mountPath: /etc/mysql/conf.d/95-binlog.cnf
+              subPath: 95-binlog.cnf
+              readOnly: true
+            - name: mysql-conf
+              mountPath: /opt/mindbase/entrypoint-autosize.sh
+              subPath: entrypoint.sh
+              readOnly: true
           # startupProbe 门控启动期（首次启动含 system.sql 种子导入，预算 180s）；
           # 通过后 readiness/liveness 立即接管，不再需要 initialDelaySeconds 硬编码
           startupProbe:
@@ -79,6 +93,9 @@ spec:
         - name: init-sql
           configMap:
             name: mysql-init-sql
+        - name: mysql-conf
+          configMap:
+            name: mysql-conf
   volumeClaimTemplates:
     - metadata:
         name: data

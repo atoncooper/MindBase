@@ -105,7 +105,7 @@ export function AccountSidebar({
     onLogout,
 }: AccountSidebarProps) {
     const tier = membershipTier(membership);
-    const paid = tier === "VIP" || tier === "SVIP";
+    const paid = tier === "VIP" || tier === "SVIP" || tier === "PROMAX";
 
     return (
         <aside className="no-scrollbar min-w-0 self-start lg:sticky lg:top-[80px] lg:w-[264px] lg:shrink-0 lg:max-h-[calc(100dvh-96px)] lg:overflow-y-auto">

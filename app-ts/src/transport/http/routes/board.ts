@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
+import { quotaWindowName } from "../../../services/quota.js";
 import type { QuotaService } from "../../../services/quota.js";
 import {
   BoardCompletionError,
@@ -39,13 +40,15 @@ export function registerBoardRoutes(
       const gate = await deps.quota.peekKind(uid, "board");
       if (gate?.verdict === "quota_exceeded") {
         return reply.status(429).send({
-          detail: `今日 AI 补全额度已用完（${gate.limit} 次/日），明日 0 点重置`,
+          detail: quotaWindowName(gate.window) + "的 AI token 额度不足，窗口重置后恢复",
           code: "QUOTA_EXCEEDED",
           kind: "board",
+          window: gate.window,
+          unit: "token",
           used: gate.used,
           limit: gate.limit,
           resetAt: gate.resetAt,
-          upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+          upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : gate.tier === "vip" ? "SVIP_MONTHLY" : "PROMAX_MONTHLY",
         });
       }
     }

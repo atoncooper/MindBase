@@ -24,11 +24,11 @@ export function ChatHeader({
   isStreaming = false,
 }: ChatHeaderProps) {
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-3">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border-subtle px-2 sm:h-12 sm:px-3">
       <div className="flex min-w-0 items-center gap-1">
         <Link
           href="/"
-          className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+          className="grid h-9 w-9 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground sm:h-8 sm:w-8"
           title="返回首页"
           aria-label="返回首页"
         >
@@ -38,7 +38,7 @@ export function ChatHeader({
         <button
           type="button"
           onClick={onToggleSidebar}
-          className={`grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-border-subtle ${
+          className={`grid h-9 w-9 place-items-center rounded-full transition-colors hover:bg-border-subtle sm:h-8 sm:w-8 ${
             sidebarOpen ? "text-foreground" : "text-secondary"
           }`}
           aria-label={sidebarOpen ? "收起侧边栏" : "展开侧边栏"}
@@ -47,7 +47,7 @@ export function ChatHeader({
           <PanelLeft className="h-[18px] w-[18px]" />
         </button>
 
-        <h1 className="ml-1 truncate text-[14px] font-medium text-foreground">{title}</h1>
+        <h1 className="ml-1 truncate text-[15px] font-medium text-foreground sm:text-[14px]">{title}</h1>
         {isStreaming && (
           <span
             className="ml-1.5 inline-flex shrink-0 items-center gap-1 text-[11px] text-tertiary"
@@ -65,7 +65,7 @@ export function ChatHeader({
           <button
             type="button"
             onClick={onSummarize}
-            className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+            className="grid h-9 w-9 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground sm:h-8 sm:w-8"
             title="总结会话"
             aria-label="总结会话"
           >
@@ -76,7 +76,7 @@ export function ChatHeader({
           <button
             type="button"
             onClick={onClearChat}
-            className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-danger"
+            className="grid h-9 w-9 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-danger sm:h-8 sm:w-8"
             title="清空当前对话"
             aria-label="清空当前对话"
           >

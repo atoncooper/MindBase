@@ -23,6 +23,19 @@
 `docker-compose.yml` 的 `--profile sandbox`（同时起 opensandbox-server + app-sandbox）。
 多机 split 部署不包含沙箱控制层；生产/多租户请用 K8s（`deploy/k8s/40-sandbox`）。
 
+## 数据层配置
+
+etcd / Redis / MySQL 的服务端参数统一来自仓库根 `deploy/config/`（只读挂载，
+非密钥；密码仍由 `.env` 注入），与根 compose、swarm、K8s 共用同一份文件：
+
+- `deploy/config/etcd/etcd.conf.yml` → `11-etcd.yml`
+- `deploy/config/redis/redis.plain.conf` → `20-redis.yml`
+- `deploy/config/mysql/conf.d/00-base + 95-binlog.cnf` + `entrypoint-autosize.sh` → `24/25-*-mysql.yml`（按文件名挂载，容量按容器内存/CPU 自动计算）
+
+改参数 = 改这些文件 + 重建对应容器。MongoDB/Milvus 在该栈维持镜像默认（数据层 TLS
+尚未同步，见 [docs/tls.md](../../docs/tls.md) §6）。详见
+[deploy/config/README.md](../config/README.md)。
+
 ## 二、前置条件
 
 1. swarm：server1 manager、server2 worker 已互 join（docker node ls 两行）
