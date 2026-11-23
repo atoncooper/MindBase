@@ -58,12 +58,12 @@ export function registerKgRoutes(app: FastifyInstance, deps: { kg: KgService; qu
       if (gate?.verdict === "quota_exceeded") {
         return reply.status(429).send({
           detail: gate.tier === "free"
-            ? quotaWindowName(gate.window) + "的免费 KG 构建 token 额度不足，升级会员可获得更多额度"
-            : quotaWindowName(gate.window) + "的 KG 构建 token 额度不足，窗口重置后恢复",
+            ? quotaWindowName(gate.window) + "的免费 KG 构建 Credits 额度不足，升级会员可获得更多额度"
+            : quotaWindowName(gate.window) + "的 KG 构建 Credits 额度不足，窗口重置后恢复",
           code: "QUOTA_EXCEEDED",
           kind: "kg_build",
           window: gate.window,
-          unit: "token",
+          unit: "credit",
           used: gate.used,
           limit: gate.limit,
           resetAt: gate.resetAt,

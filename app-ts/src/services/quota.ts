@@ -126,7 +126,7 @@ export interface QuotaSummary {
    */
   tierSource: "app-pay" | "fallback";
   /** all usage is normalized token based */
-  unit: "token";
+  unit: "credit";
   windows: QuotaWindowState[];
   plan: QuotaPlanSummary;
   /** per-kind token breakdown (shared pool; no per-kind caps) */
@@ -739,7 +739,7 @@ export class QuotaService {
         enabled: config.quota.enabled,
         tier,
         tierSource: detail.source,
-        unit: "token",
+        unit: "credit",
         windows: this.zeroWindows(plan, now),
         plan: planSummary,
         kinds: [],
@@ -771,7 +771,7 @@ export class QuotaService {
       enabled: true,
       tier,
       tierSource: detail.source,
-      unit: "token",
+      unit: "credit",
       windows,
       plan: planSummary,
       kinds,

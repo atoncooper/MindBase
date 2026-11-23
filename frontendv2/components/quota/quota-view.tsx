@@ -3,7 +3,7 @@
 /**
  * QuotaView - 用量与额度详情页（Google Account 风格）。
  *
- * 数据源：GET /quota/summary。额度按 token 计量（Codex 风格），
+ * 数据源：GET /quota/summary。额度按 Credits 计量（Codex 风格），
  * 三层窗口：滚动 5 小时 + 自然日 + 自然月；不同模型按单价折算抵扣倍率。
  */
 import { useCallback, useEffect, useState } from "react";
@@ -161,7 +161,7 @@ function KindRow({ kind, first }: { kind: QuotaKindSummary; first: boolean }) {
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-sm font-medium" style={{ color: C.text }}>{label}</span>
         <span className="text-xs tabular-nums" style={{ color: C.text2 }}>
-          {formatTokens(kind.used)} token · 占今日 {percent}%
+          {formatTokens(kind.used)} Credits · 占今日 {percent}%
         </span>
       </div>
       <div className="mt-2 h-1 w-full overflow-hidden rounded-full" style={{ background: C.line }}>
@@ -232,7 +232,7 @@ export function QuotaView() {
         <div>
           <h1 className="text-2xl font-medium" style={{ color: C.text }}>用量与额度</h1>
           <p className="mt-1 text-sm" style={{ color: C.text2 }}>
-            按标准 token 计量（模型单价折算）· 5 小时滚动 / 每日 / 每月三层额度 · 所有 AI 能力共享
+            按 Credits 计量（模型单价折算）· 5 小时滚动 / 每日 / 每月三层额度 · 所有 AI 能力共享
           </p>
         </div>
         <button
@@ -324,14 +324,14 @@ export function QuotaView() {
                   </div>
                 </div>
                 <div>
-                  <div className="text-xs" style={{ color: C.text2 }}>月度标准 token</div>
+                  <div className="text-xs" style={{ color: C.text2 }}>月度 Credits</div>
                   <div className="mt-1 text-xl font-normal tabular-nums" style={{ color: C.text }}>
                     {formatTokens(plan.monthlyTokens)}
                   </div>
                 </div>
               </div>
               <p className="mt-4 text-xs leading-relaxed" style={{ color: C.text2 }}>
-                标准 token 按参考价 ¥{plan.referencePricePerMTok}/百万 token 折算；¥{plan.priceYuan} 档包含
+                Credits 按参考价 ¥{plan.referencePricePerMTok}/百万 Credits 折算；¥{plan.priceYuan} 档包含
                 ¥{plan.valueYuan} 等值用量（{plan.bonus > 0 ? plan.bonus : "—"}×）。贵模型按单价折算，扣得更快；
                 便宜模型能拉长使用时间。
               </p>
@@ -349,7 +349,7 @@ export function QuotaView() {
                 )}
               </div>
               <p className="mt-2 text-[11px]" style={{ color: C.text2 }}>
-                所有能力共享同一个 token 池，不设单项次数上限；失败与重试不扣。
+                所有能力共享同一个 Credits 池，不设单项次数上限；失败与重试不扣。
               </p>
             </Card>
 
@@ -364,7 +364,7 @@ export function QuotaView() {
               <div className="mt-4 space-y-3">
                 {[
                   { label: "已产生", value: formatYuan(summary.cost.microYuan), hint: "全能力合计（成本账本）" },
-                  { label: "成本熔断", value: summary.cost.guardEnabled ? formatYuan(summary.cost.guardMicroYuan) : "未启用", hint: "token 窗口之外的兜底" },
+                  { label: "成本熔断", value: summary.cost.guardEnabled ? formatYuan(summary.cost.guardMicroYuan) : "未启用", hint: "Credits 窗口之外的兜底" },
                   { label: "下次重置", value: dayWindow ? formatResetAt(dayWindow.resetAt) : "—", hint: "每日 0 点（Asia/Shanghai）" },
                 ].map((row) => (
                   <div key={row.label} className="flex items-center justify-between gap-3 border-b pb-2 last:border-b-0 last:pb-0" style={{ borderColor: C.line }}>
@@ -387,7 +387,7 @@ export function QuotaView() {
               {models.map((m) => <ModelRow key={m.model} model={m} />)}
             </div>
             <p className="mt-3 text-[11px] leading-relaxed" style={{ color: C.text2 }}>
-              倍率 1.0 = 按参考价 ¥{plan?.referencePricePerMTok ?? 10}/百万 token 扣减；2.0 = 同样真实 token 消耗两倍额度。
+              倍率 1.0 = 按参考价 ¥{plan?.referencePricePerMTok ?? 10}/百万 Credits 扣减；2.0 = 同样真实调用消耗两倍 Credits。
               倍率由模型单价推导，运营可在 quota.modelWeights 覆盖。
             </p>
           </Card>
@@ -404,8 +404,8 @@ export function QuotaView() {
                       升级到 {nextTier === "vip" ? "VIP" : nextTier === "svip" ? "SVIP" : "ProMax"}
                     </div>
                     <div className="text-xs" style={{ color: C.text2 }}>
-                      更高 token 额度 · 会员优先队列 · 云盘容量升级
-                      {nextPlan ? ` · ${formatTokens(nextPlan.monthlyTokens)} token/月（¥${nextPlan.valueYuan} 等值）` : ""}
+                      更高 Credits 额度 · 会员优先队列 · 云盘容量升级
+                      {nextPlan ? ` · ${formatTokens(nextPlan.monthlyTokens)} Credits/月（¥${nextPlan.valueYuan} 等值）` : ""}
                     </div>
                   </div>
                 </div>
@@ -423,7 +423,7 @@ export function QuotaView() {
 
           <p className="mt-4 text-xs leading-relaxed" style={{ color: C.text2 }}>
             <TrendingUp className="mr-1 inline h-3 w-3" />
-            token 额度按「成功才计数」：失败与重试不消耗。5 小时窗口为滚动口径，最早用量 5 小时后自动滚出；
+            Credits 额度按「成功才计数」：失败与重试不消耗。5 小时窗口为滚动口径，最早用量 5 小时后自动滚出；
             每日 0 点、每月 1 日 0 点（Asia/Shanghai）重置。成本按写入时价格快照折算，仅供参考。
           </p>
         </>

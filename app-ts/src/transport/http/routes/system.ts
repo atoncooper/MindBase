@@ -48,7 +48,7 @@ export function registerSystemRoutes(
     mcp: mcpClientStats(),
     quota: {
       enabled: config.quota.enabled,
-      unit: "token",
+      unit: "credit",
       costGuardEnabled: config.quota.costGuardEnabled,
       plans: config.quota.plans,
       kindTokenCost: config.quota.kindTokenCost,

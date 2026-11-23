@@ -124,12 +124,12 @@ function quotaErrorFrame(gate: QuotaGate): SseFrame {
     message: costGuard
       ? "今日 AI 使用成本已达上限，明日 0 点自动恢复"
       : gate.tier === "free" && gate.kind === "chat_anon"
-        ? "未登录体验 token 额度已用完，登录解锁更多额度"
-        : windowLabel + " token 额度已用完（" + formatQuotaTokens(gate.used) + " / " + formatQuotaTokens(gate.limit) + "），窗口重置后恢复",
+        ? "未登录体验 Credits 额度已用完，登录解锁更多额度"
+        : windowLabel + " Credits 额度已用完（" + formatQuotaTokens(gate.used) + " / " + formatQuotaTokens(gate.limit) + "），窗口重置后恢复",
     detail: {
       kind: gate.kind,
       window: gate.window,
-      unit: "token",
+      unit: "credit",
       used: gate.used,
       limit: gate.limit,
       resetAt: gate.resetAt,
@@ -215,11 +215,11 @@ export class ChatService {
         yield {
           type: "error",
           code: "QUOTA_EXCEEDED",
-          message: "AI token 额度不足以处理这些图片，窗口重置后恢复",
+          message: "AI Credits 额度不足以处理这些图片，窗口重置后恢复",
           detail: {
             kind: "chat_images",
             window: gate.window,
-            unit: "token",
+            unit: "credit",
             resetAt: gate.resetAt,
             tier: gate.tier,
             upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : gate.tier === "vip" ? "SVIP_MONTHLY" : "PROMAX_MONTHLY",

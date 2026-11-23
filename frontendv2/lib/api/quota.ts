@@ -80,7 +80,7 @@ export interface QuotaSummary {
   /** "app-pay" = 档位权威应答；"fallback" = 会员查询失败 → 按免费档展示 */
   tierSource: "app-pay" | "fallback";
   /** 统一计量单位 */
-  unit: "token";
+  unit: "credit";
   /** 5 小时 / 今日 / 本月 */
   windows: QuotaWindowState[];
   plan: QuotaPlanSummary;

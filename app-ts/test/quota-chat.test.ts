@@ -113,7 +113,7 @@ describe("ChatService × token quota", () => {
       expect(err.code).toBe("QUOTA_EXCEEDED");
       const detail = err.detail as Record<string, unknown>;
       expect(detail.kind).toBe("chat");
-      expect(detail.unit).toBe("token");
+      expect(detail.unit).toBe("credit");
       expect(detail.window).toBe("day");
       expect(detail.upgradeSku).toBe("VIP_MONTHLY");
     }
