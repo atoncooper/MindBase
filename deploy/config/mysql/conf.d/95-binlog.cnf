@@ -1,0 +1,15 @@
+# =============================================================================
+# MySQL 8.4 — binary log profile（small/prod；开发环境不挂载本文件）
+# =============================================================================
+# 用途：PITR 备份/恢复、增量同步、审计。代价是磁盘与写放大。
+# 备份要求：binlog 保留 7 天（binlog_expire_logs_seconds=604800），全量备份
+# 周期必须短于保留期；日志目录在数据卷（/var/lib/mysql）内，随卷持久化。
+[mysqld]
+log-bin                          = mysql-bin
+binlog-format                    = ROW
+binlog-row-image                 = FULL
+max-binlog-size                  = 256M
+binlog-expire-logs-seconds       = 604800
+sync-binlog                      = 1
+# 崩溃恢复一致性：8.4 默认 ON，显式写出。
+binlog-order-commits             = ON

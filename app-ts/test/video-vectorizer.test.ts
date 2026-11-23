@@ -68,7 +68,8 @@ afterEach(() => {
 });
 describe("VideoVectorizerService × quota", () => {
   it("defers (no task, no error) once the daily page budget is exhausted", async () => {
-    config.quota.limits.vectorize = { free: 1, vip: 300, svip: 1000 };
+    config.quota.kindTokenCost.vectorize = 600;
+    config.quota.plans.free = { priceYuan: 0, monthlyTokens: 1_000_000, dailyTokens: 600, fiveHourTokens: 600 };
     const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "free" });
     const { vectorizer } = makeDeps({ content: CONTENT, quota });
 
@@ -81,7 +82,8 @@ describe("VideoVectorizerService × quota", () => {
   });
 
   it("revector refuses with 429 over the budget", async () => {
-    config.quota.limits.vectorize = { free: 0, vip: 300, svip: 1000 };
+    config.quota.kindTokenCost.vectorize = 600;
+    config.quota.plans.free = { priceYuan: 0, monthlyTokens: 1_000_000, dailyTokens: 0, fiveHourTokens: 0 };
     const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "free" });
     const { vectorizer } = makeDeps({ content: CONTENT, quota });
     await expect(vectorizer.revector({ uid: "7", bvid: "BV1", cid: 11 })).rejects.toMatchObject({ status: 429 });

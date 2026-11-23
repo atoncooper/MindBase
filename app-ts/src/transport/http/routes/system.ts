@@ -48,8 +48,11 @@ export function registerSystemRoutes(
     mcp: mcpClientStats(),
     quota: {
       enabled: config.quota.enabled,
+      unit: "token",
       costGuardEnabled: config.quota.costGuardEnabled,
-      limits: config.quota.limits,
+      plans: config.quota.plans,
+      kindTokenCost: config.quota.kindTokenCost,
+      countCaps: config.quota.limits,
       trackedTurns: trackedTurns(),
       ...(deps.recon?.snapshot() ? { lastReconciliation: deps.recon!.snapshot() } : {}),
     },

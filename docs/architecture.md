@@ -57,7 +57,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-sandbox | Go + Gin（`app-go/app-sandbox/`） | 8017 | 127.0.0.1:${APP_SANDBOX_PORT:-8017} | sandbox / full | 沙箱控制层：租约复用、档位配额、审计、产物、准入与 sweeper；app-ts 经 APISIX `sandbox_internal` 调用，管理面仅 app-admin 可调 |
 | opensandbox-server | OpenSandbox lifecycle server（Docker runtime） | 8080 | 127.0.0.1:${OPEN_SANDBOX_PORT:-8080} | sandbox / full | 负责沙箱创建/执行/删除，挂载 Docker socket（单机可信环境）；生产 K8s 见 [deploy/k8s/40-sandbox](../deploy/k8s/40-sandbox/README.md) |
 | higress | Higress all-in-one | 8080 gw / 18081 console | 127.0.0.1:18080 / :18081 | ai | AI 网关：平台 LLM/embedding/rerank/ASR 出网统一入口 + 计量 |
-| frontend | Next.js 16（`frontendv2/`） | 3000 | `${FRONTEND_PORT:-3000}` | 默认（standalone） | 用户端 SPA（standalone 构建） |
+| frontend | Next.js 16（`frontendv2/`） | 3000 | `3000`（compose 字面量） | 默认（standalone） | 用户端 SPA（standalone 构建） |
 | openresty | openresty/openresty:1.27.1.2-alpine | 80 / 443 | 80 / 443 | 默认（standalone） | 统一入口：TLS、负载均衡（APISIX upstream）、页面/接口分发、多级缓存 + 软 purge；业务 API → APISIX |
 | apisix | atoncooper/mind-base-apisix（stock 3.20 + sync） | 9080 / 9443 / 9180 | 宿主 19180:9180，仅本机/指定 IP（compose 端口 + config allow_admin） | 默认（traditional + etcd） | API 网关：forward-auth / key-auth / 路由 / 限流；配置存 etcd，Admin API/内嵌 Dashboard（HTTPS）管理 |
 | mysql | mysql:8.4 | 3306 | `${MYSQL_PORT:-3306}` | 始终 | 主库 `mind_base`（`db/system.sql` 初始化） |

@@ -326,7 +326,7 @@ export interface AppConfig {
     queueMaxSize: number;
     /** queue wait ceiling before the turn errors out */
     queueTimeoutMs: number;
-    /** dequeue priority by membership tier (svip > vip > free), FIFO within a tier */
+    /** dequeue priority by membership tier (promax > svip > vip > free), FIFO within a tier */
     tierWeights: Record<string, number>;
     /** effective weight grows by agingStep per agingWindowMs of waiting (anti-starvation) */
     agingWindowMs: number;
@@ -364,23 +364,50 @@ export interface AppConfig {
   };
   rateLimit: { windowMs: number; max: number };
   quota: {
-    /** false = 配额门整体跳过（放行）；计数与账本照常 */
+    /** false = 配额门整体跳过（放行）；计量与账本照常 */
     enabled: boolean;
-    /** kind → { free, vip, svip } 每日次数上限；-1 = 不限 */
-    limits: Record<string, { free: number; vip: number; svip: number }>;
-    /** Free 聊天 L0 条数（其后 L1 省流，硬停于 limits.chat.free） */
-    freeLadder: { l0Turns: number };
+    /**
+     * 统一额度单位：标准 token（按模型 list price 归一，不是条数）。
+     * 模型权重 = 单价 / referencePricePerMTok；贵模型每个真实 token 扣更多额度。
+     */
+    referencePricePerMTok: number;
+    /** 订阅权益倍率：额度价值 = 价格 × planBonus（默认 10 → ¥48 档 ≈ ¥480 等值） */
+    planBonus: number;
+    /** 滚动窗口长度（分钟）与 5h 窗口的桶粒度（分钟） */
+    fiveHourMinutes: number;
+    bucketMinutes: number;
+    /** 各档 token 预算；monthlyTokens 缺省 = priceYuan × planBonus / reference × 1e6 */
+    plans: Record<string, {
+      priceYuan: number;
+      monthlyTokens?: number;
+      dailyTokens: number;
+      fiveHourTokens: number;
+    }>;
+    /**
+     * 旧版按次限额，仅保留两类非 token 语义：
+     *  - task_quiz_active：活跃任务存量上限（不是用量）
+     *  - coding_plan：用户自带第三方套餐的每日轮次上限（不消耗平台 token）
+     */
+    limits: Record<string, { free: number; vip: number; svip: number; promax: number }>;
     /** L1 省流的单轮输出 token 预算（0 = 不设限） */
     l1MaxOutputTokens: number;
-    /** 当日累计成本软阈值（微元）→ L1 降级；0 = 关闭 */
+    /** 当日额度使用率达到该百分比 → L1 省流（按 token，不再按条数） */
+    degradeAtPercent: Record<string, number>;
+    /** 当日累计成本软阈值（微元）→ L1 降级；0 = 关闭（token 窗口为主口径） */
     costSoftMicroYuan: Record<string, number>;
-    /** 成本熔断：开关 + 各档阈值（微元） */
+    /** 成本熔断：开关 + 各档阈值（微元）；仅作 token 窗口之外的兜底 */
     costGuardEnabled: boolean;
     costGuardMicroYuan: Record<string, number>;
     /** 双账本对账周期（毫秒；0 = 关闭） */
     reconIntervalMs: number;
-    /** 模型单价（元/百万 token） */
+    /** 模型单价（元/百万 token）——成本账本 + 额度权重共用 */
     prices: Record<string, { input: number; output: number }>;
+    /** 显式额度权重覆盖（缺省按价格推导）；input/output 省略 = 用推导值 */
+    modelWeights: Record<string, { input?: number; output?: number }>;
+    /** 非聊天 AI 操作的估算标准 token 消耗（一次操作扣多少） */
+    kindTokenCost: Record<string, number>;
+    /** 平台代付之外的模型（Coding Plan）→ 不消耗平台 token 额度 */
+    externalModels: string[];
     usageDailyCollection: string;
     gatewayUsageCollection: string;
     /** /internal/ai-usage 可选共享令牌（空 = 不校验，仅内网可达） */

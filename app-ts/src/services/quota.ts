@@ -2,32 +2,43 @@ import { createHash } from "node:crypto";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
 import { resolveTier, resolveTierDetailed, type ResolvedTier } from "../utils/membership.js";
-import { costMicroYuan } from "../repository/usage-ledger.js";
+import { costMicroYuan, type UsagePrices } from "../repository/usage-ledger.js";
 import type { QuotaCounterStore } from "../repository/quota.js";
 import type { DegradeLevel } from "../utils/degrade.js";
 
 const log = createLogger("QUOTA");
 
-export type QuotaTier = "free" | "vip" | "svip";
+export type QuotaTier = "free" | "vip" | "svip" | "promax";
 export type { DegradeLevel };
+
+/** 三层窗口：滚动 5 小时 / 自然日 / 自然月（上海时区）。 */
+export type QuotaWindow = "five_hour" | "day" | "month";
+
 export type QuotaKind =
-  | "chat"        // logged-in chat turns
-  | "chat_anon"   // anonymous chat turns (IP-hash bucket)
-  | "chat_images" // chat image attachments (per image)
-  | "generate"    // quiz generation batches (legacy app-quiz counter)
-  | "grade"       // quiz grading calls (legacy app-quiz counter)
-  | "kg_build"    // KG builds (per build)
-  | "vectorize"   // per-page vectorization (per page)
-  | "ocr"         // cloud OCR parsing
-  | "board"       // board AI completions
-  | "coding_plan" // chat turns routed to the user's own Coding Plan (VIP/SVIP only; free = 0)
-  | "task_quiz_active" // scheduled-quiz active-task cap (stock, not a daily counter)
-  | "academic_analysis" // research result-table generation
-  | "academic_validation" // manuscript integrity checks
-  | "academic_export" // text/Word/submission-package exports
-  | "academic_experiment"; // background research experiment submissions
+  | "chat"
+  | "chat_anon"
+  | "chat_images"
+  | "generate"
+  | "grade"
+  | "kg_build"
+  | "vectorize"
+  | "ocr"
+  | "board"
+  | "coding_plan"
+  | "task_quiz_active"
+  | "academic_analysis"
+  | "academic_validation"
+  | "academic_export"
+  | "academic_experiment";
 
 export type QuotaVerdict = "allow" | "quota_exceeded" | "cost_guard";
+
+/** Human label for a quota window (SSE/HTTP error messages). */
+export function quotaWindowName(window: QuotaWindow): string {
+  if (window === "five_hour") return "5 小时滚动";
+  if (window === "month") return "本月";
+  return "今日";
+}
 
 export interface TurnUsage {
   inputTokens?: number;
@@ -35,33 +46,75 @@ export interface TurnUsage {
   totalTokens?: number;
 }
 
+/** One budget window as shown to the client / used for gating. */
+export interface QuotaWindowState {
+  window: QuotaWindow;
+  /** normalized tokens consumed in this window */
+  used: number;
+  /** normalized token budget; -1 = unlimited */
+  limit: number;
+  /** epoch ms when the window has fully rolled over */
+  resetAt: number;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+}
+
 /** Turn-start gate: the quota layer's whole decision for this chat turn. */
 export interface QuotaGate {
   verdict: QuotaVerdict;
   kind: QuotaKind;
   tier: QuotaTier;
+  /** the blocking window (quota_exceeded) or the primary day window (allow) */
+  window: QuotaWindow;
   used: number;
   limit: number;
-  /** epoch ms of the next local midnight (Asia/Shanghai) */
+  /** epoch ms of the window reset (day = next local midnight; month = next local month) */
   resetAt: number;
-  /** degrade ladder level for this turn; context/model enforcement pending */
+  /** degrade ladder level for this turn */
   level: DegradeLevel;
   /** running cost of the day (micro-Yuan) */
   costMicroYuan: number;
   /** counter store unavailable → verdict was chosen fail-open */
   storeUnavailable: boolean;
+  /** all three windows at gate time (diagnostics / summary reuse) */
+  windows?: QuotaWindowState[];
 }
 
 export interface QuotaKindSummary {
   kind: QuotaKind;
+  /** normalized tokens consumed today */
   used: number;
-  /** -1 = unlimited */
+  /** -1 = shared pool (no per-kind cap) */
   limit: number;
   resetAt: number;
-  /** 已用百分比 0-100（limit<=0 时为 null）；Codex 风格主展示口径 */
+  /** share of the day budget 0-100（limit<=0 时为 null） */
   usedPercent: number | null;
-  /** 剩余百分比 0-100（limit<=0 时为 null） */
   remainingPercent: number | null;
+}
+
+export interface QuotaPlanSummary {
+  priceYuan: number;
+  /** included monthly normalized tokens */
+  monthlyTokens: number;
+  /** included list-price value (yuan): monthlyTokens × reference price */
+  valueYuan: number;
+  /** valueYuan / priceYuan (0 for free plans) */
+  bonus: number;
+  referencePricePerMTok: number;
+  fiveHourTokens: number;
+  dailyTokens: number;
+}
+
+/** One purchasable tier's token allowance (upgrade comparison). */
+export interface QuotaPlanOption extends QuotaPlanSummary {
+  tier: QuotaTier;
+}
+
+export interface QuotaModelRate {
+  model: string;
+  inputWeight: number;
+  outputWeight: number;
+  price?: { input: number; output: number };
 }
 
 export interface QuotaSummary {
@@ -69,11 +122,19 @@ export interface QuotaSummary {
   tier: QuotaTier;
   /**
    * "app-pay" = 档位来自 app-pay 权威应答；"fallback" = 会员查询失败（网络/
-   * 鉴权/未配置 key）→ 按免费档展示。前端据此前者正常渲染、后者提示
-   * 「会员权益同步失败」，避免付费用户看到免费限额却毫无解释。
+   * 鉴权/未配置 key）→ 按免费档展示。
    */
   tierSource: "app-pay" | "fallback";
+  /** all usage is normalized token based */
+  unit: "token";
+  windows: QuotaWindowState[];
+  plan: QuotaPlanSummary;
+  /** per-kind token breakdown (shared pool; no per-kind caps) */
   kinds: QuotaKindSummary[];
+  /** model weight table so the client can explain expensive models burn faster */
+  models: QuotaModelRate[];
+  /** all tier allowances for upgrade comparison */
+  planCatalog: QuotaPlanOption[];
   cost: {
     microYuan: number;
     softMicroYuan: number;
@@ -82,6 +143,7 @@ export interface QuotaSummary {
     level: DegradeLevel;
     resetAt: number;
   };
+  storeUnavailable: boolean;
 }
 
 /** 0-100 integer percentage; null means unlimited (limit<=0). */
@@ -90,25 +152,82 @@ export function quotaPercent(used: number, limit: number): number | null {
   return Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
 }
 
-/** TTL for day-scoped keys: well past midnight; the key carries the day, so expiry is just hygiene. */
+/** TTL for day-scoped keys: well past midnight; the key carries the day. */
 const DAY_TTL_SECONDS = 48 * 3600;
+/** Monthly keys carry YYYYMM; 40 days covers the longest month. */
+const MONTH_TTL_SECONDS = 40 * 86_400;
 
 /** sha256(ip) prefix — the anon bucket must not be reversible to an IP. */
 export function hashClientKey(ip: string): string {
   return createHash("sha256").update(ip).digest("hex").slice(0, 24);
 }
 
+const PARTS_FORMATS = new Map<string, Intl.DateTimeFormat>();
+
+interface LocalParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+function localParts(now: Date): LocalParts {
+  const tz = config.timezone.name;
+  let fmt = PARTS_FORMATS.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    PARTS_FORMATS.set(tz, fmt);
+  }
+  const parts = fmt.formatToParts(now);
+  const read = (type: string): number =>
+    Number(parts.find((p) => p.type === type)?.value ?? 0);
+  return {
+    year: read("year"),
+    month: read("month"),
+    day: read("day"),
+    hour: read("hour"),
+    minute: read("minute"),
+    second: read("second"),
+  };
+}
+
 /** Epoch ms of the NEXT local midnight (config timezone; Asia/Shanghai has no DST). */
 export function nextMidnight(now: Date): number {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: config.timezone.name,
-    hourCycle: "h23",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  }).formatToParts(now);
-  const get = (type: string): number => Number(parts.find((p) => p.type === type)?.value ?? 0);
-  const elapsedMs = (get("hour") * 3600 + get("minute") * 60 + get("second")) * 1000;
+  const p = localParts(now);
+  const elapsedMs = (p.hour * 3600 + p.minute * 60 + p.second) * 1000;
   return now.getTime() - elapsedMs + 86_400_000;
+}
+
+/** Timezone offset (ms) of the wall clock at the instant: local wall time - UTC instant. */
+function timezoneOffsetMs(at: Date): number {
+  const p = localParts(at);
+  const wallAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return wallAsUtc - at.getTime();
+}
+
+/**
+ * Epoch ms of the NEXT local month start (00:00 on the 1st, config timezone).
+ * Uses the offset of the previous day and corrects once for DST boundaries.
+ */
+export function nextMonthStart(now: Date): number {
+  const p = localParts(now);
+  const firstOfNextAsUtc = Date.UTC(p.year, p.month, 1, 0, 0, 0);
+  const previousOffset = timezoneOffsetMs(new Date(firstOfNextAsUtc - 86_400_000));
+  let target = firstOfNextAsUtc - previousOffset;
+  const exactOffset = timezoneOffsetMs(new Date(target));
+  if (exactOffset !== previousOffset) target = firstOfNextAsUtc - exactOffset;
+  return target;
 }
 
 const DAY_FORMATS = new Map<string, Intl.DateTimeFormat>();
@@ -122,16 +241,105 @@ function dayCompact(now: Date): string {
   return fmt.format(now).replaceAll("-", "");
 }
 
-/** UTC calendar day, compact — app-quiz's legacy counter boundary (Beijing 08:00 reset). */
-function utcDayCompact(now: Date): string {
-  return now.toISOString().slice(0, 10).replaceAll("-", "");
+function monthCompact(now: Date): string {
+  const p = localParts(now);
+  return String(p.year) + String(p.month).padStart(2, "0");
 }
 
 /**
- * Member usage quota: Redis daily counters keyed
- * mind-base:quota:{kind}:{uid}:{YYYYMMDD} (Shanghai day); generate/grade share
- * app-quiz's legacy mind-base:quiz_quota:* counters (UTC day) so both stacks
- * keep one number during the cutover.
+ * Best-effort token estimate for providers that omit usage. Chinese counts ~1
+ * token/char, Latin ~4 chars/token; used only as a billing fallback.
+ */
+export function estimateTokens(text: string | undefined): number {
+  if (!text) return 0;
+  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) ?? []).length;
+  const rest = Math.max(0, text.length - cjk);
+  return Math.max(1, Math.ceil(cjk + rest / 4));
+}
+
+function clampWeight(weight: number): number {
+  if (!Number.isFinite(weight) || weight <= 0) return 1;
+  return Math.min(1000, Math.max(0.000001, weight));
+}
+
+/**
+ * A model's quota weight: list price / reference price. Expensive models burn
+ * the shared token budget faster; cheap models stretch it. Explicit
+ * quota.modelWeights overrides the derivation (promo / negotiated rates).
+ */
+export function modelQuotaRate(model: string): { inputWeight: number; outputWeight: number } {
+  if (isExternalModel(model)) return { inputWeight: 0, outputWeight: 0 };
+  const explicit = config.quota.modelWeights?.[model];
+  const reference = config.quota.referencePricePerMTok > 0 ? config.quota.referencePricePerMTok : 10;
+  const price = config.quota.prices?.[model] ?? config.quota.prices?.[config.llm.model];
+  const derivedInput = price && price.input > 0 ? price.input / reference : 1;
+  const derivedOutput = price && price.output > 0 ? price.output / reference : 1;
+  // Explicit 0 is meaningful (a free/promo model); derived values fall back to 1.
+  const explicitWeight = (value: number | undefined, derived: number): number =>
+    value == null ? clampWeight(derived) : Math.min(1000, Math.max(0, value));
+  return {
+    inputWeight: explicitWeight(explicit?.input, derivedInput),
+    outputWeight: explicitWeight(explicit?.output, derivedOutput),
+  };
+}
+
+/** Models paid outside the platform (Coding Plan) never consume platform quota. */
+export function isExternalModel(model: string): boolean {
+  return (config.quota.externalModels ?? []).includes(model);
+}
+
+/** The model list price used for cost accounting (falls back to the service default). */
+export function priceFor(model: string): UsagePrices | undefined {
+  return config.quota.prices?.[model] ?? config.quota.prices?.[config.llm.model];
+}
+
+/**
+ * Convert raw provider usage into normalized quota tokens. One rounding per
+ * turn (ceil): partial tokens are never free, and a failed turn never reaches
+ * this function (consume-on-success).
+ */
+export function quotaTokensFor(model: string, usage: TurnUsage | undefined): number {
+  if (!usage || isExternalModel(model)) return 0;
+  const input = Math.max(0, usage.inputTokens ?? 0);
+  let output = Math.max(0, usage.outputTokens ?? 0);
+  const total = Math.max(0, usage.totalTokens ?? 0);
+  if (output === 0 && total > input) output = total - input;
+  if (input === 0 && output === 0 && total > 0) output = total;
+  const rate = modelQuotaRate(model);
+  const raw = input * rate.inputWeight + output * rate.outputWeight;
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.ceil(raw - 1e-9);
+}
+
+/** Kinds shown in the per-kind breakdown. */
+const TRACKED_KINDS: QuotaKind[] = [
+  "chat",
+  "chat_anon",
+  "chat_images",
+  "generate",
+  "grade",
+  "kg_build",
+  "vectorize",
+  "ocr",
+  "board",
+  "academic_analysis",
+  "academic_validation",
+  "academic_export",
+  "academic_experiment",
+];
+
+interface TierPlan {
+  priceYuan: number;
+  fiveHourTokens: number;
+  dailyTokens: number;
+  monthlyTokens: number;
+  valueYuan: number;
+}
+
+/**
+ * Unified AI quota: normalized tokens over a rolling 5-hour window, the local
+ * calendar day, and the local calendar month. All AI capabilities share one
+ * pool (chat actual usage; other operations estimated per call).
  *
  * Fail directions (guard-tested):
  *  - counter store unavailable  → fail-OPEN  (a Redis incident must not block chat)
@@ -142,7 +350,6 @@ export class QuotaService {
   private readonly counter: QuotaCounterStore;
   private readonly tierOf: (uid: string | undefined) => Promise<string>;
   private readonly nowFn: () => Date;
-
   private readonly tierDetailOf: (uid: string | undefined) => Promise<ResolvedTier>;
 
   constructor(opts: {
@@ -152,7 +359,6 @@ export class QuotaService {
   }) {
     this.counter = opts.counter;
     this.tierOf = opts.resolveTier ?? resolveTier;
-    // 测试注入 resolveTier 时，detail 视为 app-pay 权威（不真发请求）
     this.tierDetailOf = opts.resolveTier
       ? async (uid) => ({ tier: await opts.resolveTier!(uid), source: "app-pay" })
       : resolveTierDetailed;
@@ -160,29 +366,131 @@ export class QuotaService {
   }
 
   private tierNormalize(raw: string): QuotaTier {
-    return raw === "vip" || raw === "svip" ? raw : "free";
+    return raw === "vip" || raw === "svip" || raw === "promax" ? raw : "free";
   }
 
-  limitFor(kind: QuotaKind, tier: QuotaTier): number {
-    return config.quota.limits[kind]?.[tier] ?? -1; // unknown kind → unlimited (config is opt-in)
-  }
-
-  keyFor(kind: QuotaKind, id: string, now: Date): string {
-    if (kind === "generate" || kind === "grade") {
-      return `mind-base:quiz_quota:${kind}:${id}:${utcDayCompact(now)}`;
+  private planFor(tier: QuotaTier): TierPlan {
+    const raw = config.quota.plans?.[tier] ?? config.quota.plans?.free;
+    if (!raw) {
+      return { priceYuan: 0, fiveHourTokens: -1, dailyTokens: -1, monthlyTokens: -1, valueYuan: 0 };
     }
-    return `mind-base:quota:${kind}:${id}:${dayCompact(now)}`;
+    const priceYuan = raw.priceYuan ?? 0;
+    const reference = config.quota.referencePricePerMTok > 0 ? config.quota.referencePricePerMTok : 10;
+    const derivedMonthly = Math.max(
+      0,
+      Math.round(((priceYuan * Math.max(0, config.quota.planBonus ?? 0)) / reference) * 1_000_000),
+    );
+    // Partial local.yaml overrides must not silently block traffic: missing
+    // windows are unlimited (-1), not zero.
+    const dailyTokens = raw.dailyTokens ?? -1;
+    const fiveHourTokens = raw.fiveHourTokens ?? (dailyTokens > 0 ? Math.ceil(dailyTokens / 5) : -1);
+    const monthlyTokens = raw.monthlyTokens ?? (priceYuan > 0 ? derivedMonthly : -1);
+    return {
+      priceYuan,
+      fiveHourTokens,
+      dailyTokens,
+      monthlyTokens,
+      valueYuan: monthlyTokens > 0 ? (monthlyTokens * reference) / 1_000_000 : 0,
+    };
   }
 
-  private costKey(id: string, now: Date): string {
-    return `mind-base:quota:cost:${id}:${dayCompact(now)}`;
+  /** Legacy count cap lookup — stock caps + Coding Plan only. */
+  limitFor(kind: QuotaKind, tier: QuotaTier): number {
+    return config.quota.limits?.[kind]?.[tier] ?? -1;
   }
 
-  /** uid → logged-in kind; clientKey(IP hash) → anon kind; neither → unattributable. */
-  private identity(uid: string | undefined, clientKey: string | undefined): { id: string; kind: QuotaKind } | null {
+  private tokenBase(id: string): string {
+    return "mind-base:quota:tokens:" + id;
+  }
+
+  private fiveHourKeys(id: string, now: Date): string[] {
+    const bucketMinutes = Math.max(1, config.quota.bucketMinutes || 5);
+    const windowMinutes = Math.max(bucketMinutes, config.quota.fiveHourMinutes || 300);
+    const bucketCount = Math.max(1, Math.ceil(windowMinutes / bucketMinutes));
+    const bucket = Math.floor(now.getTime() / (bucketMinutes * 60_000));
+    const base = this.tokenBase(id);
+    const keys: string[] = [];
+    for (let i = 0; i < bucketCount; i += 1) keys.push(base + ":5h:" + String(bucket - i));
+    return keys;
+  }
+
+  private fiveHourTtlSeconds(): number {
+    const windowMinutes = Math.max(1, config.quota.fiveHourMinutes || 300);
+    const bucketMinutes = Math.max(1, config.quota.bucketMinutes || 5);
+    return (windowMinutes + bucketMinutes) * 60 + 3600;
+  }
+
+  private fiveHourResetAt(now: Date): number {
+    return now.getTime() + Math.max(1, config.quota.fiveHourMinutes || 300) * 60_000;
+  }
+
+  private dayKey(id: string, now: Date): string {
+    return this.tokenBase(id) + ":day:" + dayCompact(now);
+  }
+
+  private monthKey(id: string, now: Date): string {
+    return this.tokenBase(id) + ":month:" + monthCompact(now);
+  }
+
+  private kindKey(kind: QuotaKind, id: string, now: Date): string {
+    return "mind-base:quota:kind:" + kind + ":" + id + ":" + dayCompact(now);
+  }
+
+  /** Public for tests/ops inspection. */
+  costKey(id: string, now: Date): string {
+    return "mind-base:quota:cost:" + id + ":" + dayCompact(now);
+  }
+
+  private codingPlanKey(id: string, now: Date): string {
+    return "mind-base:quota:coding_plan:" + id + ":" + dayCompact(now);
+  }
+
+  /** Counter key for a kind (legacy helper retained for tests/ops). */
+  keyFor(kind: QuotaKind, id: string, now: Date): string {
+    return kind === "coding_plan" ? this.codingPlanKey(id, now) : this.kindKey(kind, id, now);
+  }
+
+  private kindCost(kind: QuotaKind): number {
+    return Math.max(0, config.quota.kindTokenCost?.[kind] ?? 0);
+  }
+
+  /** uid → logged-in; clientKey(IP hash) → anon; neither → unattributable. */
+  private identity(uid: string | undefined, clientKey: string | undefined): { id: string; kind: "chat" | "chat_anon" } | null {
     if (uid) return { id: uid, kind: "chat" };
     if (clientKey) return { id: clientKey, kind: "chat_anon" };
     return null;
+  }
+
+  private async readWindows(
+    id: string,
+    tier: QuotaTier,
+    now: Date,
+  ): Promise<{ windows: QuotaWindowState[]; unavailable: boolean }> {
+    const plan = this.planFor(tier);
+    const [five, day, month] = await Promise.all([
+      this.counter.sum(this.fiveHourKeys(id, now)),
+      this.counter.count(this.dayKey(id, now)),
+      this.counter.count(this.monthKey(id, now)),
+    ]);
+    const unavailable = five === null || day === null || month === null;
+    const values = [five ?? 0, day ?? 0, month ?? 0];
+    const limits = [plan.fiveHourTokens, plan.dailyTokens, plan.monthlyTokens];
+    const resets = [this.fiveHourResetAt(now), nextMidnight(now), nextMonthStart(now)];
+    const names: QuotaWindow[] = ["five_hour", "day", "month"];
+    const windows: QuotaWindowState[] = names.map((window, index) => {
+      const used = values[index] ?? 0;
+      const limit = limits[index] ?? 0;
+      const usedPercent = quotaPercent(used, limit);
+      return {
+        window,
+        used,
+        limit,
+        resetAt: resets[index] ?? now.getTime(),
+        usedPercent,
+        remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
+      };
+    });
+    return { windows, unavailable };
   }
 
   /**
@@ -194,111 +502,207 @@ export class QuotaService {
     if (!config.quota.enabled || !identity) return null;
     const now = this.nowFn();
     const tier = this.tierNormalize(await this.tierOf(uid));
-    const { id, kind } = identity;
-    const limit = this.limitFor(kind, tier);
-    const resetAt = nextMidnight(now);
-    const base = { kind, tier, limit, resetAt, level: "L0" as DegradeLevel, costMicroYuan: 0, storeUnavailable: false };
-    if (limit < 0) return { ...base, verdict: "allow", used: 0 };
-
-    const [count, cost] = await Promise.all([
-      this.counter.count(this.keyFor(kind, id, now)),
-      this.counter.count(this.costKey(id, now)),
-    ]);
-    if (count === null) {
-      log.warn(`[QUOTA] store unavailable, fail-open kind=${kind} id=${id.slice(0, 8)}…`);
-      return { ...base, verdict: "allow", used: 0, storeUnavailable: true };
+    const plan = this.planFor(tier);
+    const { windows, unavailable } = await this.readWindows(identity.id, tier, now);
+    const day = windows[1] ?? {
+      window: "day" as const,
+      used: 0,
+      limit: plan.dailyTokens,
+      resetAt: nextMidnight(now),
+      usedPercent: null,
+      remainingPercent: null,
+    };
+    const base: QuotaGate = {
+      verdict: "allow",
+      kind: identity.kind,
+      tier,
+      window: "day",
+      used: day.used,
+      limit: day.limit,
+      resetAt: day.resetAt,
+      level: "L0",
+      costMicroYuan: 0,
+      storeUnavailable: unavailable,
+      windows,
+    };
+    if (unavailable) {
+      log.warn("[QUOTA] store unavailable, fail-open kind=" + identity.kind + " id=" + identity.id.slice(0, 8) + "…");
+      return base;
     }
-    const costVal = cost ?? 0;
-    const level = this.degradeLevel(tier, count, costVal);
-    if (config.quota.costGuardEnabled) {
-      const guard = config.quota.costGuardMicroYuan[tier] ?? 0;
+    const level = this.degradeLevel(tier, day.used, day.limit);
+    const costVal = (await this.counter.count(this.costKey(identity.id, now))) ?? 0;
+    const blocked = windows.find((w) => w.limit >= 0 && w.used >= w.limit);
+    if (!blocked && config.quota.costGuardEnabled) {
+      const guard = config.quota.costGuardMicroYuan?.[tier] ?? 0;
       if (guard > 0 && costVal >= guard) {
-        return { ...base, verdict: "cost_guard", used: count, level, costMicroYuan: costVal };
+        return { ...base, verdict: "cost_guard", level, costMicroYuan: costVal };
       }
     }
-    if (count >= limit) {
-      return { ...base, verdict: "quota_exceeded", used: count, level, costMicroYuan: costVal };
-    }
-    return { ...base, verdict: "allow", used: count, level, costMicroYuan: costVal };
+    const primary = blocked ?? day;
+    return {
+      ...base,
+      verdict: blocked ? "quota_exceeded" : "allow",
+      window: primary.window,
+      used: primary.used,
+      limit: primary.limit,
+      resetAt: primary.resetAt,
+      level,
+      costMicroYuan: costVal,
+    };
   }
 
-  /** Consume one turn + accumulate the day's cost; only called on success. */
+  /**
+   * Consume one successful chat turn: normalized tokens into the 5h/day/month
+   * windows + the per-kind breakdown + the day cost ledger. Returns the quota
+   * tokens charged (0 when no usage was reported).
+   */
   async completeChatTurn(
     uid: string | undefined,
     clientKey: string | undefined,
     usage: TurnUsage | undefined,
     model: string,
-  ): Promise<void> {
-    if (!config.quota.enabled) return;
+  ): Promise<number> {
+    if (!config.quota.enabled) return 0;
     const identity = this.identity(uid, clientKey);
-    if (!identity) return;
+    if (!identity) return 0;
+    const tokens = quotaTokensFor(model, usage);
     const now = this.nowFn();
-    await this.counter.add(this.keyFor(identity.kind, identity.id, now), 1, DAY_TTL_SECONDS);
-    const micro = costMicroYuan(usage?.inputTokens ?? 0, usage?.outputTokens ?? 0, config.quota.prices[model]);
+    if (tokens > 0) {
+      await this.addUsage(identity.id, identity.kind, tokens, now);
+    }
+    const micro = isExternalModel(model)
+      ? 0
+      : costMicroYuan(usage?.inputTokens ?? 0, usage?.outputTokens ?? 0, priceFor(model));
     if (micro > 0) {
       await this.counter.add(this.costKey(identity.id, now), micro, DAY_TTL_SECONDS);
+    }
+    return tokens;
+  }
+
+  private async addUsage(id: string, kind: QuotaKind, tokens: number, now: Date): Promise<void> {
+    if (tokens <= 0) return;
+    const fiveKey = this.fiveHourKeys(id, now)[0];
+    if (!fiveKey) return;
+    const ok = await this.counter.addMany([
+      { key: fiveKey, delta: tokens, ttlSeconds: this.fiveHourTtlSeconds() },
+      { key: this.dayKey(id, now), delta: tokens, ttlSeconds: DAY_TTL_SECONDS },
+      { key: this.monthKey(id, now), delta: tokens, ttlSeconds: MONTH_TTL_SECONDS },
+      { key: this.kindKey(kind, id, now), delta: tokens, ttlSeconds: DAY_TTL_SECONDS },
+    ]);
+    if (ok === null) {
+      log.warn("[QUOTA] usage write failed (fail-open) kind=" + kind + " tokens=" + tokens);
     }
   }
 
   /**
-   * Image attachments: check-then-add for a batch of n (race tolerance of one
-   * batch is acceptable — the same tolerance the admission queue already has).
-   * Over budget → false, nothing written.
+   * Check-only estimate for an upcoming operation (e.g. chat image attachments).
+   * The actual charge comes from the turn's provider usage, so images are not
+   * double-charged and failed turns stay free. Over budget → false; nothing written.
    */
-  async consumeImages(uid: string | undefined, clientKey: string | undefined, n: number): Promise<boolean> {
+  async canConsume(
+    uid: string | undefined,
+    clientKey: string | undefined,
+    kind: QuotaKind,
+    n: number,
+  ): Promise<boolean> {
     if (!config.quota.enabled || n <= 0) return true;
     const identity = this.identity(uid, clientKey);
     if (!identity) return true;
+    const cost = this.kindCost(kind) * n;
+    if (cost <= 0) return true;
     const now = this.nowFn();
     const tier = this.tierNormalize(await this.tierOf(uid));
-    const limit = this.limitFor("chat_images", tier);
-    if (limit < 0) return true;
-    const key = this.keyFor("chat_images", identity.id, now);
-    const cur = await this.counter.count(key);
-    if (cur === null) return true; // fail-open
-    if (cur + n > limit) return false;
-    await this.counter.add(key, n, DAY_TTL_SECONDS);
-    return true;
+    const { windows, unavailable } = await this.readWindows(identity.id, tier, now);
+    if (unavailable) return true;
+    return !windows.some((w) => w.limit >= 0 && w.used + cost > w.limit);
   }
 
   /**
-   * Peek any counter kind without writing — the fast-fail half of two-phase
-   * flows (peek before the expensive step, consume after it succeeds).
-   * Returns null when quota is disabled or the store is unavailable → callers
-   * fail open.
+   * Peek any kind without writing — the fast-fail half of two-phase flows.
+   * Returns null when quota is disabled or the store is unavailable.
    */
   async peekKind(uid: string, kind: QuotaKind, n = 1): Promise<QuotaGate | null> {
     if (!config.quota.enabled || !uid) return null;
     const now = this.nowFn();
     const tier = this.tierNormalize(await this.tierOf(uid));
-    const limit = this.limitFor(kind, tier);
-    const count = await this.counter.count(this.keyFor(kind, uid, now));
-    if (count === null) return null;
+    const plan = this.planFor(tier);
+
+    if (kind === "coding_plan") {
+      const limit = this.limitFor(kind, tier);
+      const count = await this.counter.count(this.codingPlanKey(uid, now));
+      if (count === null) return null;
+      const { windows } = await this.readWindows(uid, tier, now);
+      const day = windows[1];
+      return {
+        verdict: limit >= 0 && count + Math.max(1, n) > limit ? "quota_exceeded" : "allow",
+        kind,
+        tier,
+        window: "day",
+        used: count,
+        limit,
+        resetAt: nextMidnight(now),
+        level: day ? this.degradeLevel(tier, day.used, day.limit) : "L0",
+        costMicroYuan: 0,
+        storeUnavailable: false,
+        windows,
+      };
+    }
+
+    const cost = this.kindCost(kind) * Math.max(1, n);
+    const { windows, unavailable } = await this.readWindows(uid, tier, now);
+    if (unavailable) return null;
+    const day = windows[1] ?? {
+      window: "day" as const,
+      used: 0,
+      limit: plan.dailyTokens,
+      resetAt: nextMidnight(now),
+      usedPercent: null,
+      remainingPercent: null,
+    };
+    const blocked = cost > 0 ? windows.find((w) => w.limit >= 0 && w.used + cost > w.limit) : undefined;
+    const primary = blocked ?? day;
     return {
-      verdict: limit >= 0 && count + n > limit ? "quota_exceeded" : "allow",
+      verdict: blocked ? "quota_exceeded" : "allow",
       kind,
       tier,
-      used: count,
-      limit,
-      resetAt: nextMidnight(now),
-      level: "L0",
+      window: primary.window,
+      used: primary.used,
+      limit: primary.limit,
+      resetAt: primary.resetAt,
+      level: this.degradeLevel(tier, day.used, day.limit),
       costMicroYuan: 0,
       storeUnavailable: false,
+      windows,
     };
   }
 
-  /** Atomic consume of n units for a counter kind; false = over limit, nothing written. */
+  /**
+   * Consume n estimated operations for a kind. Shared token pool: false when
+   * the operation would overflow any window, nothing written.
+   */
   async consumeKind(uid: string, kind: QuotaKind, n = 1): Promise<boolean> {
     if (!config.quota.enabled || !uid || n <= 0) return true;
     const now = this.nowFn();
     const tier = this.tierNormalize(await this.tierOf(uid));
-    const limit = this.limitFor(kind, tier);
-    if (limit < 0) return true;
-    for (let i = 0; i < n; i += 1) {
-      const res = await this.counter.consume(this.keyFor(kind, uid, now), limit, DAY_TTL_SECONDS);
-      if (res === null) return true; // store unavailable mid-batch → fail open
-      if (!res.allowed) return false;
+
+    if (kind === "coding_plan") {
+      const limit = this.limitFor(kind, tier);
+      if (limit < 0) return true;
+      for (let i = 0; i < n; i += 1) {
+        const res = await this.counter.consume(this.codingPlanKey(uid, now), limit, DAY_TTL_SECONDS);
+        if (res === null) return true;
+        if (!res.allowed) return false;
+      }
+      return true;
     }
+
+    const cost = this.kindCost(kind) * n;
+    if (cost <= 0) return true;
+    const { windows, unavailable } = await this.readWindows(uid, tier, now);
+    if (unavailable) return true;
+    const blocked = windows.find((w) => w.limit >= 0 && w.used + cost > w.limit);
+    if (blocked) return false;
+    await this.addUsage(uid, kind, cost, now);
     return true;
   }
 
@@ -308,65 +712,128 @@ export class QuotaService {
     return this.limitFor(kind, tier);
   }
 
-  /** GET /quota/summary payload: every configured kind + the cost block. */
+  /** GET /quota/summary payload: three token windows + per-kind breakdown + cost. */
   async summary(uid: string | undefined, clientKey?: string): Promise<QuotaSummary> {
     const now = this.nowFn();
     const detail = await this.tierDetailOf(uid);
     const tier = this.tierNormalize(detail.tier);
-    const resetAt = nextMidnight(now);
+    const plan = this.planFor(tier);
+    const planSummary = this.planSummary(plan);
+    const planCatalog: QuotaPlanOption[] = (["free", "vip", "svip", "promax"] as QuotaTier[]).map((t) => ({
+      tier: t,
+      ...this.planSummary(this.planFor(t)),
+    }));
     const identity = this.identity(uid, clientKey);
+    const resetAt = nextMidnight(now);
+    const costBase = {
+      microYuan: 0,
+      softMicroYuan: config.quota.costSoftMicroYuan?.[tier] ?? 0,
+      guardMicroYuan: config.quota.costGuardMicroYuan?.[tier] ?? 0,
+      guardEnabled: config.quota.costGuardEnabled,
+      level: "L0" as DegradeLevel,
+      resetAt,
+    };
+
     if (!config.quota.enabled || !identity) {
       return {
         enabled: config.quota.enabled,
         tier,
         tierSource: detail.source,
+        unit: "token",
+        windows: this.zeroWindows(plan, now),
+        plan: planSummary,
         kinds: [],
-        cost: { microYuan: 0, softMicroYuan: 0, guardMicroYuan: 0, guardEnabled: false, level: "L0", resetAt },
+        models: this.modelRates(),
+        planCatalog,
+        cost: costBase,
+        storeUnavailable: false,
       };
     }
+
+    const { windows, unavailable } = await this.readWindows(identity.id, tier, now);
     const kinds: QuotaKindSummary[] = [];
-    let chatUsed = 0;
-    for (const kind of Object.keys(config.quota.limits) as QuotaKind[]) {
-      if (kind === "task_quiz_active") continue; // stock cap, not a daily counter — no meaningful "used"
-      // 只返回与调用者身份相关的 kind：登录者不含未登录桶（chat_anon），未登录只看自己的桶
-      if (identity.kind === "chat_anon" ? kind !== "chat_anon" : kind === "chat_anon") continue;
-      const used = (await this.counter.count(this.keyFor(kind, identity.id, now))) ?? 0;
-      if (kind === "chat") chatUsed = used;
-      const limit = this.limitFor(kind, tier);
-      const usedPercent = quotaPercent(used, limit);
+    for (const kind of TRACKED_KINDS) {
+      if (identity.kind === "chat_anon" ? kind === "chat" : kind === "chat_anon") continue;
+      const used = (await this.counter.count(this.kindKey(kind, identity.id, now))) ?? 0;
+      const usedPercent = plan.dailyTokens > 0 ? quotaPercent(used, plan.dailyTokens) : null;
       kinds.push({
         kind,
         used,
-        limit,
+        limit: -1,
         resetAt,
         usedPercent,
         remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
       });
     }
     const costVal = (await this.counter.count(this.costKey(identity.id, now))) ?? 0;
+    const day = windows[1];
     return {
       enabled: true,
       tier,
       tierSource: detail.source,
+      unit: "token",
+      windows,
+      plan: planSummary,
       kinds,
+      models: this.modelRates(),
+      planCatalog,
       cost: {
+        ...costBase,
         microYuan: costVal,
-        softMicroYuan: config.quota.costSoftMicroYuan[tier] ?? 0,
-        guardMicroYuan: config.quota.costGuardMicroYuan[tier] ?? 0,
-        guardEnabled: config.quota.costGuardEnabled,
-        level: this.degradeLevel(tier, chatUsed, costVal),
-        resetAt,
+        level: day ? this.degradeLevel(tier, day.used, day.limit) : "L0",
       },
+      storeUnavailable: unavailable,
     };
   }
 
-  /** Degrade ladder: free by turn count, members by day cost. */
-  private degradeLevel(tier: QuotaTier, chatCount: number, costVal: number): DegradeLevel {
-    if (tier === "free") {
-      return chatCount >= Math.max(1, config.quota.freeLadder.l0Turns) ? "L1" : "L0";
-    }
-    const soft = config.quota.costSoftMicroYuan[tier] ?? 0;
-    return soft > 0 && costVal >= soft ? "L1" : "L0";
+  private zeroWindows(plan: TierPlan, now: Date): QuotaWindowState[] {
+    const limits = [plan.fiveHourTokens, plan.dailyTokens, plan.monthlyTokens];
+    const resets = [this.fiveHourResetAt(now), nextMidnight(now), nextMonthStart(now)];
+    const names: QuotaWindow[] = ["five_hour", "day", "month"];
+    return names.map((window, index) => {
+      const limit = limits[index] ?? 0;
+      const usedPercent = quotaPercent(0, limit);
+      return {
+        window,
+        used: 0,
+        limit,
+        resetAt: resets[index] ?? now.getTime(),
+        usedPercent,
+        remainingPercent: usedPercent === null ? null : 100,
+      };
+    });
+  }
+
+  private planSummary(plan: TierPlan): QuotaPlanSummary {
+    const reference = config.quota.referencePricePerMTok > 0 ? config.quota.referencePricePerMTok : 10;
+    return {
+      priceYuan: plan.priceYuan,
+      monthlyTokens: plan.monthlyTokens,
+      valueYuan: Math.round(plan.valueYuan * 100) / 100,
+      bonus: plan.priceYuan > 0 ? Math.round((plan.valueYuan / plan.priceYuan) * 100) / 100 : 0,
+      referencePricePerMTok: reference,
+      fiveHourTokens: plan.fiveHourTokens,
+      dailyTokens: plan.dailyTokens,
+    };
+  }
+
+  private modelRates(): QuotaModelRate[] {
+    const models = new Set([
+      ...Object.keys(config.quota.prices ?? {}),
+      ...Object.keys(config.quota.modelWeights ?? {}),
+    ]);
+    return [...models].sort().map((model) => {
+      const rate = modelQuotaRate(model);
+      const price = config.quota.prices?.[model];
+      return { model, ...rate, ...(price ? { price: { input: price.input, output: price.output } } : {}) };
+    });
+  }
+
+  /** Degrade ladder: switch to L1 when the day's token budget is mostly spent. */
+  private degradeLevel(tier: QuotaTier, dayUsed: number, dayLimit: number): DegradeLevel {
+    if (dayLimit <= 0) return "L0";
+    const threshold = config.quota.degradeAtPercent?.[tier] ?? 100;
+    return (dayUsed / dayLimit) * 100 >= threshold ? "L1" : "L0";
   }
 
   async close(): Promise<void> {

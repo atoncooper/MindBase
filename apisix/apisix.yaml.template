@@ -904,7 +904,7 @@ routes:
   # User -> app-pay products/orders/membership (forward-auth, X-Uid injected).
   # /pay/callback/* is served by pay_callback below (priority 60, no forward-auth).
   - id: pay_user
-    uri: /pay/*
+    uris: [/pay, /pay/*]
     methods: [GET, POST]
     priority: 50
     labels:
@@ -913,8 +913,9 @@ routes:
     plugins:
       proxy-rewrite:
         headers:
-          # 身份只以网关注入的 X-Uid 为准；同时不把用户 Bearer token 透传给支付服务（最小权限）
-          remove: [X-Uid, X-Roles, Authorization]
+          # 身份只以网关注入的 X-Uid 为准；Authorization 必须保留到 forward-auth 之后，
+          # 否则 forward-auth 读不到 Bearer、不会注入 X-Uid（app-pay 自身不解析该头）。
+          remove: [X-Uid, X-Roles]
       forward-auth:
         uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -1247,6 +1248,30 @@ routes:
   # /chat/search 已另落 vec_knowledge_ts；/chat/messages 等未列举 URI 将 404
   # （Python 面已退役）
   # （AI 域）。回滚：删除本路由对应 uri 即回落 Python。
+  # 公共健康检查（edge -> APISIX -> app-ts）。仅 GET /health，无 forward-auth：
+  # 外部 LB/监控探活用；返回内容只有 status/版本，不含用户数据。
+  - id: system_ts
+    uri: /health
+    methods: [GET]
+    priority: 50
+    labels:
+      domain: public
+    upstream_id: upstream-app-ts
+    timeout:
+      connect: 3
+      send: 5
+      read: 5
+    plugins:
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      limit-req:
+        rate: 20
+        burst: 10
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+
   - id: chat_ts
     uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
     priority: 60

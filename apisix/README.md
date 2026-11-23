@@ -106,7 +106,10 @@ APISIX 3.20 以 **traditional + etcd** 模式运行：路由、上游、消费�
 - 所有路由带 `labels.domain`；`/internal/*` 必须 `key-auth` + `consumer-restriction`；
 - 需要上游二次校验 key 的内部路由，必须由 `proxy-rewrite` 注入 `X-API-Key`/`X-Internal-Key`（或显式 `hide_credentials: false` 并注释原因——目前只有 `coding_plan_internal`）；
 - 用户路由必须 `forward-auth`（`auth_user`/preflight 等显式公开端点除外），且 remove `X-Uid`/`X-Roles`；
-- 禁止 `catch_all`；核心路由 `auth_user/cloud_user/workspaces_user/notes_user/pay_user` 齐全；
+  ⚠️ **不能在 `proxy-rewrite` 里 remove `Authorization`**：该插件在 forward-auth 之前执行，会把 Bearer 提前删掉，forward-auth 读不到凭证 → 不注入 `X-Uid` → 下游（如 app-pay）返回 401；
+  身份头只信网关注入值，支付服务本身不解析 Authorization。
+- 禁止 `catch_all`；核心路由 `auth_user/cloud_user/workspaces_user/notes_user/pay_user` 齐全；公开端点（`system_ts /health`、`pay_callback`、分享页经宽松 forward-auth）必须有显式注释与限流；
+- API 面清单见 [docs/api-inventory.md](../docs/api-inventory.md)，新增接口需同步 APISIX 路由 + edge location + 清单；
 - 全局规则必须包含 `real-ip`（否则按 IP 限流失效）、`prometheus`、`response-rewrite`；
 - 仅通过 HTTPS + allow_admin 访问 Admin API/UI，禁止暴露到公网。
 

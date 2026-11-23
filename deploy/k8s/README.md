@@ -61,8 +61,8 @@ kubectl -n mind-base create secret generic api-key-encryption-key \
 ## 1b. 一次性创建 ConfigMap（静态配置文件）
 
 > kustomize 的 load restrictor 禁止引用目录外文件（kubectl ≥1.36 也已拒绝
-> `loadRestrictions: LoadRestrictionsNone`），所以这三份 ConfigMap 与 Secret
-> 一样用 kubectl 从仓库根文件创建，**必须在 `apply -k` 之前完成**：
+> `loadRestrictions: LoadRestrictionsNone`），所以这些 ConfigMap 与 Secret
+> 一样用 kubectl 从仓库文件创建，**必须在 `apply -k` 之前完成**：
 
 ```bash
 kubectl -n mind-base create configmap mysql-init-sql \
@@ -79,6 +79,19 @@ kubectl -n mind-base create configmap apisix-config \
 kubectl -n mind-base create configmap nginx-conf \
   --from-file=nginx.conf=nginx/nginx.conf \
   --from-file=locations.conf=nginx/locations.conf
+# 数据层组件配置（同源文件也供 compose 栈挂载，见 deploy/config/README.md）
+kubectl -n mind-base create configmap mysql-conf \
+  --from-file=00-base.cnf=deploy/config/mysql/conf.d/00-base.cnf \
+  --from-file=95-binlog.cnf=deploy/config/mysql/conf.d/95-binlog.cnf \
+  --from-file=entrypoint.sh=deploy/config/mysql/entrypoint-autosize.sh
+kubectl -n mind-base create configmap mongo-conf \
+  --from-file=mongod.tmpl.conf=deploy/config/mongodb/mongod.tmpl.conf \
+  --from-file=entrypoint.sh=deploy/config/mongodb/entrypoint-autosize.sh
+kubectl -n mind-base create configmap redis-conf \
+  --from-file=redis.conf=deploy/config/redis/redis.plain.conf \
+  --from-file=entrypoint.sh=deploy/config/redis/entrypoint-autosize.sh
+kubectl -n mind-base create configmap etcd-conf \
+  --from-file=etcd.conf.yml=deploy/config/etcd/etcd.plain.conf.yml
 ```
 
 更新流程：改仓库源文件后重跑对应 `create configmap --dry-run=client -o yaml | kubectl apply -f -`，
@@ -92,8 +105,15 @@ kubectl -n mind-base create configmap nginx-conf \
 所有工作负载的 `envFrom` 顺序固定为两层，等价 compose 的 `${VAR:-default}` 语义：
 
 1. `mindbase-defaults`（ConfigMap，kustomize literals 生成，见 kustomization.yaml）——
-   compose 的兜底值（dev 凭据与连接串；这些默认值本就公开在 docker-compose.yml/git 里）；
-2. `mindbase-env`（Secret，来自 .env）——同名键**覆盖**第 1 层。
+   **只放非密钥**兜底值（用户名、库名、前缀、endpoint、可信代理网段）；
+2. `mindbase-env`（Secret，来自 .env）——同名键**覆盖**第 1 层；
+   密码、API key、含凭据 DSN 只在 Secret（2026-11-22 已从 ConfigMap 移除，历史
+   ConfigMap 里的 dev 密码是安全缺陷）。
+
+> 需要派生 DSN 的服务（app-user 三段、app-cloud、app-kg、app-admin、app-task）在清单里
+> 用「先取 Secret 密码 → `$(VAR)` 拼 DSN」的 in-list 模式实现；因此 `.env` 必须包含
+> `MYSQL_PASSWORD` / `APPTASK_MYSQL_PASSWORD` / `PAY_MYSQL_PASSWORD`（以及
+> `RDBMS__URL`/`MONGO__URI`/`REDIS__URL` 供 app-content/app-ts 等使用）。
 
 推论：
 
@@ -112,9 +132,9 @@ kubectl -n mind-base create configmap nginx-conf \
 - compose 的 `${APISIX_CONSUMER_KEY}` 交叉引用在 K8s 用「先取源值再派生」的
   in-list 模式实现：`$(VAR)` 只能引用同容器 env 列表中**先定义**的变量，
   **envFrom 变量不可被 $(VAR) 引用**（K8s 硬限制——原清单 60 处踩坑已全部修复）；
-- 基础设施侧三处固定引用不走 .env：redis 命令行口令、minio 事件通知口令、
-  milvus 的 MinIO 凭证——均 configMapKeyRef 取 `mindbase-defaults`，与各客户端
-  连接串默认值同源；改这些口令 = 改 kustomization literals + rollout restart。
+- 数据层口令全部走 Secret 引用：redis 命令行 `$(REDIS_PASSWORD)`、minio 事件通知
+  口令、mongo/neo4j 初始化口令、milvus 的 MinIO 凭证、minio 的 MINIO_ROOT_*；
+  改口令 = 改 `.env` + 重建 `mindbase-env` + rollout restart（不再改 ConfigMap）。
 
 其他两处 compose→k8s 的行为差异：
 
@@ -160,6 +180,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | app-pay TLS | 宿主目录 `./app-pay/certs` | Secret `app-pay-tls`（ca.crt 同时供 app-task 委托回调校验） |
 | MySQL 建表脚本 | 宿主 `db/system.sql` | ConfigMap `mysql-init-sql`（§1b kubectl 创建，改 SQL 后重建 + restart mysql） |
 | APISIX 路由 | etcd（Dashboard/Admin API 管理） | etcd（传统模式）；ConfigMap `apisix-config` 只提供 config.yaml/seed/render 脚本，seed 仅在 etcd 为空时导入 |
+| 数据层组件配置 | `deploy/config/<组件>/`（etcd/redis/mysql/mongo/milvus，只读挂载） | 同一份文件生成 ConfigMap（`mysql-conf`/`mongo-conf`/`redis-conf`/`etcd-conf`，§1b kubectl 创建） |
 | nginx 配置 | 宿主 `nginx/*.conf` | ConfigMap `nginx-conf`（subPath；同上 restart） |
 | Higress 版本 | `:latest` + 可选 digest 钉死 | 同左；生产建议把 Deployment 的 image 改成 `@sha256:` 钉死 |
 | 数据持久化 | named volumes | PVC（mysql 10Gi×3、mongo 10Gi、redis 5Gi、etcd 5Gi、minio 20Gi、milvus 20Gi、neo4j 10Gi、higress 5Gi）；服务日志与 nginx 缓存为 emptyDir |

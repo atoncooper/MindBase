@@ -32,7 +32,7 @@ const suggestions = [
 
 export function ChatEmpty({ onSuggestionClick }: EmptyStateProps) {
   return (
-    <div className="mx-auto flex h-full max-w-[680px] flex-col items-center justify-center px-5 py-10 text-center">
+    <div className="mx-auto flex h-full max-w-[680px] flex-col items-center justify-center px-4 py-8 text-center sm:px-5 sm:py-10">
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -46,7 +46,7 @@ export function ChatEmpty({ onSuggestionClick }: EmptyStateProps) {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.05, ease: [0.28, 0.11, 0.32, 1] }}
-        className="mt-5 text-[26px] font-semibold tracking-tight text-foreground"
+        className="mt-5 text-[22px] font-semibold tracking-tight text-foreground sm:text-[26px]"
       >
         有什么可以帮你？
       </motion.h1>
@@ -54,12 +54,12 @@ export function ChatEmpty({ onSuggestionClick }: EmptyStateProps) {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.1, ease: [0.28, 0.11, 0.32, 1] }}
-        className="mt-2 text-[14px] text-secondary"
+        className="mt-2 text-[13px] leading-relaxed text-secondary sm:text-[14px]"
       >
         把 B 站收藏夹变成可提问的知识库 · 检索、总结、对比、规划
       </motion.p>
 
-      <div className="mt-8 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
+      <div className="mt-6 grid w-full grid-cols-1 gap-2.5 sm:mt-8 sm:grid-cols-2">
         {suggestions.map((s, i) => {
           const Icon = s.icon;
           return (

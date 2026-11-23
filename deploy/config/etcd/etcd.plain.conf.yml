@@ -1,0 +1,32 @@
+# =============================================================================
+# etcd 3.5 — Kubernetes（集群内明文，4GB quota；与 Milvus 共用）
+# =============================================================================
+# 挂载：/etc/etcd/etcd.conf.yml；启动：etcd --config-file=/etc/etcd/etcd.conf.yml
+# 校验：etcdctl [--cacert/--cert/--key] endpoint status -w table（见 README）。
+# 说明：客户端 mTLS 证书由 scripts/gen-certs.sh 签发并挂到 /certs，本文件只引用路径。
+
+name: mind-base-etcd
+data-dir: /etcd
+listen-client-urls: http://0.0.0.0:2379
+advertise-client-urls: http://etcd:2379
+# Prometheus 抓取口（容器/集群内网；不发布到宿主）。
+listen-metrics-urls: http://0.0.0.0:2381
+metrics: basic
+
+# 单节点不复制，snapshot 仅影响 WAL 压缩频率；10k 条在 APISIX 频繁写入下仍是
+# 秒级压缩开销，避免默认 100k 时 WAL 过大。
+snapshot-count: 10000
+# APISIX 路由/证书轮换会产生大量修订；周期性压缩 1h + 每 10k 修订触发一次。
+auto-compaction-mode: periodic
+auto-compaction-retention: "1h"
+quota-backend-bytes: 4294967296
+# 单条请求上限（APISIX 全量路由 seed 约 60KB，8MB 留足证书/大 ssl 对象余量）。
+max-request-bytes: 8388608
+# 单节点无选举压力，显式写默认值便于集群化时对照。
+heartbeat-interval: 100
+election-timeout: 1000
+
+logger: zap
+log-level: info
+log-outputs: [stderr]
+

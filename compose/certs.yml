@@ -1,0 +1,49 @@
+# 证书与信任初始化（被根 docker-compose.yml include）：cert-gen（一次性签发 dev CA/服务叶子）、
+# cert-truststore（app-pay JVM PKCS12 truststore）。
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks:
+    - mind-base-net
+services:
+
+  cert-gen:
+    image: atoncooper/mind-base-certgen:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ../scripts
+      dockerfile: certgen.Dockerfile
+    container_name: mind-base-cert-gen
+    environment:
+      MB_CERT_OPENRESTY_DIR: /out/openresty
+      MB_CERT_APPCONTENT_DIR: /out/app-content
+      MB_CERT_MCP_DIR: /out/mcp
+      MB_CERT_PAY_DIR: /out/pay
+      MB_CERT_BUNDLE_DIR: /out/bundle
+      MB_CERT_SERVICES_DIR: /out/bundle
+      MB_CERT_EXTRA_SAN: minbase.top
+    volumes:
+      - ../secrets/certs/openresty:/out/openresty
+      - ../secrets/certs/app-content:/out/app-content
+      - ../secrets/certs/app-content-mcp:/out/mcp
+      - ../app-pay/certs:/out/pay
+      - ../secrets/certs:/out/bundle
+    restart: "no"
+
+  cert-truststore:
+    image: atoncooper/mind-base-app-pay:latest
+    container_name: mind-base-cert-truststore
+    profiles: ["", "pay", "full"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # 以 JRE 默认 cacerts 为基线（公网 CA，支付宝/微信等出站必需），再追加内部 dev CA。
+        # 只导入内部 CA 的旧实现会让 app-pay 无法校验支付宝沙箱 DigiCert 证书（PKIX path building failed）。
+        rm -f /certs/truststore.p12
+        keytool -importkeystore -noprompt \
+          -srckeystore "$$JAVA_HOME/lib/security/cacerts" -srcstoretype PKCS12 -srcstorepass changeit \
+          -destkeystore /certs/truststore.p12 -deststoretype PKCS12 -deststorepass changeit
+        keytool -importcert -noprompt -alias mindbase-dev-ca -file /certs/ca.crt -keystore /certs/truststore.p12 -storetype PKCS12 -storepass changeit
+    volumes:
+      - ../app-pay/certs:/certs
+    restart: "no"

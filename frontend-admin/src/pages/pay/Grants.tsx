@@ -24,12 +24,12 @@ import { formatTime } from "../../components/format";
 /** reason 列宽 VARCHAR(200)，"[操作人] reason" 总长按 rune 计 */
 const REASON_MAX_RUNES = 200;
 
-const TIER_LABEL: Record<string, string> = { VIP: "VIP", SVIP: "SVIP" };
+const TIER_LABEL: Record<string, string> = { VIP: "VIP", SVIP: "SVIP", PROMAX: "ProMax" };
 
 interface GrantFormValues {
   uid: string;
   durationDays: number;
-  tier?: "VIP" | "SVIP";
+  tier?: "VIP" | "SVIP" | "PROMAX";
   reason: string;
 }
 
@@ -201,6 +201,7 @@ export default function Grants() {
               options={[
                 { value: "VIP", label: "VIP" },
                 { value: "SVIP", label: "SVIP" },
+                { value: "PROMAX", label: "ProMax" },
               ]}
             />
           </Form.Item>

@@ -36,40 +36,29 @@ spec:
         - name: redis
           image: redis:7-alpine
           imagePullPolicy: IfNotPresent
-          command:
-            - redis-server
-            - --requirepass
-            - $(REDIS_PASSWORD)
-            - --notify-keyspace-events
-            - Ex
-            - --maxmemory
-            - 256mb
-            - --maxmemory-policy
-            - allkeys-lru
-            - --save
-            - 900 1
-            - --save
-            - 300 10
-            # AOF everysec: with RDB-only persistence, a failover inside the
-            # snapshot window loses app-cloud upload sessions (forced client
-            # retries) and quota pending reservations (transient oversell
-            # window). everysec bounds the loss to ~1s. RDB stays on for
-            # faster restarts and as an AOF-corruption fallback.
-            - --appendonly
-            - "yes"
-            - --appendfsync
-            - everysec
+          # 生产标准：静态配置 + 按 Pod cgroup 内存自动 maxmemory（entrypoint）。
+          command: ["/bin/sh", "/opt/mindbase/entrypoint-autosize.sh"]
           env:
+            - name: REDIS_CONF
+              value: /usr/local/etc/redis/redis.conf
             # 命令行/探针的 $(REDIS_PASSWORD) 只能引用 env 列表内变量（envFrom 不可见）；
             # 固定取 defaults ConfigMap，与各客户端 REDIS__URL 默认值同源
             - name: REDIS_PASSWORD
               valueFrom:
-                configMapKeyRef: { name: mindbase-defaults, key: REDIS_PASSWORD }
+                secretKeyRef: { name: mindbase-env, key: REDIS_PASSWORD }
           ports:
             - containerPort: 6379
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: redis-conf
+              mountPath: /usr/local/etc/redis/redis.conf
+              subPath: redis.conf
+              readOnly: true
+            - name: redis-conf
+              mountPath: /opt/mindbase/entrypoint-autosize.sh
+              subPath: entrypoint.sh
+              readOnly: true
           startupProbe:
             exec:
               command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
@@ -86,6 +75,10 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 250m, memory: 512Mi }
+      volumes:
+        - name: redis-conf
+          configMap:
+            name: redis-conf
   volumeClaimTemplates:
     - metadata:
         name: data

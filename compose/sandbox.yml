@@ -1,0 +1,38 @@
+# 沙箱运行时（被根 docker-compose.yml include）：opensandbox-server（execd/lifecycle 控制面，profile sandbox/full）。
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks:
+    - mind-base-net
+services:
+
+  opensandbox-server:
+    <<: *defaults
+    image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server:release-1.2.0
+    container_name: mind-base-opensandbox-server
+    profiles: ["sandbox", "full"]
+    environment:
+      - OPENSANDBOX_SERVER_API_KEY=${OPENSANDBOX_API_KEY:-}
+      - SANDBOX_CONFIG_PATH=/etc/opensandbox/config.toml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../deploy/docker/opensandbox/config.toml:/etc/opensandbox/config.toml:ro
+      - opensandbox_data:/root/.opensandbox
+    ports:
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "768M"
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

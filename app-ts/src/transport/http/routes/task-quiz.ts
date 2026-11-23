@@ -161,7 +161,7 @@ export function registerTaskQuizRoutes(
             kind: "task_quiz_active",
             used: active,
             limit,
-            upgradeSku: tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+            upgradeSku: tier === "free" ? "VIP_MONTHLY" : tier === "vip" ? "SVIP_MONTHLY" : "PROMAX_MONTHLY",
           });
         }
       }

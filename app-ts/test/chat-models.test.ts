@@ -337,7 +337,7 @@ function makeQuota() {
   const completeCalls: Array<{ model: string }> = [];
   const quota = {
     beginChatTurn: async () => null,
-    consumeImages: async () => true,
+    canConsume: async () => true,
     completeChatTurn: async (_uid: string | undefined, _clientKey: string | undefined, _usage: unknown, model: string) => {
       completeCalls.push({ model });
     },
@@ -440,7 +440,7 @@ describe("ChatService · per-turn model", () => {
     expect(modelIdOf(captured[0]?.model)).toBe("z-ai/glm-5.3");
   });
 
-  it("records the actual model in the ledger and prices it with a fallback", async () => {
+  it("records an unpriced model in the ledger and prices it with the default fallback", async () => {
     const { harness } = makeHarness([USAGE_FRAME, { type: "done" }]);
     const { ledger, rows } = makeLedger();
     const { quota, completeCalls } = makeQuota();
@@ -455,13 +455,13 @@ describe("ChatService · per-turn model", () => {
       quota,
       ledger,
     );
-    await drain(chat.askStream({ query: "hi", sessionId: "s-model-5", uid: "1", chatModel: "z-ai/glm-5.3" }));
+    await drain(chat.askStream({ query: "hi", sessionId: "s-model-5", uid: "1", chatModel: "test/unpriced-model" }));
     expect(rows).toHaveLength(1);
-    expect(rows[0].model).toBe("z-ai/glm-5.3");
+    expect(rows[0].model).toBe("test/unpriced-model");
     // unpriced model → the default model's price snapshot keeps the cost real
     // (1000 in × 0.188 + 1000 out × 6.48 = 6668 micro-Yuan), not 0/undefined
     expect(rows[0].costMicroYuan).toBe(6668);
-    expect(completeCalls[0]?.model).toBe(config.llm.model);
+    expect(completeCalls[0]?.model).toBe("test/unpriced-model");
   });
 
   it("records the service default when no model was picked", async () => {

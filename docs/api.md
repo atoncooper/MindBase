@@ -58,6 +58,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `/knowledge/*` | app-user（bili 路由）+ app-ts | 构建 / 状态 / 清空（获取域）；`/knowledge/kg*` 走 app-ts |
 | `/asr/*`、`/vec/*` | app-user（bili 路由）/ app-ts | ASR 任务；向量化与状态 |
 | `/chat/*` | app-ts | 流式问答（SSE）、会话 / 历史 / 总结 / 画板补全 |
+| `/quota/*` | app-ts | 用量与额度：`GET /quota/summary`（标准 token；5 小时滚动 / 日 / 月窗口；模型抵扣倍率） |
 | `/blindspot/*` | app-ts | 盲区图 / 实体详情 / 盲区出题 |
 | `/notes/*` | app-content:8004（note 面） | 笔记 CRUD / 锚点 / 修订 / 分享 / 云盘转笔记 |
 | `/board/*` | app-content:8004（board 面，HTTPS） | 板 CRUD（`If-Match` 乐观锁）/ 置顶 |

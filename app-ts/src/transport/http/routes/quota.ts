@@ -3,9 +3,10 @@ import { getRequestContext } from "../../../context/request-context.js";
 import { hashClientKey, type QuotaService } from "../../../services/quota.js";
 
 /**
- * GET /quota/summary — the signed-in user's (or the IP bucket's) daily usage:
- * every configured kind + the cost block. Consumed by the chat page badge and
- * the membership center usage section.
+ * GET /quota/summary — the signed-in user's (or the IP bucket's) unified token
+ * usage: rolling 5-hour + day + month windows, per-kind breakdown, model
+ * weights and the cost block. Consumed by the chat badge, the quota page and
+ * the membership center.
  */
 export function registerQuotaRoutes(app: FastifyInstance, deps: { quota: QuotaService }): void {
   app.get("/quota/summary", async (req: FastifyRequest) => {

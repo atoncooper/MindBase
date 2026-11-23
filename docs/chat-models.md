@@ -72,4 +72,4 @@ GET /chat/models
 1. 在 AI 网关控制台确认模型已配置路由（供应商 key 只在网关，不进 app-ts）。
 2. 编辑 `app-ts/config/model.json`，加入模型 id/label（可选 description/vision）。
 3. 重启 app-ts（目录在启动时加载）；前端无需重新构建（选择器每次挂载重新拉取）。
-4. 若新模型需要不同计价，在 `app-ts/config/default.yaml` 的 `quota.prices` 增加价格；缺失时会回退默认模型价（成本记账不会中断，但数字不准）。
+4. 若新模型需要不同计价，在 `app-ts/config/default.yaml` 的 `quota.prices` 增加价格（元/百万 token）。该价格同时用于成本账本和 token 额度权重（权重 = 单价 / `quota.referencePricePerMTok`）；可用 `quota.modelWeights` 覆盖额度权重。缺失时回退默认模型价（成本与权重都按默认模型，数字不准）。完整口径见 [ai-quota.md](ai-quota.md)。

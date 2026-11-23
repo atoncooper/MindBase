@@ -78,7 +78,7 @@ export interface PayGrantRequest {
   uid: number | string;
   durationDays: number;
   reason: string;
-  tier?: "VIP" | "SVIP";
+  tier?: "VIP" | "SVIP" | "PROMAX";
 }
 
 /** 补偿开通结果（expireBefore/After 为变更前后到期时间）。 */

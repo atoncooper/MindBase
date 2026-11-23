@@ -236,9 +236,10 @@ export function AccountView() {
                 );
             case "profile":
                 return (
-                    <div className="w-full">
+                    <div className="w-full max-w-[1120px]">
                         <ProfileCard
                             profile={profile!}
+                            membership={membership}
                             onUpdated={setProfile}
                             onToast={flash}
                         />

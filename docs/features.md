@@ -33,7 +33,7 @@ MindBase 的能力围绕三条主线：
 - **生成中排队**：AI 生成过程中输入框仍可继续输入，Enter（或排队按钮）把消息加入 FIFO 队列（最多 5 条、可取消），当前轮 done / error / stop 后自动发送队首；切换会话或新建对话会清空队列。
 - **工具面**：`vector_search`、`kg_search`、`list_videos`、`get_video_summaries`、`run_code`、`run_skill_code`、`web_search`、`fetch_webpage`、`plan`、`save_memory`、`academic_*` 等（以工具注册表为准）；`kg_search` 仅在 Neo4j 可用时注册。
 - **会话能力**：历史列表、自动标题、token 预算触发的上下文压缩、会话总结、长期记忆召回、技能索引注入；新建对话是**草稿态**——发出第一条消息前不在服务端落库（点「开启新对话」只会清掉当前空会话），因此不会在侧栏堆出空对话。
-- **成本与公平**：会员档位加权排队（admission），委派子 agent 的 token 计入本轮用量。
+- **成本与公平**：会员档位加权排队（admission）；AI 用量按**标准 token** 三层窗口（滚动 5 小时 / 日 / 月）计量，贵模型按单价扣得更快，委派子 agent 的 token 计入本轮用量。详见 [ai-quota.md](ai-quota.md)。
 - **科研上下文**：从科研工作台点「在对话中继续」会新建一个**绑定该项目的会话**（侧栏「开启新对话」右侧箭头也可选择绑定）；绑定随会话持久化，重开历史会话仍保留；后端校验归属后注入受控项目段落，聊天顶部显示「正在科研项目」横幅。
 
 **数据**：聊天会话/消息、总结、记忆在 MongoDB `mind_base_ts`；向量在 Milvus。

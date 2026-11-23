@@ -153,7 +153,7 @@ export function ChatModelPicker({
                 aria-haspopup="true"
                 aria-label={`选择聊天模型（当前：${label}）`}
                 title="选择聊天模型：系统默认模型或 Coding Plan 模型"
-                className="flex h-8 w-full min-w-0 max-w-[150px] items-center gap-1 rounded-md px-2 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 sm:max-w-[220px]"
+                className="flex h-9 w-full min-w-0 max-w-[42vw] items-center gap-1 rounded-md px-2 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 sm:h-8 sm:max-w-[220px] sm:text-[11px]"
             >
                 {codingPlanValue && (
                     <Boxes className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
@@ -172,7 +172,7 @@ export function ChatModelPicker({
                 <div
                     role="group"
                     aria-label="聊天模型选择"
-                    className="absolute bottom-full right-0 z-50 mb-2 w-80 max-w-[90vw] overflow-hidden rounded-md border border-border bg-surface shadow-[0_8px_28px_rgba(0,0,0,0.14)]"
+                    className="absolute bottom-full right-0 z-50 mb-2 w-80 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-md border border-border bg-surface shadow-[0_8px_28px_rgba(0,0,0,0.14)]"
                 >
                     <div className="border-b border-border-subtle px-3 py-2">
                         <div className="text-[12px] font-medium text-foreground">选择模型</div>

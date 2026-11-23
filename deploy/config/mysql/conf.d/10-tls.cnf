@@ -1,0 +1,15 @@
+# =============================================================================
+# MySQL 8.4 — TLS-only listener profile (root compose / app-pay)
+# =============================================================================
+# 官方镜像首次初始化会自动生成 server/client 证书（certs 位于数据卷内）。
+# Go 客户端用 tls=skip-verify（MYSQL_TLS_MODE），app-pay JDBC 用 sslMode=REQUIRED；
+# 迁正式 CA 时把证书挂到 /etc/mysql/certs 并在此追加 ssl-ca/ssl-cert/ssl-key。
+[mysqld]
+require-secure-transport        = ON
+tls-version                     = TLSv1.2,TLSv1.3
+# 禁用旧协议/弱套件（TLSv1.3 套件由 OpenSSL 默认集控制，无需在此枚举）。
+tls-ciphersuites                = TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+# 会话缓存降低握手开销（客户端连接池 10~30 条/服务）。
+ssl-session-cache-mode          = ON
+ssl-session-cache-size          = 128
+ssl-session-cache-timeout       = 300

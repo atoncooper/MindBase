@@ -137,12 +137,33 @@ export function ChatInput({
   const [imageError, setImageError] = useState("");
   // 附件抽屉：待发送图片 + 会话文件（输入框上方不再常驻缩略图/chips）
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
   const [skills, setSkills] = useState<InstalledSkill[] | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 附件菜单：点击外部 / Esc 关闭（图片、文档、查看附件统一收在一个入口）。
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setAttachMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAttachMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [attachMenuOpen]);
+
   // Responsive composer ceiling (desktop 320px; smaller windows/keyboards get
   // proportionally less so the message list keeps usable space).
   const [maxHeight, setMaxHeight] = useState(MAX_HEIGHT);
@@ -368,7 +389,7 @@ export function ChatInput({
       )}
 
       <div
-        className={`rounded-[22px] border bg-surface px-3 pb-1.5 pt-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-colors ${
+        className={`rounded-[20px] border bg-surface px-3 pb-1.5 pt-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-colors sm:rounded-[22px] ${
           canSend ? "border-border" : "border-border-subtle"
         } ${isStreaming ? "border-accent/40" : ""}`}
       >
@@ -411,50 +432,90 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="block w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50 [scrollbar-width:thin]"
+          className="block w-full resize-none bg-transparent px-1 py-1 text-[16px] leading-6 text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50 sm:text-[15px] [scrollbar-width:thin]"
           style={{ minHeight: `${MIN_HEIGHT}px`, maxHeight: `${maxHeight}px` }}
           aria-label="聊天消息输入"
           aria-disabled={disabled}
         />
 
-        {/* Row 2: uploads on the left, model picker + send/stop on the right. */}
-        <div className="mt-1 flex items-center justify-between gap-2">
-          <div className="flex shrink-0 items-center gap-0.5">
+        {/* Row 2: one attachment entry on the left, model picker + send/stop on the right. */}
+        <div className="mt-1 flex items-center justify-between gap-1.5 sm:gap-2">
+          <div ref={attachMenuRef} className="relative shrink-0">
             <button
               type="button"
-              onClick={() => docInputRef.current?.click()}
-              disabled={disabled || isStreaming}
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
-              aria-label="上传文档到当前会话"
-              title="上传文档到当前会话（pdf/docx/pptx/txt/md/html）"
-            >
-              <FileUp className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled || isStreaming}
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
-              aria-label="添加图片"
-            >
-              <ImagePlus className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setAttachmentsOpen(true)}
-              className={`relative grid h-8 w-8 shrink-0 place-items-center rounded-full transition-colors hover:bg-border-subtle ${
+              onClick={() => {
+                // 同时只保留一个浮层：打开附件菜单时收起斜杠命令菜单。
+                setMenuDismissed(true);
+                setAttachMenuOpen((open) => !open);
+              }}
+              className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-border-subtle sm:h-8 sm:w-8 ${
                 attachmentCount > 0 ? "text-accent" : "text-tertiary hover:text-foreground"
               }`}
-              aria-label={`查看附件（${attachmentCount}）`}
-              title="查看附件（待发送图片 / 会话文件）"
+              aria-label={`添加或查看附件（${attachmentCount}）`}
+              aria-haspopup="menu"
+              aria-expanded={attachMenuOpen}
+              title="添加附件（图片 / 文档）或查看已上传文件"
             >
-              <Paperclip className="h-4 w-4" aria-hidden="true" />
+              <Paperclip className="h-[18px] w-[18px] sm:h-4 sm:w-4" aria-hidden="true" />
               {attachmentCount > 0 && (
                 <span className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] font-medium leading-none text-white">
                   {attachmentCount}
                 </span>
               )}
             </button>
+
+            {attachMenuOpen && (
+              <div
+                role="menu"
+                aria-label="附件操作"
+                className="absolute bottom-full left-0 z-50 mb-2 w-60 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border border-border bg-surface py-1 shadow-[0_10px_30px_rgba(0,0,0,0.14)]"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={disabled || isStreaming}
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-foreground transition-colors hover:bg-border-subtle/50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ImagePlus className="h-4 w-4 shrink-0 text-tertiary" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">上传图片</span>
+                  <span className="shrink-0 text-[10px] text-tertiary">≤4 张</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={disabled || isStreaming}
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    docInputRef.current?.click();
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-foreground transition-colors hover:bg-border-subtle/50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <FileUp className="h-4 w-4 shrink-0 text-tertiary" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">上传文档</span>
+                  <span className="shrink-0 text-[10px] text-tertiary">pdf/docx…</span>
+                </button>
+                <div className="mx-2 my-1 h-px bg-border-subtle" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    setAttachmentsOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-foreground transition-colors hover:bg-border-subtle/50"
+                >
+                  <Paperclip className="h-4 w-4 shrink-0 text-tertiary" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">查看附件</span>
+                  <span className="shrink-0 rounded-full bg-border-subtle px-1.5 py-0.5 text-[10px] tabular-nums text-secondary">
+                    {attachmentCount}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex min-w-0 items-center justify-end gap-1.5">
@@ -486,7 +547,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick={handleSend}
-                    className="grid h-8 w-8 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover"
+                    className="grid h-9 w-9 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover sm:h-8 sm:w-8"
                     aria-label="排队发送（本轮结束后自动发送）"
                     title="排队发送：本轮生成结束后自动发送"
                   >
@@ -496,7 +557,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={onStop}
-                  className="grid h-8 w-8 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80"
+                  className="grid h-9 w-9 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80 sm:h-8 sm:w-8"
                   aria-label="停止生成"
                 >
                   <Square className="h-3 w-3 fill-current" aria-hidden="true" />
@@ -507,7 +568,7 @@ export function ChatInput({
                 type="button"
                 onClick={handleSend}
                 disabled={!canSend}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-border-subtle disabled:text-tertiary"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-border-subtle disabled:text-tertiary sm:h-8 sm:w-8"
                 aria-label="发送消息"
               >
                 <ArrowUp className="h-4 w-4" aria-hidden="true" />
@@ -525,7 +586,7 @@ export function ChatInput({
         </div>
       )}
       {!hideDisclaimer && (
-        <div className="mt-1.5 flex items-center justify-center gap-3 text-[11px] text-tertiary" aria-live="polite">
+        <div className="mt-1.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-2 text-center text-[11px] text-tertiary" aria-live="polite">
           <span>
             <kbd className="font-sans">⏎</kbd> 发送 · <kbd className="font-sans">⇧ ⏎</kbd> 换行
           </span>

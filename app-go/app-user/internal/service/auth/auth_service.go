@@ -223,7 +223,9 @@ func (s *AuthService) EnsureUserFromOAuth(provider, providerUID string, data *Pr
 			s.invalidateBiliCreds(uid)
 		}
 		if profile != nil {
-			if err := s.applyProfilePatch(uid, profile); err != nil {
+			// 已有账号重新登录时，第三方头像只能作为缺省值：用户自己上传的
+			// 头像/资料不能被 B 站 noface 覆盖。
+			if err := s.applyOAuthProfilePatch(uid, profile); err != nil {
 				return 0, "", err
 			}
 		}
@@ -355,7 +357,7 @@ func (s *AuthService) BindOAuthToUser(uid int64, provider, providerUID string,
 	}
 	s.invalidateBiliCreds(uid)
 	if profile != nil {
-		if err := s.applyProfilePatch(uid, profile); err != nil {
+		if err := s.applyOAuthProfilePatch(uid, profile); err != nil {
 			return err
 		}
 	}
@@ -1108,6 +1110,29 @@ func (s *AuthService) encryptTokens(data *ProviderData) (*string, *string, error
 		rt = &enc
 	}
 	return at, rt, nil
+}
+
+// applyOAuthProfilePatch merges a third-party profile into an existing account.
+// The third-party face is only a default: a user-uploaded avatar (site-relative
+// /avatar/file/...) or any non-Bilibili avatar must not be overwritten on every
+// re-login/bind. New accounts still go through applyProfilePatch directly.
+func (s *AuthService) applyOAuthProfilePatch(uid int64, p *ProfilePatch) error {
+	if p == nil {
+		return nil
+	}
+	if p.Avatar != nil {
+		info, err := s.users.GetUserInfo(s.db, uid)
+		if err != nil {
+			return err
+		}
+		if info != nil && info.Avatar != nil && *info.Avatar != "" &&
+			!strings.Contains(*info.Avatar, "hdslb.com") {
+			cp := *p
+			cp.Avatar = nil
+			p = &cp
+		}
+	}
+	return s.applyProfilePatch(uid, p)
 }
 
 func (s *AuthService) applyProfilePatch(uid int64, p *ProfilePatch) error {

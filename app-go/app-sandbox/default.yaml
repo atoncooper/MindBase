@@ -92,6 +92,7 @@ admission:
     free: 1
     vip: 2
     svip: 4
+    promax: 6
 
 # Daily quotas by membership tier. Unreachable app-pay => free (fail-open,
 # never oversell a paid tier).
@@ -103,10 +104,10 @@ quota:
     timeoutMs: 2000
     cacheTtlMs: 60000
   limits:
-    academic_run:           {free: 20,     vip: 200,   svip: 600}
-    sandbox_concurrent:     {free: 1,      vip: 3,     svip: 5}
-    sandbox_cpu_seconds:    {free: 300,    vip: 3600,  svip: 10800}
-    sandbox_artifact_bytes: {free: 52428800, vip: 524288000, svip: 2147483648}
+    academic_run:           {free: 20,     vip: 200,   svip: 600,   promax: 1200}
+    sandbox_concurrent:     {free: 1,      vip: 3,     svip: 5,     promax: 8}
+    sandbox_cpu_seconds:    {free: 300,    vip: 3600,  svip: 10800, promax: 21600}
+    sandbox_artifact_bytes: {free: 52428800, vip: 524288000, svip: 2147483648, promax: 4294967296}
 
 network:
   # OpenSandbox network_policy defaults: open by default; tighten per deployment

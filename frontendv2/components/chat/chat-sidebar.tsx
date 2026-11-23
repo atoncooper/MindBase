@@ -177,7 +177,7 @@ export function ChatSidebar({
         aria-label="历史会话"
         aria-hidden={!isOpen || undefined}
       >
-        <div className="flex h-full w-72 shrink-0 flex-col">
+        <div className="flex h-full w-[85vw] max-w-[18rem] shrink-0 flex-col pt-[env(safe-area-inset-top)] md:w-72 md:max-w-none">
           {/* New chat CTA: 直接开普通对话；右侧箭头可选择绑定一个科研项目 */}
           <div className="p-3">
             <div ref={newChatRef} className="relative">
@@ -185,13 +185,10 @@ export function ChatSidebar({
                 <button
                   type="button"
                   onClick={() => onNewChat()}
-                  className="flex flex-1 items-center gap-2 px-3.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-border-subtle/40"
+                  className="flex flex-1 items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium text-foreground transition-colors hover:bg-border-subtle/40 sm:py-2"
                 >
                   <Plus className="h-4 w-4 text-accent" aria-hidden="true" />
                   <span>开启新对话</span>
-                  <kbd className="ml-auto rounded bg-border-subtle px-1.5 py-0.5 font-sans text-[10px] text-tertiary">
-                    ⌘N
-                  </kbd>
                 </button>
                 {researchProjects.length > 0 && (
                   <button
@@ -271,7 +268,7 @@ export function ChatSidebar({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="搜索会话"
                 className={cn(
-                  "w-full rounded-lg border border-border-subtle bg-surface py-2 pl-9 pr-8 text-[13px] text-foreground placeholder:text-tertiary",
+                  "w-full rounded-lg border border-border-subtle bg-surface py-2.5 pl-9 pr-8 text-[16px] text-foreground placeholder:text-tertiary sm:py-2 sm:text-[13px]",
                   "transition-colors focus:border-border focus:outline-none focus:ring-1 focus:ring-border",
                   searchQuery && "border-border"
                 )}
@@ -320,7 +317,7 @@ export function ChatSidebar({
                         <div
                           key={session.id}
                           className={cn(
-                            "group relative flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 transition-colors",
+                            "group relative flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2.5 transition-colors sm:py-2",
                             isActive ? "bg-accent-soft" : "hover:bg-border-subtle/60"
                           )}
                           onClick={() => !isEditing && onSessionSelect(session.id)}
@@ -342,7 +339,7 @@ export function ChatSidebar({
                               onBlur={() => handleSaveEdit(session.id)}
                               onKeyDown={(e) => e.key === "Enter" && handleSaveEdit(session.id)}
                               autoFocus
-                              className="w-full rounded-md border border-accent bg-surface px-1.5 py-0.5 text-[13px] text-foreground focus:outline-none"
+                              className="w-full rounded-md border border-accent bg-surface px-1.5 py-1 text-[16px] text-foreground focus:outline-none sm:py-0.5 sm:text-[13px]"
                               onClick={(e) => e.stopPropagation()}
                               aria-label={`重命名会话：${session.title}`}
                             />

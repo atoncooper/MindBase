@@ -48,7 +48,7 @@
 | media_cache | `/mindbase/api/v1/media/`、旧 `/minio-proxy/` | 5m | 仅预签名 GET/HEAD；key 含 `$args` + `$http_range`；PUT/POST/无签名 bypass |
 | hls_cache | `/hls/` | 24h | `hls_token` + `hls_ctx` 双 cookie：token 经 Redis 校验并绑定版本化 URI 前缀，ctx 校验会话绑定；key 为 MinIO 对象路径；播放列表/分片均由 app-cloud 之外代理；删文件即吊销 token，缓存条目在无有效 token 时不可达 |
 | pages_cache | 公开 SSR 页（`/`、`/forgot-password`、`/reset-password`、`/notes/shared/`、`/quiz/shared/`、`/cloud/s/`） | 10m | 仅匿名；带 Authorization / RSC 请求 bypass；`proxy_ignore_headers Cache-Control Set-Cookie` 只作用于这些白名单页面 |
-| api_cache | 少数公开只读 API（health/docs/openapi、pay/products 等原有短 TTL 位置） | 5s–1h | 其余业务 API 不缓存 |
+| api_cache | 少数公开只读 API（health、pay/products、favorites 等短 TTL 位置） | 5s–1h | 其余业务 API 不缓存 |
 
 - 所有 key 带版本前缀：`$cache_ver_api|pages|video|static`（shared dict `cache_versions`）。
 - `POST /_purge?zone=api|pages|video|static|all` + 头 `X-Purge-Token: $PURGE_TOKEN`：bump 版本 → 旧条目整体失效并在 `inactive/max_size` 后淘汰；版本写入 `/var/cache/openresty/versions.json`，重启不复活。

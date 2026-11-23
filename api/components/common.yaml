@@ -1,0 +1,54 @@
+# 公共 securitySchemes / schemas / responses（被 paths/*.yaml 与 openapi.yaml 引用）。
+securitySchemes:
+  bearerAuth:
+    type: http
+    scheme: bearer
+    bearerFormat: opaque session token
+  apiKeyAuth:
+    type: apiKey
+    in: header
+    name: apikey
+    description: APISIX consumer key（内部 M2M）
+schemas:
+  Error:
+    type: object
+    required:
+    - detail
+    properties:
+      detail:
+        type: string
+    additionalProperties: true
+  JsonObject:
+    type: object
+    additionalProperties: true
+responses:
+  BadRequest:
+    description: 参数错误
+    content:
+      application/json:
+        schema:
+          $ref: '#/schemas/Error'
+  Unauthorized:
+    description: 未认证或凭证无效
+    content:
+      application/json:
+        schema:
+          $ref: '#/schemas/Error'
+  NotFound:
+    description: 资源不存在
+    content:
+      application/json:
+        schema:
+          $ref: '#/schemas/Error'
+  Conflict:
+    description: 冲突/并发校验失败
+    content:
+      application/json:
+        schema:
+          $ref: '#/schemas/Error'
+  TooManyRequests:
+    description: 触发限流
+    content:
+      application/json:
+        schema:
+          $ref: '#/schemas/Error'

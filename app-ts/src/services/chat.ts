@@ -16,7 +16,7 @@ import {
 import { resolveTier } from "../utils/membership.js";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
-import type { QuotaGate, QuotaService } from "./quota.js";
+import { estimateTokens, isExternalModel, priceFor, type QuotaGate, type QuotaService } from "./quota.js";
 import { costMicroYuan, type UsageLedgerRepository } from "../repository/usage-ledger.js";
 import { today } from "../utils/datetime.js";
 import { historyLimitFor, noteTurnLevel } from "../utils/degrade.js";
@@ -95,27 +95,46 @@ function scopeIsEmpty(scope: SearchScope | undefined): boolean {
   return !scope || (!scope.bvids?.length && !scope.uploadUuids?.length && !scope.mediaIds?.length);
 }
 
+/** Compact token display: 1234 -> 1234, 12345678 -> 1235 万. */
+function formatQuotaTokens(tokens: number): string {
+  if (tokens >= 10_000) {
+    const wan = tokens / 10_000;
+    return (wan >= 100 ? Math.round(wan) : Math.round(wan * 10) / 10) + " 万";
+  }
+  return String(Math.max(0, Math.round(tokens)));
+}
+
+function quotaWindowLabel(window: QuotaGate["window"]): string {
+  if (window === "five_hour") return "5 小时滚动";
+  if (window === "month") return "本月";
+  return "今日";
+}
+
 /**
- * QUOTA_EXCEEDED / COST_GUARD SSE error frame: the frontend
- * renders an upgrade card off `code` + `detail` (resetAt / upgradeSku).
+ * QUOTA_EXCEEDED / COST_GUARD SSE error frame: the frontend renders an upgrade
+ * card off code + detail (window / used / limit / resetAt / upgradeSku).
+ * All AI quotas are measured in normalized tokens, not message counts.
  */
 function quotaErrorFrame(gate: QuotaGate): SseFrame {
   const costGuard = gate.verdict === "cost_guard";
+  const windowLabel = quotaWindowLabel(gate.window);
   return {
     type: "error",
     code: costGuard ? "COST_GUARD" : "QUOTA_EXCEEDED",
     message: costGuard
       ? "今日 AI 使用成本已达上限，明日 0 点自动恢复"
       : gate.tier === "free" && gate.kind === "chat_anon"
-        ? "今日未登录体验额度已用完，登录解锁每日更多额度"
-        : `今日额度已用完（${gate.used}/${gate.limit}），明日 0 点重置`,
+        ? "未登录体验 token 额度已用完，登录解锁更多额度"
+        : windowLabel + " token 额度已用完（" + formatQuotaTokens(gate.used) + " / " + formatQuotaTokens(gate.limit) + "），窗口重置后恢复",
     detail: {
       kind: gate.kind,
+      window: gate.window,
+      unit: "token",
       used: gate.used,
       limit: gate.limit,
       resetAt: gate.resetAt,
       tier: gate.tier,
-      upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+      upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : gate.tier === "vip" ? "SVIP_MONTHLY" : "PROMAX_MONTHLY",
     },
   };
 }
@@ -184,9 +203,9 @@ export class ChatService {
     // 降级阶梯登记：工具层（检索条数）与主循环（输出预算）按 uid 读取本轮级别
     if (req.uid) noteTurnLevel(req.uid, gate?.level ?? "L0");
     if (gate && req.images?.length) {
-      // attachments meter BEFORE storage: over budget → reject before any write
+      // attachments check BEFORE storage: over budget → reject before any write
       const imagesOk = await this.quota!
-        .consumeImages(req.uid, req.clientKey, req.images.length)
+        .canConsume(req.uid, req.clientKey, "chat_images", req.images.length)
         .catch((err: unknown) => {
           log.warn(`[CHAT] image quota check failed (fail-open): ${err instanceof Error ? err.message : err}`);
           return true;
@@ -196,8 +215,15 @@ export class ChatService {
         yield {
           type: "error",
           code: "QUOTA_EXCEEDED",
-          message: "今日图片附件额度已用完，明日 0 点重置",
-          detail: { kind: "chat_images", resetAt: gate.resetAt, tier: gate.tier, upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY" },
+          message: "AI token 额度不足以处理这些图片，窗口重置后恢复",
+          detail: {
+            kind: "chat_images",
+            window: gate.window,
+            unit: "token",
+            resetAt: gate.resetAt,
+            tier: gate.tier,
+            upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : gate.tier === "vip" ? "SVIP_MONTHLY" : "PROMAX_MONTHLY",
+          },
         };
         yield { type: "done" };
         return;
@@ -277,6 +303,9 @@ export class ChatService {
     // sends at most one of the two). Undefined until resolved below; falls back
     // to config.llm.model.
     let turnModelId: string | undefined;
+    // Coding Plan turns are paid by the user's third-party plan: they still
+    // record usage, but consume no platform token quota.
+    let externalBilling = false;
     let deadlineHit = false;
     const turnTimer = setTimeout(() => {
       deadlineHit = true;
@@ -307,7 +336,10 @@ export class ChatService {
             // stable per-conversation id for OpenCode's x-opencode-session
             sessionId: session.id,
           });
-          if (resolvedModel) turnModelId = req.model;
+          if (resolvedModel) {
+            turnModelId = req.model;
+            externalBilling = true;
+          }
         } catch (err) {
           log.warn("[CHAT] resolve selected model failed, fallback gateway: " + (err instanceof Error ? err.message : String(err)));
         }
@@ -376,20 +408,40 @@ export class ChatService {
       // Price fallback: an unpriced model is billed at the default model's price
       // (never undefined → cost stays 0 only when the default is unpriced too).
       const billedModel = turnModelId ?? config.llm.model;
-      const priceModel = config.quota.prices[billedModel] ? billedModel : config.llm.model;
-      const prices = config.quota.prices[priceModel];
-      if (usage && (usage.totalTokens || usage.outputTokens)) {
+      // External = user's Coding Plan (resolver hit) or an explicitly listed
+      // external model: usage is recorded, but platform cost/quota are zero.
+      const external = externalBilling || isExternalModel(billedModel);
+      const prices = external ? undefined : priceFor(billedModel);
+      // Providers occasionally omit usage; estimate from the visible prompt +
+      // answer so the token window still moves (never silently free).
+      let billableUsage = usage;
+      if (!billableUsage || (!billableUsage.inputTokens && !billableUsage.outputTokens && !billableUsage.totalTokens)) {
+        const promptText = [req.query, ...history.map((m) => m.content)].join("\n");
+        billableUsage = {
+          // Image tokens are normally included in provider usage; add a raw
+          // per-image estimate only for the missing-usage fallback.
+          inputTokens: estimateTokens(promptText) + (req.images?.length ?? 0) * 1500,
+          outputTokens: estimateTokens(fullContent),
+        };
         log.info(
-          `[CHAT] turn usage session=${sessionId} model=${billedModel} in=${usage.inputTokens ?? "?"} out=${usage.outputTokens ?? "?"} total=${usage.totalTokens ?? "?"}`,
+          "[CHAT] usage missing, estimated session=" + sessionId +
+            " in=" + billableUsage.inputTokens + " out=" + billableUsage.outputTokens,
         );
       }
-      // consume-on-success — turn count + day cost + ledger row.
+      if (billableUsage.totalTokens || billableUsage.outputTokens || billableUsage.inputTokens) {
+        log.info(
+          "[CHAT] turn usage session=" + sessionId + " model=" + billedModel +
+            " in=" + (billableUsage.inputTokens ?? "?") +
+            " out=" + (billableUsage.outputTokens ?? "?") +
+            " total=" + (billableUsage.totalTokens ?? "?"),
+        );
+      }
+      // consume-on-success — normalized token windows + day cost + ledger row.
       // Failed/retried turns never consume (they short-circuit above via hadError).
-      if (this.quota && !hadError) {
-        // completeChatTurn only prices the turn (it does not persist the model id),
-        // so hand it the priced id while the ledger below records the real one.
-        await this.quota.completeChatTurn(req.uid, req.clientKey, usage, priceModel).catch((err: unknown) => {
-          log.warn(`[CHAT] quota consume failed (ignored): ${err instanceof Error ? err.message : err}`);
+      // Coding Plan turns are external: count their turns in the resolver, not tokens here.
+      if (this.quota && !hadError && !external) {
+        await this.quota.completeChatTurn(req.uid, req.clientKey, billableUsage, billedModel).catch((err: unknown) => {
+          log.warn("[CHAT] quota consume failed (ignored): " + (err instanceof Error ? err.message : err));
         });
       }
       if (this.ledger && !hadError) {
@@ -399,11 +451,11 @@ export class ChatService {
             uid: req.uid ?? "0",
             purpose: "chat",
             model: billedModel,
-            inputTokens: usage?.inputTokens ?? 0,
-            outputTokens: usage?.outputTokens ?? 0,
-            costMicroYuan: costMicroYuan(usage?.inputTokens ?? 0, usage?.outputTokens ?? 0, prices),
+            inputTokens: billableUsage.inputTokens ?? 0,
+            outputTokens: billableUsage.outputTokens ?? 0,
+            costMicroYuan: costMicroYuan(billableUsage.inputTokens ?? 0, billableUsage.outputTokens ?? 0, prices),
           })
-          .catch((err: unknown) => log.warn(`[CHAT] usage ledger write failed: ${err instanceof Error ? err.message : err}`));
+          .catch((err: unknown) => log.warn("[CHAT] usage ledger write failed: " + (err instanceof Error ? err.message : err)));
       }
       await this.sessions.touch(session.id);
       if (!hadError) {

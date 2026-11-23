@@ -43,6 +43,12 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
+            # Dedicated app_task DB: password from the Secret, DSN built with $(VAR).
+            - name: APPTASK_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_PASSWORD }
+            - name: APPTASK__RDBMS__URL
+              value: "mysql+aiomysql://app_task:$(APPTASK_MYSQL_PASSWORD)@app-task-mysql:3306/app_task"
             # 独立库 URL 来自 mindbase-defaults（.env 的 APPTASK__RDBMS__URL 可覆盖）
             # Main app via APISIX gateway
             - name: APPTASK__APP__BASE_URL

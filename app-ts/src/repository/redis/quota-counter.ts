@@ -62,6 +62,15 @@ export class RedisQuotaCounter implements QuotaCounterStore {
     return v === null ? null : Number(v) || 0;
   }
 
+  async sum(keys: string[]): Promise<number | null> {
+    if (keys.length === 0) return 0;
+    const values = await withTimeout(this.redis.mget(...keys), "mget");
+    if (values === null) return null;
+    let total = 0;
+    for (const value of values) total += Number(value) || 0;
+    return total;
+  }
+
   async consume(key: string, limit: number, ttlSeconds: number): Promise<ConsumeResult | null> {
     if (limit < 0) return { allowed: true, count: 0 };
     const res = await withTimeout(
@@ -80,6 +89,23 @@ export class RedisQuotaCounter implements QuotaCounterStore {
       await withTimeout(this.redis.expire(key, ttlSeconds), "expire");
     }
     return res;
+  }
+
+  async addMany(entries: Array<{ key: string; delta: number; ttlSeconds: number }>): Promise<boolean | null> {
+    if (entries.length === 0) return true;
+    const multi = this.redis.multi();
+    for (const entry of entries) {
+      multi.incrby(entry.key, entry.delta);
+      multi.expire(entry.key, Math.max(1, Math.ceil(entry.ttlSeconds)));
+    }
+    const result = await withTimeout(multi.exec(), "addMany");
+    if (result === null) return null;
+    const failed = result.find(([err]) => err !== null);
+    if (failed) {
+      log.warn("[QUOTA_REDIS] addMany command failed (fail-open): " + (failed[0]?.message ?? "unknown"));
+      return null;
+    }
+    return true;
   }
 
   async close(): Promise<void> {

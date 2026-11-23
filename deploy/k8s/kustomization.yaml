@@ -29,56 +29,33 @@ namespace: mind-base
 # 所有工作负载 envFrom 顺序 = [mindbase-defaults, mindbase-env]——同名键以 .env
 # （mindbase-env Secret）为准，等价 compose 的 .env 覆盖语义；kustomize hash 变更自动滚动。
 configMapGenerator:
+  # mindbase-defaults：compose ${VAR:-default} 的**非密钥**兜底值。
+  # 所有工作负载 envFrom 顺序 = [mindbase-defaults, mindbase-env]——同名键以 .env
+  # （mindbase-env Secret）为准，等价 compose 的 .env 覆盖语义。
+  # ⚠️ 安全边界：密码/API key/含凭据 DSN 一律不进本 ConfigMap（历史问题已修），
+  # 只放用户名、库名、前缀、endpoint、可信代理网段等非敏感默认值；
+  # RDBMS__URL / MONGO__URI / REDIS__URL / 各 `*_PASSWORD` 由 mindbase-env Secret 提供。
   - name: mindbase-defaults
     literals:
       - MYSQL_USER=mind_base
-      - MYSQL_PASSWORD=mind-base
-      - MYSQL_ROOT_PASSWORD=root123
       - MONGO_USER=admin
-      - MONGO_PASSWORD=mind-base
-      - MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
-      - CONTENT__DATABASE__MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
       - CONTENT__DATABASE__MONGO__DATABASE=mind_base
       - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
-      - REDIS_PASSWORD=mind-base
-      - REDIS__URL=redis://:mind-base@redis:6379/1
-      - CONTENT__DATABASE__REDIS__URL=redis://:mind-base@redis:6379/1
       - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
-      - NEO4J_PASSWORD=mind-base
-      - KG__PASSWORD=mind-base
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
       - MINIO__ENDPOINT=http://minio:9000
-      - MINIO__ACCESS_KEY=minioadmin
-      - MINIO__SECRET_KEY=minioadmin
       - MINIO__BUCKET=drive-videos
-      - RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPAUTH__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPCLOUD__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPKG__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPSETTINGS__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPBILI__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - CONTENT__DATABASE__MYSQL__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPADMIN__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       # Pod CIDR of the cluster (UI Nginx -> API): trusted for X-Forwarded-*.
       - APPADMIN__SECURITY__TRUSTED_PROXIES=10.0.0.0/8
-      - APPTASK__RDBMS__URL=mysql+aiomysql://app_task:app-task@app-task-mysql:3306/app_task
-      - APPADMIN__PAY_RDBMS__URL=mysql+aiomysql://app_pay:app-pay@app-pay-mysql:3306/app_pay
-      - APPTASK_MYSQL_ROOT_PASSWORD=root123
       - APPTASK_MYSQL_USER=app_task
-      - APPTASK_MYSQL_PASSWORD=app-task
-      - PAY_MYSQL_ROOT_PASSWORD=root123
       - PAY_MYSQL_USER=app_pay
-      - PAY_MYSQL_PASSWORD=app-pay
       - AI_GATEWAY__BASE_URL=http://higress:8080/v1
 
-# NOTE: mysql-init-sql / apisix-config / nginx-conf ConfigMaps are NOT
-# generated here — their source files live at the repo root (db/, apisix/,
-# nginx/), which kustomize's load restrictor forbids referencing (and
-# kubectl ≥1.36 rejects loadRestrictions: LoadRestrictionsNone). Create them
-# once with kubectl, exactly like the secrets — see README.md §1.
+# NOTE: mysql-init-sql / apisix-config / nginx-conf / mysql-conf / mongo-conf /
+# redis-conf / etcd-conf ConfigMaps are NOT generated here — their source files
+# live outside this directory (db/, apisix/, nginx/, deploy/config/), which
+# kustomize's load restrictor forbids referencing. Create them once with kubectl
+# from those files (deploy/config ones are documented in deploy/config/README.md)
+# — see README.md §1.
 
 resources:
   - 00-namespace.yaml

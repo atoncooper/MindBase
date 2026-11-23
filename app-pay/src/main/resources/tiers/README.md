@@ -1,6 +1,6 @@
 # tiers/
 
-会员档位介绍 Markdown（FREE.md / VIP.md / SVIP.md）。
+会员档位介绍 Markdown（FREE.md / VIP.md / SVIP.md / PROMAX.md）。
 
 - 由 app-pay 启动时从 classpath 加载（TierCatalogService），经 `GET /pay/tiers` 下发。
 - 修改文案后需重新构建 app-pay 镜像并重启生效。

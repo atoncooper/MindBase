@@ -25,7 +25,13 @@
 | `skills/` | 内置技能包样例 |
 | `api/` | 历史 OpenAPI 规格存档（Python 时代产物，已不代表当前服务；见 [api.md](api.md)） |
 | `docs/` | 文档（索引 [docs/README.md](README.md)） |
-| `docker-compose.yml` | 主 compose（默认 profile = 全栈）；另有 `docker-compose.client.yml` / `docker-compose.daytona.yml` |
+| `docker-compose.yml` | 生产编排入口（仅 `include` + 共享 volumes/network；**需要 Docker Compose ≥ 2.20**） |
+| `compose/data.yml` | 数据组件：mysql（主/任务/支付/测试）、redis、mongo、milvus、neo4j、etcd、minio |
+| `compose/apps.yml` | 业务服务：frontend(+frontend-tls)、app-ts、app-user、app-cloud、app-content、app-content-mcp、app-kg、app-sandbox(+sandbox-tls)、app-task、app-pay、app-pay-test、app-admin-api、app-admin |
+| `compose/gateway.yml` | 入口与 AI 网关：openresty、apisix、higress(+higress-tls) |
+| `compose/certs.yml` | 证书与信任初始化：cert-gen、cert-truststore |
+| `compose/sandbox.yml` | 沙箱运行时：opensandbox-server |
+| `compose/tools.yml` | 调试工具（profiles: tools）：redis-commander、mongo-express |
 
 ---
 

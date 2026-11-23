@@ -53,7 +53,7 @@ app-ts (Fastify, AI)                                app-kg (Go, gRPC :8013)
   `protoc --go_out=app-go/app-kg --go_opt=module=app-kg … proto/kg/v1/kg.proto`
   重新生成。
 - compose `app-kg`（profiles ["", "kg", "full"]，depends_on mysql+neo4j healthy）；
-  env：`APPKG__RDBMS__URL` + 共享 `KG__URI`/`KG__PASSWORD`(NEO4J_PASSWORD)。
+  env：`APPKG__RDBMS__URL` + `KG__PASSWORD`(NEO4J_PASSWORD)；`KG__URI` 是 compose 字面量（非密钥）。
 
 ## 三、云盘文档 → 知识点（2026-11-05 新增）
 

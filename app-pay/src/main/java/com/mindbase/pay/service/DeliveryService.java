@@ -119,6 +119,10 @@ public class DeliveryService {
         if (order.getTier() != null && !order.getTier().isBlank()) {
             return order.getTier();
         }
-        return order.getSkuCode() != null && order.getSkuCode().startsWith("SVIP") ? "SVIP" : "VIP";
+        String code = order.getSkuCode();
+        if (code == null) return "VIP";
+        if (code.startsWith("PROMAX")) return "PROMAX";
+        if (code.startsWith("SVIP")) return "SVIP";
+        return "VIP";
     }
 }

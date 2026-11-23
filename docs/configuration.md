@@ -10,6 +10,59 @@
    **app-ts 例外**：本地运行时由 `src/bootstrap/env.ts` 默认加载 **`app-ts/.env`**（不是项目根 `.env`；容器仍由 compose `env_file` 注入根 `.env`）。`APP_TS_ENV_FILE` 可指定其他路径，`APP_TS_ENV_DISABLED=1` 关闭；文件不覆盖已有真实环境变量，测试环境不自动加载。
 4. **共享 env**：一个 `.env` 驱动全部服务——各服务按需读取同名共享变量（`RDBMS__URL`/`MONGO__URI`/`REDIS__URL`/`MINIO__*`/`AI_GATEWAY__*`/`NEO4J_PASSWORD`），避免同一密钥抄多份。**例外——主加密密钥不进 .env**：独立密钥文件 `secrets/api_key_encryption_key`（gitignored，一行 base64），服务经 `SECURITY__API_KEY_ENCRYPTION_KEY_FILE` 约定读取（FILE > env，直读 env 仅应急回退；compose 挂载到 `/run/secrets/`）。
 
+## 2026-11-22：`.env` 收敛为"仅密钥"
+
+`.env.example` 已重写为**纯密钥清单**；`docker-compose.yml` 中
+原本用 `${VAR:-default}` 从 `.env` 取值的**非密钥项**已全部落成配置文件里的字面量：
+
+| 类别 | 现在写在哪 | 例子（原 env 名） |
+|------|-----------|------------------|
+| 宿主端口 | compose `ports:` 字面量（旧 env 名不再读取） | `APP_TS_PORT` / `MYSQL_PORT` / `*_UI_PORT` / `OPEN_SANDBOX_PORT` |
+| 资源上限 | compose `cpus/mem_limit` 字面量 | `APPSANDBOX_CPUS` / `OPEN_SANDBOX_MEMORY` / `APP_TS_MEM_LIMIT` |
+| 镜像/构建选择 | compose `image:` / `dockerfile:` 字面量 | `OPEN_SANDBOX_IMAGE` / `OPEN_SANDBOX_SANDBOX_IMAGE` / `APP_PAY_DOCKERFILE` |
+| 服务行为（开关/阈值/endpoint/路径） | compose `environment:` 字面量（服务仍按 env 读取；需要长期默认值时再进该服务 YAML） | `EMAIL__ENABLED` / `WECHAT__ENABLED` / `SANDBOX_ENABLED` / `CLOUD_ORPHAN_*` / `CLOUD_SWEEP_*` / `KG__URI` / `MINIO__ENDPOINT` / `APPADMIN__*` |
+| 部署域名/分享域名 | compose 字面量（前端 build args 也在此） | `SHARE_DOMAIN` / `SHARE_PUBLIC_IP` / `NEXT_PUBLIC_API_URL` |
+| DB/中间件用户名（非密钥，与密码同组管理） | compose 字面量 | `MYSQL_USER` / `APPTASK_MYSQL_USER` / `PAY_MYSQL_USER` / `MONGO_USER` |
+| 服务直接读取 env 的开关（代码内 `os.Getenv`，无 YAML 键） | compose 字面量 | `MYSQL_TLS_MODE` / `LANGCHAIN_TRACING_V2` / `LANGSMITH_*`（非密钥部分） / `ALIPAY_ENABLED` / `ALIPAY_GATEWAY_URL` / `ALIPAY_NOTIFY_URL` / `EMAIL__FROM_EMAIL` |
+
+**仍然必须留在 `.env` 的**：密码、API key、token、加密密钥、带凭据的 DSN
+（`RDBMS__URL` / `MONGO__URI` / `REDIS__URL` / `MILVUS__URI` / `PAY_ADMIN_RDBMS_URL`）、
+APISIX consumer/admin key、支付/短信/微信/支付宝密钥、沙箱与 MCP 令牌等，见
+[`.env.example`](../.env.example)。
+
+升级已有部署：
+
+1. 从 `.env` 删除非密钥行（端口、开关、域名、镜像 tag、资源上限、用户名等）——
+   这些值现在由配置文件兜底，删除后 `docker compose config` 结果不变；
+2. 需要与默认值不同的部署，直接改对应 compose / 服务 YAML（提交进 git），
+   不要在 `.env` 里重新加变量；
+3. `deploy/{docker,china,swarm,k8s}` 同样只需在 `.env` 提供密钥；栈内的端口/路径/
+   资源等覆盖项都写在各自 yml 的默认值里。
+
+> 例：`APP_PAY_DOCKERFILE=Dockerfile.local`（宿主已 `mvn package` 的快速路径）不再是
+> `.env` 项 —— 需要时在 `docker-compose.yml` 的 `app-pay.build.dockerfile` 里改。
+
+## 组件配置目录：`deploy/config/`
+
+第三方基础设施组件（etcd / Redis / MySQL / MongoDB / Milvus）的**非密钥**配置放在
+[`deploy/config/`](../deploy/config/README.md)，由 compose 栈只读挂载、由 K8s 用同一份
+文件生成 ConfigMap（`mysql-conf` / `mongo-conf` / `redis-conf` / `etcd-conf`）：
+
+| 组件 | 文件 | 挂载点 |
+|------|------|--------|
+| etcd | `deploy/config/etcd/etcd*.conf.yml` | `/etc/etcd/etcd.conf.yml`（`--config-file`） |
+| Redis | `deploy/config/redis/redis*.conf` | `/usr/local/etc/redis/redis.conf` |
+| MySQL | `deploy/config/mysql/conf.d/00-base.cnf` + `10-tls.cnf` + `95-binlog.cnf` + `entrypoint-autosize.sh` | `/etc/mysql/conf.d/*.cnf`（容量由 entrypoint 生成 99-auto-sizing.cnf） |
+| MongoDB | `deploy/config/mongodb/mongod.tmpl.conf` + `entrypoint-autosize.sh` | `/tmp/mongod.conf`（渲染） |
+| Milvus | `deploy/config/milvus/milvus.yaml` | `/milvus/configs/milvus.yaml` |
+
+- 文件里**不出现密码/密钥**：口令仍走 `.env`（compose env / K8s Secret）
+  或命令行参数（如 `redis-server ... --requirepass $REDIS_PASSWORD`）；
+- 每栈差异用带后缀的变体（`.client` / `.plain` / `.k8s`）：根 compose 用 TLS 版，
+  client/Lite 用轻量版，拆分/swarm/china 用 plain 版，K8s 用 plain/k8s 版；
+- Neo4j / MinIO 保留 env 或镜像默认机制（官方镜像 entrypoint 会写 `neo4j.conf`；
+  MinIO 无配置文件），详见 `deploy/config/README.md` 的"例外"。
+
 ## endpoint / 连接组件与密钥边界
 
 - **endpoint、服务名、端口、模型名、开关、超时、并发** → 写各服务 YAML（app-ts `config/default.yaml`、app-user/app-cloud 等 `default.yaml`）；
@@ -205,7 +258,39 @@ sms:
 - SMS 配置齐全时，绑定手机必须走 `POST /auth/phone/verify`（验证码）；`PUT /auth/phone`（未验证直接绑定）会被服务端 403 拒绝，避免绕过验证。
 - 解绑手机号（`DELETE /auth/phone`）也必须验证：要么带 `code`（先 `POST /auth/phone/send-code`，`purpose=unbind`，验证码只发到当前已绑定手机），要么带 `current_password`（已设密码的账号）；两者都没有返回 403。
 
-- Coding Plan（VIP/SVIP 第三方编程套餐）：app-user 的 `app_pay.base_url`（默认 `http://apisix:9080`）与 `app_pay.key`（默认回落 `APISIX_CONSUMER_KEY`）用于会员档位校验；app-ts `quota.limits.coding_plan` 控制每日可用次数。详见 [coding-plan.md](coding-plan.md)。
+- Coding Plan（VIP/SVIP 第三方编程套餐）：app-user 的 `app_pay.base_url`（默认 `http://apisix:9080`）与 `app_pay.key`（默认回落 `APISIX_CONSUMER_KEY`）用于会员档位校验；app-ts `quota.limits.coding_plan` 控制每日轮次上限（自带套餐不占平台 token 额度；AI 用量额度见下节）。详见 [coding-plan.md](coding-plan.md)。
+
+### AI 用量额度（app-ts `quota`）
+
+2026-11-22 起，AI 额度从「每日次数」改为 **标准 token + 三层窗口**（滚动 5 小时 / 自然日 / 自然月），所有 AI 能力共享一个池；聊天按真实 usage，出题/批改/KG/向量化/OCR/Board/科研按一次操作的估算 token 扣。普通配置在 `app-ts/config/default.yaml` 的 `quota:` 段，密钥仍只在 `.env`：
+
+```yaml
+quota:
+  enabled: true
+  referencePricePerMTok: 10   # 标准 token 参考价（元/百万）
+  planBonus: 10               # 订阅价值倍率：¥48 → ¥480 等值
+  fiveHourMinutes: 300
+  bucketMinutes: 5
+  plans:
+    free: { priceYuan: 0,  monthlyTokens: 300000,   dailyTokens: 30000,   fiveHourTokens: 6000 }
+    vip:  { priceYuan: 18, monthlyTokens: 18000000, dailyTokens: 600000,  fiveHourTokens: 120000 }
+    svip: { priceYuan: 48, monthlyTokens: 48000000, dailyTokens: 1600000, fiveHourTokens: 320000 }
+  prices:
+    "z-ai/glm-5.3-flash": { input: 0.188, output: 6.48 }
+  modelWeights: {}            # 可选：覆盖额度权重（只影响额度，不影响成本账本）
+  kindTokenCost:              # 非聊天操作一次扣多少标准 token
+    generate: 8000
+    grade: 3000
+  limits:                     # 仅两类非用量按次口径
+    coding_plan: { free: 0, vip: 100, svip: 300 }
+    task_quiz_active: { free: 2, vip: 10, svip: 30 }
+```
+
+- **模型抵扣**：默认权重 = 模型单价 / `referencePricePerMTok`；贵模型扣得更快，便宜模型更耐跑。`prices` 必须按网关实际结算价校准。
+- **10× 权益**：`planBonus=10` 时 ¥48 VIP = ¥480 等值 = 4800 万标准 token；SVIP ¥148 = ¥1,480、ProMax ¥248 = ¥2,480。这里的数字是人民币等值，不是 token 万数。
+- **只保留两个按次例外**：Coding Plan（用户自带第三方套餐，不占平台 token）与 `task_quiz_active`（活跃定时任务存量）。
+- **失败方向**：Redis 不可用 fail-open 放行；app-pay 不可用 fail-closed 回落 free；失败/重试轮次不扣。
+- 完整设计、API 契约、键空间、调参顺序与迁移见 [ai-quota.md](ai-quota.md)。
 
 ## 共享基础设施连接
 

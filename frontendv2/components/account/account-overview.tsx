@@ -45,6 +45,7 @@ import {
 import {
     formatCountdown,
     formatDate,
+    formatTokens,
     formatYuanMicro,
     membershipTier,
     quotaPercent,
@@ -367,7 +368,7 @@ function MembershipCard({
     onNavigate: (key: SectionKey) => void;
 }) {
     const tier = membershipTier(membership);
-    const paid = tier === "VIP" || tier === "SVIP";
+    const paid = tier === "VIP" || tier === "SVIP" || tier === "PROMAX";
     const info = tiers.find((t) => t.tier.toUpperCase() === tier);
     const expire =
         membership?.active && membership.expireAt
@@ -444,12 +445,10 @@ function QuotaCard({
     quota: QuotaSummary | null;
     onNavigate: (key: SectionKey) => void;
 }) {
-    const chat =
-        quota?.kinds.find((k) => k.kind === "chat") ??
-        quota?.kinds.find((k) => k.kind === "chat_anon");
-    const percent = chat ? quotaPercent(chat) : 0;
-    const unlimited = chat ? chat.limit < 0 : false;
-    const remaining = chat?.remainingPercent ?? Math.max(0, 100 - percent);
+    const day = quota?.windows?.find((w) => w.window === "day");
+    const percent = day?.usedPercent ?? 0;
+    const unlimited = day ? day.limit < 0 : false;
+    const remaining = day?.remainingPercent ?? Math.max(0, 100 - percent);
     const tone = percent >= 100 ? "danger" : percent >= 80 ? "warning" : "info";
 
     return (
@@ -492,20 +491,20 @@ function QuotaCard({
                                 >
                                     {percent}%
                                 </span>
-                                <span className="text-[12px] text-secondary">AI 问答</span>
+                                <span className="text-[12px] text-secondary">AI token</span>
                             </div>
                             <span className="pb-0.5 text-[11px] tabular-nums text-tertiary">
-                                {chat
+                                {day
                                     ? unlimited
                                         ? "不限量"
-                                        : `${chat.used}/${chat.limit}`
+                                        : formatTokens(day.used) + "/" + formatTokens(day.limit)
                                     : "—"}
                             </span>
                         </div>
                         <ProgressBar value={percent} tone={tone} className="mt-2.5" />
                         <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-secondary">
                             <span>{unlimited ? "不限量" : `剩余 ${remaining}%`}</span>
-                            <span>{formatCountdown(quota.cost.resetAt)}</span>
+                            <span>{formatCountdown(day?.resetAt ?? quota.cost.resetAt)}</span>
                         </div>
                         <div className="mt-4 flex items-center justify-between border-t border-border-subtle pt-3">
                             <span className="text-[12px] text-secondary">今日成本</span>

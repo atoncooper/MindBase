@@ -22,9 +22,10 @@ import (
 type Tier string
 
 const (
-	TierFree Tier = "free"
-	TierVIP  Tier = "vip"
-	TierSVIP Tier = "svip"
+	TierFree   Tier = "free"
+	TierVIP    Tier = "vip"
+	TierSVIP   Tier = "svip"
+	TierPROMAX Tier = "promax"
 )
 
 type tierCacheEntry struct {
@@ -91,6 +92,8 @@ func (s *QuotaService) ResetAt(now time.Time) time.Time {
 func (s *QuotaService) Limit(kind string, tier Tier) int64 {
 	row := s.cfg.QuotaLimit(kind)
 	switch tier {
+	case TierPROMAX:
+		return row.PROMAX
 	case TierSVIP:
 		return row.SVIP
 	case TierVIP:
@@ -182,6 +185,8 @@ func (s *QuotaService) fetchTier(ctx context.Context, uid int64) (Tier, error) {
 		raw = *view.Tier
 	}
 	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "PROMAX":
+		return TierPROMAX, nil
 	case "SVIP":
 		return TierSVIP, nil
 	case "VIP":

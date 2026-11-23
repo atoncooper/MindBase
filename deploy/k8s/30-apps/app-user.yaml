@@ -57,6 +57,18 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
+            # mindbase-env provides MYSQL_PASSWORD; the per-service DSN names are
+            # derived from it with $(VAR) expansion (envFrom values are invisible
+            # to $(VAR), so the password is declared explicitly first).
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MYSQL_PASSWORD }
+            - name: APPAUTH__RDBMS__URL
+              value: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql:3306/mind_base"
+            - name: APPBILI__RDBMS__URL
+              value: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql:3306/mind_base"
+            - name: APPSETTINGS__RDBMS__URL
+              value: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql:3306/mind_base"
             # Master key (SESSDATA decrypt) via the _FILE convention; the .env
             # *_FILE path is host-relative and invalid in-container, so point at
             # the mounted Secret path.

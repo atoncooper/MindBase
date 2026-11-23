@@ -90,7 +90,7 @@ export interface PayOrder {
 }
 
 export interface PayMembership {
-    /** "VIP" | "SVIP" | null (null = no membership row) */
+    /** "VIP" | "SVIP" | "PROMAX" | null (null = no membership row) */
     tier: string | null;
     /** lazy expiry: expireAt > now */
     active: boolean;
@@ -113,6 +113,7 @@ export interface PayComparisonRow {
     free: string;
     vip: string;
     svip: string;
+    promax: string;
 }
 
 /** Auth-required QR image path (fetched as a blob; <img src> cannot carry the Bearer header). */
@@ -191,12 +192,12 @@ export const payApi = {
         return request<PayMembership>("/pay/membership");
     },
 
-    /** 会员档位简介目录（FREE/VIP/SVIP 权益文案，Java 侧维护）。 */
+    /** 会员档位简介目录（FREE/VIP/SVIP/PROMAX 权益文案，Java 侧维护）。 */
     tiers(): Promise<PayTierInfo[]> {
         return request<PayTierInfo[]>("/pay/tiers");
     },
 
-    /** 权益对照表（行 = 能力，列 = 免费/VIP/SVIP）。 */
+    /** 权益对照表（行 = 能力，列 = 免费/VIP/SVIP/ProMax）。 */
     comparison(): Promise<PayComparisonRow[]> {
         return request<PayComparisonRow[]>("/pay/comparison");
     },

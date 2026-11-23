@@ -53,10 +53,10 @@ spec:
               value: minio:9000
             - name: MINIO_ACCESS_KEY
               valueFrom:
-                configMapKeyRef: { name: mindbase-defaults, key: MINIO_ACCESS_KEY }
+                secretKeyRef: { name: mindbase-env, key: MINIO_ACCESS_KEY }
             - name: MINIO_SECRET_KEY
               valueFrom:
-                configMapKeyRef: { name: mindbase-defaults, key: MINIO_SECRET_KEY }
+                secretKeyRef: { name: mindbase-env, key: MINIO_SECRET_KEY }
           ports:
             - containerPort: 19530
             - containerPort: 9091

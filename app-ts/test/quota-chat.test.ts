@@ -9,15 +9,24 @@ import type { SseFrame } from "../src/transport/sse.js";
 import { config } from "../src/config/index.js";
 
 /**
- * ChatService × QuotaService integration: the gate fires
- * BEFORE admission/persistence/harness; consume-on-success; failed turns
- * never consume; anonymous flows keyed by the hashed client IP.
+ * ChatService × QuotaService integration: the token gate fires BEFORE
+ * admission/persistence/harness; consume-on-success; failed turns never
+ * consume; anonymous flows keyed by the hashed client IP.
  */
 
 const savedQuota = structuredClone(config.quota);
 afterEach(() => {
-  config.quota = savedQuota;
+  config.quota = structuredClone(savedQuota);
 });
+
+function setFreePlan(dailyTokens: number, fiveHourTokens = dailyTokens, monthlyTokens = 1_000_000): void {
+  config.quota.plans.free = {
+    priceYuan: 0,
+    monthlyTokens,
+    dailyTokens,
+    fiveHourTokens,
+  };
+}
 
 async function drain(gen: AsyncGenerator<SseFrame>, guardMs = 4000): Promise<SseFrame[]> {
   const frames: SseFrame[] = [];
@@ -77,7 +86,7 @@ function makeQuota(tier: string): QuotaService {
   return new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => tier });
 }
 
-describe("ChatService × quota", () => {
+describe("ChatService × token quota", () => {
   it("admits under the limit, consumes on success, records the ledger row", async () => {
     const ledger = new MemoryUsageLedger();
     const { chat } = makeChat({ quota: makeQuota("vip"), ledger });
@@ -87,11 +96,13 @@ describe("ChatService × quota", () => {
     const rows = ledger.snapshot();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ uid: "u1", purpose: "chat", model: config.llm.model, calls: 1 });
+    expect(rows[0].inputTokens).toBeGreaterThan(0);
+    expect(rows[0].outputTokens).toBeGreaterThan(0);
   });
 
-  it("rejects the turn over the limit BEFORE admission with QUOTA_EXCEEDED", async () => {
-    config.quota.limits.chat = { free: 1, vip: 1, svip: 1 };
-    const { chat, dispatchSpy } = makeChat({ quota: makeQuota("vip") });
+  it("rejects the turn over the token window BEFORE admission with QUOTA_EXCEEDED", async () => {
+    setFreePlan(1, 1_000_000, 1_000_000);
+    const { chat, dispatchSpy } = makeChat({ quota: makeQuota("free") });
     await drain(chat.askStream({ query: "first", sessionId: "s2", uid: "u1" }));
     const frames = await drain(chat.askStream({ query: "second", sessionId: "s3", uid: "u1" }));
     expect(dispatchSpy.calls).toBe(1); // the rejected turn never reached the harness
@@ -100,34 +111,39 @@ describe("ChatService × quota", () => {
     expect(err.type).toBe("error");
     if (err.type === "error") {
       expect(err.code).toBe("QUOTA_EXCEEDED");
-      expect((err.detail as Record<string, unknown>).kind).toBe("chat");
-      expect((err.detail as Record<string, unknown>).upgradeSku).toBe("SVIP_MONTHLY");
+      const detail = err.detail as Record<string, unknown>;
+      expect(detail.kind).toBe("chat");
+      expect(detail.unit).toBe("token");
+      expect(detail.window).toBe("day");
+      expect(detail.upgradeSku).toBe("VIP_MONTHLY");
     }
     expect(frames[1].type).toBe("done");
   });
 
-  it("a FAILED turn never consumes (P3)", async () => {
-    config.quota.limits.chat = { free: 1, vip: 1, svip: 1 };
-    const { chat } = makeChat({ harness: errorHarness(), quota: makeQuota("vip") });
+  it("a FAILED turn never consumes (consume-on-success)", async () => {
+    setFreePlan(1, 1, 1_000_000);
+    const { chat } = makeChat({ harness: errorHarness(), quota: makeQuota("free") });
     await drain(chat.askStream({ query: "first", sessionId: "s4", uid: "u1" }));
     const frames = await drain(chat.askStream({ query: "second", sessionId: "s5", uid: "u1" }));
     // still allowed: the failed turn consumed nothing
     expect(frames.some((f) => f.type === "error" && f.code === "QUOTA_EXCEEDED")).toBe(false);
   });
 
-  it("free tier over L0 count keeps flowing at L1 until the hard cap (admission unaffected)", async () => {
-    config.quota.limits.chat = { free: 2, vip: 100, svip: 300 };
-    config.quota.freeLadder.l0Turns = 1;
+  it("free tier degrades on token percentage, then hard-stops on the cap", async () => {
+    setFreePlan(2, 2, 1_000_000);
+    config.quota.degradeAtPercent.free = 50;
     const { chat } = makeChat({ quota: makeQuota("free") });
-    await drain(chat.askStream({ query: "a", sessionId: "s6", uid: "u1" }));
-    const frames = await drain(chat.askStream({ query: "b", sessionId: "s7", uid: "u1" }));
-    expect(frames.some((f) => f.type === "error" && f.code === "QUOTA_EXCEEDED")).toBe(false);
+    const first = await drain(chat.askStream({ query: "a", sessionId: "s6", uid: "u1" }));
+    expect(first.some((f) => f.type === "error" && f.code === "QUOTA_EXCEEDED")).toBe(false);
+    const second = await drain(chat.askStream({ query: "b", sessionId: "s7", uid: "u1" }));
+    expect(second.some((f) => f.type === "error" && f.code === "QUOTA_EXCEEDED")).toBe(false);
     const over = await drain(chat.askStream({ query: "c", sessionId: "s8", uid: "u1" }));
     expect(over[0].type).toBe("error");
     if (over[0].type === "error") expect(over[0].code).toBe("QUOTA_EXCEEDED");
   });
 
   it("unattributable requests (no uid, no clientKey) are not gated", async () => {
+    setFreePlan(1, 1, 1_000_000);
     const { chat } = makeChat({ quota: makeQuota("free") });
     for (let i = 0; i < 3; i++) {
       const frames = await drain(chat.askStream({ query: "x", sessionId: `anon-${i}` }));
@@ -136,8 +152,9 @@ describe("ChatService × quota", () => {
     }
   });
 
-  it("image attachments over the daily budget reject before storage", async () => {
-    config.quota.limits.chat_images = { free: 1, vip: 100, svip: 300 };
+  it("image attachments over the token budget reject before storage", async () => {
+    setFreePlan(2000, 1_000_000, 1_000_000);
+    config.quota.kindTokenCost.chat_images = 2000;
     const { chat } = makeChat({ quota: makeQuota("free") });
     const images = ["data:image/png;base64,aGVsbG8="];
     const first = await drain(chat.askStream({ query: "pic", sessionId: "s9", uid: "u1", images }));

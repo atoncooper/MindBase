@@ -30,6 +30,18 @@ export function formatDate(iso: string | null | undefined, withDay = false): str
     );
 }
 
+/** 标准 token → 紧凑展示（1.2 万 / 3.4 亿）。 */
+export function formatTokens(tokens: number): string {
+    if (tokens < 0) return "不限";
+    if (!Number.isFinite(tokens)) return "0";
+    if (tokens >= 100_000_000) return (tokens / 100_000_000).toFixed(2) + " 亿";
+    if (tokens >= 10_000) {
+        const wan = tokens / 10_000;
+        return (wan >= 1_000 ? Math.round(wan) : Math.round(wan * 10) / 10) + " 万";
+    }
+    return Math.max(0, Math.round(tokens)).toLocaleString("zh-CN");
+}
+
 /** 微元（1e-6 元）→ 展示金额；小额保留 4 位，避免显示成 ¥0.00。 */
 export function formatYuanMicro(microYuan: number): string {
     const yuan = microYuan / 1e6;
@@ -60,6 +72,8 @@ export function tierDisplayName(tier: string): string {
             return "VIP 会员";
         case "SVIP":
             return "SVIP 会员";
+        case "PROMAX":
+            return "ProMax 会员";
         case "FREE":
             return "免费版";
         default:

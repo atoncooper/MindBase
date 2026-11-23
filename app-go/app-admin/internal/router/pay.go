@@ -260,7 +260,7 @@ func (r *Router) apiPayProducts(c *gin.Context) {
 // apiPayGrant POST /api/pay/grants
 //
 // body {"uid": <number|string>, "durationDays": int, "reason": string,
-// "tier"?: "VIP"|"SVIP"}. The operator identity comes from the console session
+// "tier"?: "VIP"|"SVIP"|"PROMAX"}. The operator identity comes from the console session
 // and rides into pay_membership_event.reason as "[<username>] ..." (the
 // Java-owned table has no operator column).
 func (r *Router) apiPayGrant(c *gin.Context) {
@@ -293,8 +293,8 @@ func (r *Router) apiPayGrant(c *gin.Context) {
 		return
 	}
 	tier := strings.ToUpper(strings.TrimSpace(req.Tier))
-	if tier != "" && tier != "VIP" && tier != "SVIP" {
-		detail(c, http.StatusBadRequest, "tier must be VIP or SVIP")
+	if tier != "" && tier != "VIP" && tier != "SVIP" && tier != "PROMAX" {
+		detail(c, http.StatusBadRequest, "tier must be VIP, SVIP or PROMAX")
 		return
 	}
 	operator := operatorOf(c)

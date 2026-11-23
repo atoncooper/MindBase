@@ -77,7 +77,7 @@ public final class PayDtos {
     }
 
     /** 权益对照表的一行（feature = 能力名，三列 = 各档位权益）。 */
-    public record ComparisonRow(String feature, String free, String vip, String svip) {
+    public record ComparisonRow(String feature, String free, String vip, String svip, String promax) {
     }
 
     public record MockConfirmRequest(

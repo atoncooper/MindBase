@@ -105,6 +105,49 @@ body {
   color: #ffffff;
 }
 
+/* Chat message scroller: thinner and quieter than the global bar. */
+.chat-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(60, 60, 67, 0.18) transparent;
+  scrollbar-gutter: stable;
+}
+
+.chat-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(60, 60, 67, 0.18);
+  background-clip: content-box;
+}
+
+.chat-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgba(60, 60, 67, 0.32);
+  background-clip: content-box;
+}
+
+.chat-scrollbar::-webkit-scrollbar-track,
+.chat-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.chat-scrollbar::-webkit-scrollbar-button {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .chat-scrollbar {
+    scrollbar-width: none;
+    scrollbar-gutter: auto;
+  }
+  .chat-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Thin, Apple-style scrollbar (global).
    Chromium/WebKit: 11px hit area carrying a slimmer visual bar (transparent
    border + background-clip: padding-box), which thickens slightly on hover and

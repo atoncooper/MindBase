@@ -57,6 +57,17 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
+            # DSNs derived from Secret passwords (envFrom values are invisible to $(VAR)).
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MYSQL_PASSWORD }
+            - name: APPADMIN__RDBMS__URL
+              value: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql:3306/mind_base"
+            - name: PAY_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_PASSWORD }
+            - name: APPADMIN__PAY_RDBMS__URL
+              value: "mysql+aiomysql://app_pay:$(PAY_MYSQL_PASSWORD)@app-pay-mysql:3306/app_pay"
             # Seed console account (insert-once; first login forces a password
             # change). Override in .env: APPADMIN__SEED__USERNAME/PASSWORD.
             - name: APPADMIN__SEED__USERNAME
@@ -76,11 +87,6 @@ spec:
                   name: mindbase-env
                   key: SANDBOX_ADMIN_TOKEN
                   optional: true
-            # Payment ops (second GORM connection to app_pay). URL falls back to
-            # the mindbase-defaults value; unset/empty => /api/pay/* 503.
-            - name: APPADMIN__PAY_RDBMS__URL
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: APPADMIN__PAY_RDBMS__URL, optional: true }
             # Refund review calls app-pay internal endpoints through the APISIX
             # pay-ops consumer; empty key hides the whole refund-review group.
             - name: APPADMIN__PAY__OPS__BASE_URL
