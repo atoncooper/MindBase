@@ -24,6 +24,8 @@ import {
     Lock,
     Pencil,
     PlugZap,
+    RefreshCw,
+    Star,
     Plus,
     Sparkles,
     Trash2,
@@ -131,6 +133,7 @@ export function CodingPlanCard({ membership, onToast }: Props) {
     const [saving, setSaving] = useState(false);
     const [deletingId, setDeletingId] = useState<number | null>(null);
     const [testingId, setTestingId] = useState<number | null>(null);
+    const [refreshingId, setRefreshingId] = useState<number | null>(null);
     const [testResults, setTestResults] = useState<
         Record<number, { ok: boolean; message: string; models?: string[] }>
     >({});
@@ -185,6 +188,28 @@ export function CodingPlanCard({ membership, onToast }: Props) {
         }
     }
 
+    /** 强制刷新模型缓存（Redis），不落库；结果内联展示。 */
+    async function refreshModels(plan: CodingPlan) {
+        setRefreshingId(plan.id);
+        try {
+            const catalog = await codingPlanApi.models(plan.id, true);
+            setTestResults((prev) => ({
+                ...prev,
+                [plan.id]: {
+                    ok: true,
+                    message: `已刷新模型列表（${catalog.models.length} 个）`,
+                },
+            }));
+        } catch (e) {
+            setTestResults((prev) => ({
+                ...prev,
+                [plan.id]: { ok: false, message: e instanceof Error ? e.message : "刷新模型失败" },
+            }));
+        } finally {
+            setRefreshingId(null);
+        }
+    }
+
     async function save(input: CodingPlanInput) {
         if (!editor) return;
         setSaving(true);
@@ -214,6 +239,22 @@ export function CodingPlanCard({ membership, onToast }: Props) {
             const updated = await codingPlanApi.update(plan.id, { enabled: !plan.enabled });
             setPlans((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
             clearTestResult(updated.id);
+        } catch (e) {
+            onToast(e instanceof Error ? e.message : "操作失败", "error");
+        }
+    }
+
+    async function toggleDefault(plan: CodingPlan) {
+        try {
+            if (plan.is_default) {
+                await codingPlanApi.clearDefault();
+                setPlans((prev) => prev.map((p) => ({ ...p, is_default: false })));
+                onToast("已取消默认套餐", "success");
+            } else {
+                await codingPlanApi.setDefault(plan.id);
+                setPlans((prev) => prev.map((p) => ({ ...p, is_default: p.id === plan.id })));
+                onToast("已设为默认套餐", "success");
+            }
         } catch (e) {
             onToast(e instanceof Error ? e.message : "操作失败", "error");
         }
@@ -408,6 +449,15 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                                                     ? "Anthropic"
                                                     : "OpenAI"}
                                             </span>
+                                            {plan.is_default && (
+                                                <span
+                                                    className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium"
+                                                    style={{ background: C.blueBg, color: C.blue }}
+                                                >
+                                                    <Star className="h-3 w-3" />
+                                                    默认
+                                                </span>
+                                            )}
                                         </div>
 
                                         <div
@@ -459,6 +509,26 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                                                     <PlugZap className="h-3 w-3" />
                                                 )}
                                                 {testing ? "测试中" : "测试"}
+                                            </TextAction>
+                                            <TextAction
+                                                onClick={() => void toggleDefault(plan)}
+                                                disabled={busy || !plan.enabled}
+                                            >
+                                                <Star className="h-3 w-3" />
+                                                {plan.is_default ? "取消默认" : "设为默认"}
+                                            </TextAction>
+                                            <TextAction
+                                                onClick={() => void refreshModels(plan)}
+                                                disabled={busy || refreshingId === plan.id}
+                                            >
+                                                <RefreshCw
+                                                    className={
+                                                        refreshingId === plan.id
+                                                            ? "h-3 w-3 animate-spin"
+                                                            : "h-3 w-3"
+                                                    }
+                                                />
+                                                {refreshingId === plan.id ? "刷新中" : "刷新模型"}
                                             </TextAction>
                                             <TextAction
                                                 onClick={() =>
@@ -745,9 +815,28 @@ function PlanEditor({
         initial?.base_url ?? defaultBaseUrl(initialProvider, initialProtocol, providers),
     );
     const [model, setModel] = useState(initial?.model ?? "");
+    const [modelOptions, setModelOptions] = useState<string[]>([]);
     const [apiKey, setApiKey] = useState("");
     const [enabled, setEnabled] = useState(initial?.enabled ?? true);
     const [error, setError] = useState<string | null>(null);
+    // Existing plans: load the cached model catalog so the default model can
+    // be picked from a list instead of typed from memory.
+    useEffect(() => {
+        if (!initial) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const catalog = await codingPlanApi.models(initial.id);
+                if (!cancelled) setModelOptions(catalog.models ?? []);
+            } catch {
+                /* catalog is optional (provider may expose no /models) */
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [initial]);
+
     const defaults = providerDefaults(provider, providers);
     const basePlaceholder =
         defaultBaseUrl(provider, protocol, providers) || "https://api.example.com/v1";
@@ -806,10 +895,25 @@ function PlanEditor({
                 </Field>
                 <Field
                     label="默认模型（可选）"
-                    hint="留空时由聊天模型选择器按套餐模型列表选择；测试连接会优先探测 /models"
+                    hint="设为默认套餐后，聊天会使用该模型；留空则取套餐模型列表的第一个（可从下拉建议中选择）"
                     className="sm:col-span-2"
                 >
-                    <input className="field" aria-label="Coding Plan 默认模型" value={model} onChange={(e) => setModel(e.target.value)} placeholder={defaults.model} autoComplete="off" />
+                    <input
+                        className="field"
+                        aria-label="Coding Plan 默认模型"
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        placeholder={defaults.model}
+                        autoComplete="off"
+                        list={initial ? `cp-model-options-${initial.id}` : undefined}
+                    />
+                    {initial && modelOptions.length > 0 && (
+                        <datalist id={`cp-model-options-${initial.id}`}>
+                            {modelOptions.map((m) => (
+                                <option key={m} value={m} />
+                            ))}
+                        </datalist>
+                    )}
                 </Field>
                 <Field label="API Key" hint={initial ? "留空保持现有密钥（加密存储，只显示掩码）" : "加密存储；只返回掩码"} className="sm:col-span-2">
                     <input className="field" aria-label="Coding Plan API Key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={initial ? "留空保持 " + (initial.api_key_masked || "****") : "sk-..."} autoComplete="new-password" />

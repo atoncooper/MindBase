@@ -23,6 +23,8 @@ export interface CodingPlan {
     /** 掩码形式（如 sk-****abcd），明文永不返回 */
     api_key_masked: string;
     enabled: boolean;
+    /** 是否被用户设为默认套餐（每个用户最多一个） */
+    is_default: boolean;
     created_at: string | null;
     updated_at: string | null;
 }
@@ -114,9 +116,28 @@ export const codingPlanApi = {
         });
     },
 
-    /** 聊天对话框按需拉取该套餐可用的模型（不在配置保存时探测）。 */
-    async models(id: number): Promise<CodingPlanModels> {
-        return request<CodingPlanModels>(`${planPath(id)}/models`, {
+    /**
+     * 该套餐可用的模型。默认读 Redis 缓存；refresh=true 强制回源探测并重写缓存
+     * （账户页「刷新模型」按钮）。
+     */
+    async models(id: number, refresh = false): Promise<CodingPlanModels> {
+        return request<CodingPlanModels>(`${planPath(id)}/models${refresh ? "?refresh=1" : ""}`, {
+            headers: getAuthHeaders(),
+        });
+    },
+
+    /** 设为默认套餐（聊天未显式选模型时使用该套餐）。 */
+    async setDefault(id: number): Promise<{ message: string }> {
+        return request<{ message: string }>(`${planPath(id)}/default`, {
+            method: "PUT",
+            headers: getAuthHeaders(),
+        });
+    },
+
+    /** 取消默认（聊天回落到平台网关默认模型）。 */
+    async clearDefault(): Promise<{ message: string }> {
+        return request<{ message: string }>(`${BASE}/default`, {
+            method: "DELETE",
             headers: getAuthHeaders(),
         });
     },

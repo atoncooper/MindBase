@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { ChatService } from "../src/services/chat.js";
 import { QuotaService } from "../src/services/quota.js";
 import { MemoryQuotaCounter } from "../src/repository/memory/quota-counter.js";
@@ -15,6 +15,9 @@ import { config } from "../src/config/index.js";
  */
 
 const savedQuota = structuredClone(config.quota);
+beforeEach(() => {
+  config.quota.enabled = true;
+});
 afterEach(() => {
   config.quota = structuredClone(savedQuota);
 });

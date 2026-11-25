@@ -124,10 +124,11 @@ function EditableUserMessage({
 
   const resize = useCallback(() => {
     const el = textareaRef.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = `${el.scrollHeight}px`;
-    }
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 200);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
   }, []);
 
   useEffect(() => {

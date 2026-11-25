@@ -9,7 +9,7 @@
  * cloud_refs 引用条目可与 files 混排（plan/1.0.16 §6）：带「引用」徽章、可删除；
  * dead → 「已失效」置灰，无预览活动入口。
  */
-import { Loader2, ChevronDown, Trash2 } from "lucide-react";
+import { Loader2, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import type { CloudVideoItem, RefItem } from "@/lib/api/cloud";
 import { formatBytes } from "@/lib/api/cloud";
 import { cn } from "@/lib/utils";
@@ -28,6 +28,8 @@ interface FileGridProps {
     selectedRefId?: number | null;
     onSelectRef?: (id: number) => void;
     onDeleteRef?: (id: number) => void;
+    /** 卡片重命名（文件，不含引用） */
+    onRenameFile?: (uuid: string, name: string) => void;
 }
 
 export function FileGrid({
@@ -41,6 +43,7 @@ export function FileGrid({
     selectedRefId,
     onSelectRef,
     onDeleteRef,
+    onRenameFile,
 }: FileGridProps) {
     return (
         <div className="p-4">
@@ -48,17 +51,38 @@ export function FileGrid({
                 {videos.map((v) => {
                     const active = selectedUuid === v.uploadUuid;
                     return (
-                        <button
+                        <div
                             key={v.uploadUuid}
-                            type="button"
+                            role="button"
+                            tabIndex={0}
                             onClick={() => onSelect(v.uploadUuid)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    onSelect(v.uploadUuid);
+                                }
+                            }}
                             className={cn(
-                                "flex flex-col items-center rounded-2xl border p-4 text-center transition-all",
+                                "group relative flex cursor-pointer flex-col items-center rounded-2xl border p-4 text-center transition-all",
                                 active
                                     ? "border-accent/40 bg-accent-soft"
                                     : "border-transparent bg-surface hover:border-border hover:bg-border-subtle/40"
                             )}
                         >
+                            {onRenameFile && (
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        onRenameFile(v.uploadUuid, v.originalName);
+                                    }}
+                                    title="重命名"
+                                    aria-label={`重命名 ${v.title || v.originalName}`}
+                                    className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full text-tertiary opacity-100 transition-all hover:bg-border-subtle hover:text-foreground focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                                >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                            )}
                             <FileIconTile mimeType={v.mimeType} size="lg" />
                             <p
                                 className={cn(
@@ -73,7 +97,7 @@ export function FileGrid({
                                 <VectorStatusDotOnly status={v.vectorStatus} />
                                 <span>{formatBytes(v.fileSize)}</span>
                             </p>
-                        </button>
+                        </div>
                     );
                 })}
                 {refs?.map((r) => {

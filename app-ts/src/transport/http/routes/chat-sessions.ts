@@ -121,6 +121,20 @@ export function registerChatSessionRoutes(
     }
   });
 
+  app.delete("/chat/history/range", async (req: FastifyRequest, reply: FastifyReply) => {
+    const uid = requireUid(req);
+    if (uid === undefined) return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });
+    const query = req.query as { chat_session_id?: string; from_msg_id?: string; before_msg_id?: string };
+    if (!query.chat_session_id || !query.from_msg_id || !query.before_msg_id) {
+      return reply.status(400).send({ detail: "chat_session_id / from_msg_id / before_msg_id 不能为空" });
+    }
+    try {
+      return await svc.deleteRange(uid, query.chat_session_id, query.from_msg_id, query.before_msg_id);
+    } catch (err) {
+      return respond(reply, err);
+    }
+  });
+
   app.delete("/chat/history/from/:msg_id", async (req: FastifyRequest, reply: FastifyReply) => {
     const uid = requireUid(req);
     if (uid === undefined) return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });

@@ -32,6 +32,7 @@ import {
     type SearchMode,
 } from "./file-toolbar";
 import { SemanticResults } from "./semantic-results";
+import { RenameFileDialog } from "./rename-file-dialog";
 import { FileList } from "./file-list";
 import { FileGrid } from "./file-grid";
 import { FileInspector } from "./file-inspector";
@@ -90,6 +91,9 @@ export function CloudDriveView() {
     const [trashLoading, setTrashLoading] = useState(false);
     const [shareOpen, setShareOpen] = useState(false);
     const [detail, setDetail] = useState<CloudVideoDetailResponse | null>(null);
+    const [renameTarget, setRenameTarget] = useState<{ uuid: string; name: string } | null>(null);
+    const [renameBusy, setRenameBusy] = useState(false);
+    const [renameError, setRenameError] = useState<string | null>(null);
     const [loadingDetail, setLoadingDetail] = useState(false);
     // ── cloud_refs 引用（保存到我的云盘，非复制；plan/1.0.16 §6）──
     const [refs, setRefs] = useState<RefItem[]>([]);
@@ -818,6 +822,10 @@ export function CloudDriveView() {
                                     videos={effectiveSearchResults}
                                     selectedUuid={selectedUuid}
                                     onSelect={handleSelectFile}
+                                    onRenameFile={(uuid, name) => {
+                                        setRenameError(null);
+                                        setRenameTarget({ uuid, name });
+                                    }}
                                     hasMore={false}
                                     loadingMore={false}
                                     onLoadMore={() => {}}
@@ -832,6 +840,10 @@ export function CloudDriveView() {
                                 videos={videos}
                                 selectedUuid={selectedUuid}
                                 onSelect={handleSelectFile}
+                                onRenameFile={(uuid, name) => {
+                                    setRenameError(null);
+                                    setRenameTarget({ uuid, name });
+                                }}
                                 hasMore={hasMore}
                                 loadingMore={loadingMore}
                                 onLoadMore={() => void handleLoadMore()}
@@ -845,6 +857,10 @@ export function CloudDriveView() {
                                 videos={videos}
                                 selectedUuid={selectedUuid}
                                 onSelect={handleSelectFile}
+                                onRenameFile={(uuid, name) => {
+                                    setRenameError(null);
+                                    setRenameTarget({ uuid, name });
+                                }}
                                 hasMore={hasMore}
                                 loadingMore={loadingMore}
                                 onLoadMore={() => void handleLoadMore()}
@@ -919,6 +935,44 @@ export function CloudDriveView() {
                     </motion.aside>
                 )}
             </AnimatePresence>
+
+            <RenameFileDialog
+                open={renameTarget !== null}
+                initialName={renameTarget?.name ?? ""}
+                busy={renameBusy}
+                error={renameError}
+                onClose={() => {
+                    if (!renameBusy) setRenameTarget(null);
+                }}
+                onConfirm={(name) => {
+                    if (!renameTarget) return;
+                    setRenameBusy(true);
+                    setRenameError(null);
+                    void cloudApi
+                        .updateVideo(renameTarget.uuid, { originalName: name })
+                        .then((updated) => {
+                            setDetail((prev) =>
+                                prev && prev.uploadUuid === updated.uploadUuid ? updated : prev
+                            );
+                            setVideos((prev) =>
+                                prev.map((v) =>
+                                    v.uploadUuid === updated.uploadUuid
+                                        ? {
+                                              ...v,
+                                              originalName: updated.originalName,
+                                              title: updated.title,
+                                          }
+                                        : v
+                                )
+                            );
+                            setRenameTarget(null);
+                        })
+                        .catch((e: unknown) => {
+                            setRenameError(e instanceof Error ? e.message : "重命名失败");
+                        })
+                        .finally(() => setRenameBusy(false));
+                }}
+            />
 
             {/* Upload progress pill */}
             {uploading && (

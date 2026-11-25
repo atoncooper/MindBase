@@ -309,6 +309,17 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
   // Chat-dialog selection from the user's Coding Plan model catalog (code agent).
   const [codingPlanModel, setCodingPlanModel] = useState<string | undefined>();
+  const [reasoningEffort, setReasoningEffort] = useState<"min" | "mid" | "high" | "max">("mid");
+  // Persist the composer effort choice (device-local UI preference).
+  useEffect(() => {
+    const stored = window.localStorage.getItem("mindbase_reasoning_effort");
+    if (stored === "min" || stored === "mid" || stored === "high" || stored === "max") {
+      setReasoningEffort(stored);
+    }
+  }, []);
+  useEffect(() => {
+    window.localStorage.setItem("mindbase_reasoning_effort", reasoningEffort);
+  }, [reasoningEffort]);
   // 聊天模型目录与用户选择（GET /chat/models）；空目录 = 不传 model，后端用默认模型。
   const [chatModels, setChatModels] = useState<ChatModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
@@ -323,7 +334,11 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   } | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const messages = activeSession?.messages ?? EMPTY_MESSAGES;
+  const allMessages = activeSession?.messages ?? EMPTY_MESSAGES;
+  // Never render blank failed bubbles (old turns could persist empty ones).
+  const messages = allMessages.filter(
+    (m) => !(m.status === "failed" && !m.content.trim() && !m.error)
+  );
   // Previous-message map for MessageRow (Virtuoso's item index includes
   // firstItemIndex, so index-1 is not a reliable data index after prepends).
   const prevMessageById = useMemo(() => {
@@ -795,12 +810,15 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       assistantMsgId: string,
       skillIds?: string[],
       images?: string[],
-    ) => {
+      regenerate?: { from: string },
+    ): Promise<{ ok: boolean; error?: string; hasContent: boolean }> => {
       // All optimistic/stream updates below target this turn's session by id.
       const updateActiveSession = (updater: (s: UISession) => UISession) =>
         updateSession(sessionId, updater);
       setIsStreaming(true);
       setQuotaBlock(null); // 新一轮开始：清掉上一轮的额度横幅
+      setLoadError(null); // 上一轮的失败提示随新一轮消失
+      let turnError: string | undefined;
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -851,6 +869,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
                 ? { model: selectedModel }
                 : {}),
             ...(images && images.length > 0 ? { images } : {}),
+            // Regenerate replaces the previous turn only after this turn succeeds.
+            ...(regenerate ? { regenerate_from_msg_id: regenerate.from } : {}),
+            reasoning_effort: reasoningEffort,
             // 科研项目上下文：会话绑定优先（新建会话时选定），URL 入口参数兜底。
             ...(effectiveAcademicProjectId
               ? { academic_project_id: effectiveAcademicProjectId }
@@ -1002,6 +1023,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               }));
             },
             onError: (message: string, meta?: { code?: string; detail?: Record<string, unknown> }) => {
+              turnError = message;
               flushStream();
               if (meta?.code === "QUOTA_EXCEEDED" || meta?.code === "COST_GUARD") {
                 const detail = (meta.detail ?? {}) as {
@@ -1046,10 +1068,11 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       } catch (error) {
         // Aborted by user (stop) - not an error; handleStop already finalized the msg.
         if (error instanceof DOMException && error.name === "AbortError") {
-          return;
+          return { ok: true, hasContent: latestContent.length > 0 };
         }
         flushStream();
         const message = error instanceof Error ? error.message : "请求失败";
+        turnError = message;
         updateActiveSession((s) => ({
           ...s,
           messages: s.messages.map((m) =>
@@ -1063,6 +1086,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         void backfillMessageIds(sessionId);
         void refreshQuota();
       }
+      return { ok: !turnError, ...(turnError ? { error: turnError } : {}), hasContent: latestContent.length > 0 };
     },
     [updateSession, refreshSessions, backfillMessageIds, effectiveAcademicProjectId, uploadUuid, codingPlanModel, selectedModel]
   );
@@ -1117,7 +1141,18 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       }));
 
       setStreamStartedAt(Date.now());
-      void streamQuestion(sessionId, userMessage, assistantMsgId, skillIds, images);
+      const result = await streamQuestion(sessionId, userMessage, assistantMsgId, skillIds, images);
+      if (!result.ok) {
+        // Backend drops empty failed turns; mirror it locally so no empty bubble
+        // remains. A partial answer is kept and marked failed instead.
+        if (!result.hasContent) {
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.filter((m) => m.id !== userMsgId && m.id !== assistantMsgId),
+          }));
+        }
+        setLoadError(result.error ?? "请求失败");
+      }
       // Skills are per-turn (Claude-Code-style): consumed by this message.
       if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
@@ -1207,9 +1242,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   }, []);
 
   // ---- Regenerate a specific turn (per-turn rewrite) ----
-  // Truncates server history from the turn's user message onward (the turn
-  // itself and everything after it), then re-asks that question. Requires
-  // the turn to be server-addressable (real msg_id backfilled from history).
+  // The previous answer is only replaced AFTER the new turn succeeds (the
+  // backend deletes the old turn on success). A failed regeneration restores
+  // the old answer locally — it never overwrites it with an empty bubble.
   const handleRegenerate = useCallback(
     async (assistantMsgId: string) => {
       if (!activeSessionId || isStreaming) return;
@@ -1218,14 +1253,11 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       const idx = sess.messages.findIndex((m) => m.id === assistantMsgId);
       if (idx < 1) return;
       const prevUser = sess.messages[idx - 1];
-      if (prevUser.role !== "user") return;
+      const prevAssistant = sess.messages[idx];
+      if (prevUser.role !== "user" || prevAssistant?.role !== "assistant") return;
       const anchorId = anchorIdOf(prevUser);
-      if (!anchorId) return;
-
-      try {
-        await chatApi.truncateHistoryFrom(activeSessionId, anchorId);
-      } catch (e) {
-        setLoadError(e instanceof Error ? e.message : "重写失败，请稍后重试");
+      if (!anchorId) {
+        setLoadError("此消息尚未同步，刷新后重试");
         return;
       }
 
@@ -1253,7 +1285,17 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         ],
       }));
       setStreamStartedAt(Date.now());
-      void streamQuestion(activeSessionId, prevUser.content, newAssistantId);
+      const result = await streamQuestion(activeSessionId, prevUser.content, newAssistantId, undefined, undefined, {
+        from: anchorId,
+      });
+      if (!result.ok) {
+        // Roll back to the previous turn; the server kept it untouched.
+        updateActiveSession((s) => ({
+          ...s,
+          messages: [...s.messages.slice(0, idx - 1), prevUser, prevAssistant],
+        }));
+        setLoadError("重新生成失败，已保留原回答" + (result.error ? `：${result.error}` : ""));
+      }
     },
     [activeSessionId, isStreaming, sessions, updateActiveSession, streamQuestion]
   );
@@ -1776,6 +1818,8 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               selectedModel={selectedModel}
               codingPlanModel={codingPlanModel}
               onModelChange={handleModelChange}
+              reasoningEffort={reasoningEffort}
+              onReasoningEffortChange={setReasoningEffort}
             />
           </div>
         </div>

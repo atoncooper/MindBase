@@ -1,35 +1,43 @@
 "use client";
 
 /**
- * Note editor - textarea (write) or rendered markdown (read).
+ * Note editor — Notion-like WYSIWYG only.
  *
- * Two modes only: write (plain textarea, left-aligned) and read (rendered
- * preview). The content column is left-aligned (mr-auto) instead of centered,
- * so writing starts from the left edge. Autosave is debounced (1.5s),
- * optimistic with If-Match concurrency, and backed by an IndexedDB draft so
- * in-flight typing survives crashes. Markdown shortcuts (Ctrl+B/I/K, list
- * continuation, tab indent) are handled in handleKeyDown.
+ * Blocks are edited directly (BlockNote) and converted back to Markdown for
+ * storage. Autosave is debounced (1.5s), optimistic with If-Match concurrency,
+ * and backed by an IndexedDB draft so in-flight typing survives crashes.
+ * Markdown stays the canonical format (share/export/agent paths unchanged).
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Markdown } from "@/components/markdown";
+import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
     Share2,
     Trash2,
-    Eye,
-    Pencil,
     Loader2,
     Check,
     AlertCircle,
     CloudOff,
     ArrowLeft,
+    ListTree,
+    X,
 } from "lucide-react";
 import type { NoteDetail } from "@/lib/api/notes";
 import { notesApi } from "@/lib/api/notes";
 import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, clearDraft } from "./draft-store";
-import { motion } from "framer-motion";
+import type { BlockNoteHandle, OutlineItem } from "./blocknote-editor";
 
-type ViewMode = "write" | "read";
+// BlockNote is DOM-only and heavy: keep it out of SSR and the initial chunk.
+const BlockNoteMarkdownEditor = dynamic(
+    () => import("./blocknote-editor").then((m) => m.BlockNoteMarkdownEditor),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="h-[40vh] w-full animate-pulse rounded-lg bg-border-subtle/30" />
+        ),
+    }
+);
+
 type SaveStatus = "idle" | "saving" | "saved" | "error" | "conflict";
 
 interface NoteEditorProps {
@@ -42,8 +50,6 @@ interface NoteEditorProps {
 
 const SAVE_DEBOUNCE_MS = 1500;
 
-// ── helpers ────────────────────────────────────────────────────────
-
 function wordCount(md: string): number {
     return md
         .replace(/```[\s\S]*?```/g, "")
@@ -53,33 +59,16 @@ function wordCount(md: string): number {
         .length;
 }
 
-/** Wrap (or placeholder-insert) the current textarea selection. Returns the
- * new value + next selection, or null if no change. */
-function wrapSelection(
-    value: string,
-    start: number,
-    end: number,
-    before: string,
-    after: string,
-    placeholder: string
-): { value: string; selStart: number; selEnd: number } | null {
-    const selected = value.slice(start, end) || placeholder;
-    const next = value.slice(0, start) + before + selected + after + value.slice(end);
-    const selStart = start + before.length;
-    const selEnd = selStart + selected.length;
-    return { value: next, selStart, selEnd };
-}
-
-const LIST_RE = /^(\s*)([-*+]|\d+\.)\s+(.*)$/;
-const TASK_RE = /^(\s*)([-*+])\s+\[[ xX]\]\s+(.*)$/;
-
 export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteEditorProps) {
     const [title, setTitle] = useState(note.title);
     const [content, setContent] = useState(note.contentMd);
     const [status, setStatus] = useState<SaveStatus>("idle");
-    const [viewMode, setViewMode] = useState<ViewMode>("write");
+    // Remounts the rich editor when content is replaced from outside (draft).
+    const [editorEpoch, setEditorEpoch] = useState(0);
     const [draftPrompt, setDraftPrompt] = useState(false);
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const [outline, setOutline] = useState<OutlineItem[]>([]);
+    const [mobileOutlineOpen, setMobileOutlineOpen] = useState(false);
+    const editorApiRef = useRef<BlockNoteHandle | null>(null);
     const serverUpdatedAtRef = useRef<string>(note.updatedAt);
     const latestRef = useRef({ title, content, uuid: note.uuid });
     // Last-known saved (server) copy of the note. The hide/unload flush compares
@@ -102,6 +91,7 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
         serverUpdatedAtRef.current = note.updatedAt;
         savedSnapshotRef.current = { title: note.title, content: note.contentMd };
         setDraftPrompt(false);
+        setOutline([]);
         /* eslint-enable react-hooks/set-state-in-effect */
         let cancelled = false;
         void (async () => {
@@ -200,125 +190,6 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
         };
     }, []);
 
-    // Auto-resize textarea to content.
-    useLayoutEffect(() => {
-        const ta = textareaRef.current;
-        if (!ta) return;
-        ta.style.height = "auto";
-        ta.style.height = `${ta.scrollHeight}px`;
-    }, [content, viewMode]);
-
-    const applyEdit = useCallback(
-        (result: { value: string; selStart: number; selEnd: number }) => {
-            setContent(result.value);
-            // Restore selection after React commits the new value.
-            requestAnimationFrame(() => {
-                const ta = textareaRef.current;
-                if (!ta) return;
-                ta.focus();
-                ta.setSelectionRange(result.selStart, result.selEnd);
-            });
-        },
-        []
-    );
-
-    const handleKeyDown = useCallback(
-        (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-            const ta = e.currentTarget;
-            const { value, selectionStart: start, selectionEnd: end } = ta;
-
-            // Tab / Shift+Tab: indent / outdent (line-aware).
-            if (e.key === "Tab") {
-                e.preventDefault();
-                if (e.shiftKey) {
-                    // Outdent selected lines.
-                    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-                    const segment = value.slice(lineStart, end);
-                    const next = segment.replace(/^ {1,2}/, "");
-                    const nextValue = value.slice(0, lineStart) + next + value.slice(end);
-                    applyEdit({
-                        value: nextValue,
-                        selStart: lineStart,
-                        selEnd: lineStart + next.length,
-                    });
-                } else {
-                    const nextValue = value.slice(0, start) + "  " + value.slice(end);
-                    applyEdit({
-                        value: nextValue,
-                        selStart: start + 2,
-                        selEnd: start + 2,
-                    });
-                }
-                return;
-            }
-
-            // Enter: continue list markers.
-            if (e.key === "Enter" && !e.shiftKey) {
-                const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-                const line = value.slice(lineStart, end);
-                const taskMatch = line.match(TASK_RE);
-                const listMatch = line.match(LIST_RE);
-                const match = taskMatch ?? listMatch;
-                if (match) {
-                    const [, indent, marker, rest] = match;
-                    if (!rest) {
-                        // Empty item - remove marker (outdent).
-                        e.preventDefault();
-                        const nextValue = value.slice(0, lineStart) + indent + value.slice(end);
-                        applyEdit({
-                            value: nextValue,
-                            selStart: lineStart + indent.length,
-                            selEnd: lineStart + indent.length,
-                        });
-                        return;
-                    }
-                    e.preventDefault();
-                    let nextMarker = marker;
-                    const numMatch = marker.match(/^(\d+)\./);
-                    if (numMatch) nextMarker = `${Number(numMatch[1]) + 1}.`;
-                    const insert = `\n${indent}${nextMarker} ${
-                        taskMatch ? "[ ] " : ""
-                    }`;
-                    const nextValue = value.slice(0, start) + insert + value.slice(end);
-                    const pos = start + insert.length;
-                    applyEdit({ value: nextValue, selStart: pos, selEnd: pos });
-                    return;
-                }
-            }
-
-            const mod = e.ctrlKey || e.metaKey;
-            if (!mod) return;
-
-            if (e.key === "b" || e.key === "B") {
-                e.preventDefault();
-                const r = wrapSelection(value, start, end, "**", "**", "粗体");
-                if (r) applyEdit(r);
-            } else if (e.key === "i" || e.key === "I") {
-                e.preventDefault();
-                const r = wrapSelection(value, start, end, "*", "*", "斜体");
-                if (r) applyEdit(r);
-            } else if (e.key === "k" || e.key === "K") {
-                if (e.shiftKey) {
-                    e.preventDefault();
-                    const r = wrapSelection(value, start, end, "```\n", "\n```", "代码块");
-                    if (r) applyEdit(r);
-                } else {
-                    e.preventDefault();
-                    const r = wrapSelection(value, start, end, "[", "](url)", "链接文字");
-                    if (r) applyEdit(r);
-                }
-            } else if (e.key === "`") {
-                e.preventDefault();
-                const r = wrapSelection(value, start, end, "`", "`", "code");
-                if (r) applyEdit(r);
-            } else if (e.key === "s" || e.key === "S") {
-                e.preventDefault(); // suppress browser save dialog
-                setStatus("saving");
-            }
-        },
-        [applyEdit]
-    );
-
     const restoreDraft = async () => {
         const draft = await getDraft(note.uuid);
         if (!draft) {
@@ -327,6 +198,8 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
         }
         if (draft.title !== undefined) setTitle(draft.title);
         setContent(draft.contentMd);
+        // Remount the rich editor with the recovered Markdown.
+        setEditorEpoch((v) => v + 1);
         setDraftPrompt(false);
     };
 
@@ -339,176 +212,185 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
     const readingMinutes = Math.max(1, Math.round(words / 350));
 
     return (
-        <div className="flex h-full flex-col">
-            {/* Scroll area - toolbar sticks to the top, content flows beneath */}
-            <div className="flex-1 overflow-y-auto">
-                {/* Toolbar */}
-                <div className="sticky top-0 z-20 grid grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-border-subtle bg-background/75 px-4 py-2 backdrop-blur-xl">
-                    {/* Left: back (mobile only) */}
-                    <div className="flex items-center justify-start">
-                        <button
-                            type="button"
-                            onClick={onBack}
-                            title="返回列表"
-                            aria-label="返回列表"
-                            className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground md:hidden"
-                        >
-                            <ArrowLeft className="h-4 w-4" />
-                        </button>
-                    </div>
-                    {/* Center: view mode segmented control (write / read) */}
-                    <div className="flex items-center gap-0.5 rounded-[10px] bg-border-subtle/70 p-0.5">
-                        <SegBtn
-                            active={viewMode === "write"}
-                            onClick={() => setViewMode("write")}
-                            icon={<Pencil className="h-3.5 w-3.5" />}
-                            label="写作"
-                        />
-                        <SegBtn
-                            active={viewMode === "read"}
-                            onClick={() => setViewMode("read")}
-                            icon={<Eye className="h-3.5 w-3.5" />}
-                            label="阅读"
-                        />
-                    </div>
-                    {/* Right: status + actions */}
-                    <div className="flex items-center justify-end gap-1">
-                        <StatusPill status={status} />
-                        <button
-                            type="button"
-                            onClick={onShare}
-                            title="分享"
-                            aria-label="分享"
-                            className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
-                        >
-                            <Share2 className="h-[18px] w-[18px]" />
-                        </button>
-                        <button
-                            type="button"
-                            onClick={onDelete}
-                            title="删除"
-                            aria-label="删除"
-                            className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-danger/5 hover:text-danger"
-                        >
-                            <Trash2 className="h-[18px] w-[18px]" />
-                        </button>
-                    </div>
+        <div className="flex h-full flex-col bg-background">
+            {/* Toolbar */}
+            <div className="flex items-center justify-between gap-2 border-b border-border-subtle/70 bg-background/80 px-4 py-2 backdrop-blur-xl">
+                <button
+                    type="button"
+                    onClick={onBack}
+                    title="返回列表"
+                    aria-label="返回列表"
+                    className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground md:hidden"
+                >
+                    <ArrowLeft className="h-4 w-4" />
+                </button>
+                <div className="flex items-center justify-end gap-1">
+                    <button
+                        type="button"
+                        onClick={() => setMobileOutlineOpen(true)}
+                        title="大纲"
+                        aria-label="查看大纲"
+                        className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground xl:hidden"
+                    >
+                        <ListTree className="h-[18px] w-[18px]" />
+                    </button>
+                    <StatusPill status={status} />
+                    <button
+                        type="button"
+                        onClick={onShare}
+                        title="分享"
+                        aria-label="分享"
+                        className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                    >
+                        <Share2 className="h-[18px] w-[18px]" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onDelete}
+                        title="删除"
+                        aria-label="删除"
+                        className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-danger/5 hover:text-danger"
+                    >
+                        <Trash2 className="h-[18px] w-[18px]" />
+                    </button>
                 </div>
+            </div>
 
-                {/* Content - fills the available width, wraps when full */}
-                <div className="px-6 pb-24 pt-10 sm:px-10">
-                    {/* Draft recovery bar */}
-                    {draftPrompt && (
-                        <div className="mb-6 flex items-center gap-2 rounded-xl border border-warning/20 bg-warning/5 px-3.5 py-2.5 text-[12px] text-foreground">
-                            <CloudOff className="h-3.5 w-3.5 shrink-0 text-warning" />
-                            <span className="flex-1">检测到未保存的草稿，是否恢复？</span>
-                            <button
-                                type="button"
-                                onClick={() => void restoreDraft()}
-                                className="rounded-md bg-warning/10 px-2 py-1 font-medium text-warning hover:bg-warning/20"
-                            >
-                                恢复
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => void discardDraft()}
-                                className="rounded-md px-2 py-1 text-secondary hover:bg-border-subtle"
-                            >
-                                丢弃
-                            </button>
-                        </div>
-                    )}
-
-                    {/* Title */}
-                    <input
-                        value={title}
-                        onChange={(e) => setTitle(e.target.value)}
-                        placeholder="无标题"
-                        className="w-full bg-transparent text-[30px] font-semibold leading-[1.15] tracking-[-0.02em] text-foreground outline-none placeholder:text-tertiary/50"
-                    />
-
-                    {/* Meta */}
-                    <p className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-secondary">
-                        <span>{new Date(note.updatedAt).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })}</span>
-                        <span className="text-tertiary">·</span>
-                        <span>{words} 字</span>
-                        <span className="text-tertiary">·</span>
-                        <span>约 {readingMinutes} 分钟</span>
-                        <span className="text-tertiary">·</span>
-                        <span>{note.revisionCount} 次修订</span>
-                    </p>
-
-                    {/* Editor (write) or preview (read) */}
-                    <div className="mt-8">
-                        {viewMode === "write" ? (
-                            <div className="min-h-[60vh]">
-                                <textarea
-                                    ref={textareaRef}
-                                    value={content}
-                                    onChange={(e) => setContent(e.target.value)}
-                                    onKeyDown={handleKeyDown}
-                                    spellCheck={false}
-                                    placeholder="从此处开始落笔…"
-                                    className="note-textarea w-full resize-none bg-transparent text-[16px] leading-[1.75] text-foreground outline-none placeholder:text-tertiary/50"
-                                />
-                            </div>
-                        ) : (
-                            <div className="min-h-[60vh]">
-                                {content.trim() ? (
-                                    <div className="note-prose">
-                                        <Markdown>{content}</Markdown>
-                                    </div>
-                                ) : (
-                                    <div className="flex min-h-[40vh] items-center justify-center">
-                                        <p className="text-[13px] text-tertiary">
-                                            还没有内容
-                                        </p>
-                                    </div>
-                                )}
+            {/* Body: fixed title/meta header + the WYSIWYG surface */}
+            <div className="min-h-0 flex-1 overflow-hidden">
+                <div className="mx-auto flex h-full w-full max-w-[1120px] flex-col px-5 pt-8 sm:px-8">
+                    <div className="shrink-0 xl:max-w-[860px]">
+                        {draftPrompt && (
+                            <div className="mb-5 flex items-center gap-2 rounded-xl border border-warning/20 bg-warning/5 px-3.5 py-2.5 text-[12px] text-foreground">
+                                <CloudOff className="h-3.5 w-3.5 shrink-0 text-warning" />
+                                <span className="flex-1">检测到未保存的草稿，是否恢复？</span>
+                                <button
+                                    type="button"
+                                    onClick={() => void restoreDraft()}
+                                    className="rounded-md bg-warning/10 px-2 py-1 font-medium text-warning hover:bg-warning/20"
+                                >
+                                    恢复
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void discardDraft()}
+                                    className="rounded-md px-2 py-1 text-secondary hover:bg-border-subtle"
+                                >
+                                    丢弃
+                                </button>
                             </div>
                         )}
+
+                        <input
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            placeholder="无标题"
+                            className="w-full bg-transparent text-[32px] font-bold leading-[1.2] tracking-[-0.025em] text-foreground outline-none placeholder:text-tertiary/40 sm:text-[36px]"
+                        />
+                        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-secondary">
+                            <span>
+                                {new Date(note.updatedAt).toLocaleDateString("zh-CN", {
+                                    year: "numeric",
+                                    month: "long",
+                                    day: "numeric",
+                                })}
+                            </span>
+                            <span className="text-tertiary">·</span>
+                            <span>{words} 字</span>
+                            <span className="text-tertiary">·</span>
+                            <span>约 {readingMinutes} 分钟</span>
+                            <span className="text-tertiary">·</span>
+                            <span>{note.revisionCount} 次修订</span>
+                        </p>
+                    </div>
+
+                    <div className="mt-5 flex min-h-0 flex-1">
+                        <div className="min-w-0 flex-1 overflow-y-auto pb-24 xl:max-w-[860px]">
+                            <BlockNoteMarkdownEditor
+                                key={editorEpoch}
+                                initialMarkdown={content}
+                                onChange={setContent}
+                                onOutlineChange={setOutline}
+                                onReady={(api) => {
+                                    editorApiRef.current = api;
+                                }}
+                            />
+                        </div>
+                        <aside className="hidden w-60 shrink-0 overflow-y-auto border-l border-border-subtle/60 pb-24 pl-5 xl:block">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-tertiary">
+                                大纲
+                            </p>
+                            <OutlineNav
+                                items={outline}
+                                onSelect={(id) => editorApiRef.current?.scrollToBlock(id)}
+                            />
+                        </aside>
                     </div>
                 </div>
             </div>
+
+            {mobileOutlineOpen && (
+                <div
+                    className="fixed inset-0 z-50 bg-black/20 xl:hidden"
+                    onClick={() => setMobileOutlineOpen(false)}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="笔记大纲"
+                >
+                    <aside
+                        className="absolute right-0 top-0 h-full w-72 overflow-y-auto border-l border-border-subtle bg-surface px-4 pb-8 pt-[max(1rem,env(safe-area-inset-top))]"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-tertiary">
+                                大纲
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => setMobileOutlineOpen(false)}
+                                aria-label="关闭大纲"
+                                className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                        <OutlineNav
+                            items={outline}
+                            onSelect={(id) => {
+                                editorApiRef.current?.scrollToBlock(id);
+                                setMobileOutlineOpen(false);
+                            }}
+                        />
+                    </aside>
+                </div>
+            )}
         </div>
     );
 }
 
-// ── sub-components ────────────────────────────────────────────────
-
-function SegBtn({
-    active,
-    onClick,
-    icon,
-    label,
-}: {
-    active: boolean;
-    onClick: () => void;
-    icon: React.ReactNode;
-    label: string;
-}) {
+function OutlineNav({ items, onSelect }: { items: OutlineItem[]; onSelect: (id: string) => void }) {
+    if (items.length === 0) {
+        return (
+            <p className="mt-3 text-[11.5px] leading-relaxed text-tertiary">
+                还没有标题。用「标题 1 / 2 / 3」块组织内容后，这里会显示大纲。
+            </p>
+        );
+    }
     return (
-        <button
-            type="button"
-            onClick={onClick}
-            aria-pressed={active}
-            className={cn(
-                "relative inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors duration-200",
-                active ? "text-foreground" : "text-secondary hover:text-foreground"
-            )}
-        >
-            {active && (
-                <motion.span
-                    layoutId="note-seg-active"
-                    className="absolute inset-0 rounded-md bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.10),0_0_0_0.5px_rgba(0,0,0,0.05)]"
-                    transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.6 }}
-                />
-            )}
-            <span className="relative z-10 flex items-center gap-1.5">
-                {icon}
-                <span className="hidden sm:inline">{label}</span>
-            </span>
-        </button>
+        <nav className="mt-2 flex flex-col gap-0.5">
+            {items.map((item) => (
+                <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onSelect(item.id)}
+                    title={item.text}
+                    style={{ paddingLeft: 8 + (item.level - 1) * 12 }}
+                    className="truncate rounded-md py-1 pr-1.5 text-left text-[12.5px] leading-5 text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                >
+                    {item.text}
+                </button>
+            ))}
+        </nav>
     );
 }
 

@@ -20,10 +20,11 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Markdown } from "@/components/markdown";
-import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-react";
+import { ArrowLeft, Loader2, AlertCircle, Download, FileText, Pencil } from "lucide-react";
 import { cloudApi, formatBytes, type CloudHlsResponse, type CloudRawFileResponse } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
 import { FileAiPanel } from "./file-ai-panel";
+import { RenameFileDialog } from "./rename-file-dialog";
 import { describeMimeType } from "./helpers";
 import { toSameOriginUrl } from "./media-url";
 import { CloudVideoPlayer } from "./video-player";
@@ -41,6 +42,9 @@ export function FileViewer() {
     const [hlsInitial, setHlsInitial] = useState<CloudHlsResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [renameOpen, setRenameOpen] = useState(false);
+    const [renaming, setRenaming] = useState(false);
+    const [renameError, setRenameError] = useState<string | null>(null);
     const hls = useHlsPlayback(uuid, raw?.viewMode === "video", hlsInitial);
 
     // PDF: open the file in a NEW tab and let the browser's native viewer
@@ -141,6 +145,20 @@ export function FileViewer() {
                         <span title={raw.mimeType}>{describeMimeType(raw.mimeType)}</span>
                     </p>
                 </div>
+                {raw && (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setRenameError(null);
+                            setRenameOpen(true);
+                        }}
+                        title="重命名"
+                        aria-label="重命名"
+                        className="mr-1 grid h-8 w-8 shrink-0 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                    >
+                        <Pencil className="h-[17px] w-[17px]" />
+                    </button>
+                )}
                 <a
                     href={raw.url}
                     download={raw.fileName}
@@ -152,10 +170,36 @@ export function FileViewer() {
                 </a>
             </div>
 
+            <RenameFileDialog
+                open={renameOpen}
+                initialName={raw?.fileName ?? ""}
+                busy={renaming}
+                error={renameError}
+                onClose={() => {
+                    if (!renaming) setRenameOpen(false);
+                }}
+                onConfirm={(name) => {
+                    setRenaming(true);
+                    setRenameError(null);
+                    void cloudApi
+                        .updateVideo(uuid, { originalName: name })
+                        .then((updated) => {
+                            setRaw((prev) =>
+                                prev ? { ...prev, fileName: updated.originalName } : prev
+                            );
+                            setRenameOpen(false);
+                        })
+                        .catch((e: unknown) => {
+                            setRenameError(e instanceof Error ? e.message : "重命名失败");
+                        })
+                        .finally(() => setRenaming(false));
+                }}
+            />
+
             {/* Body */}
             <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto max-w-[960px] px-6 py-8 sm:px-10">
-                    {uuid ? (
+                    {uuid && raw && !raw.mimeType.startsWith("video/") ? (
                         <div className="mb-8 rounded-2xl border border-border-subtle bg-surface/60 p-4">
                             <FileAiPanel uploadUuid={uuid} />
                         </div>

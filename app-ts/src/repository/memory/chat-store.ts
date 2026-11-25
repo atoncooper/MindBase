@@ -187,6 +187,20 @@ export class MemoryMessageRepository implements MessageRepository {
     return deleted;
   }
 
+  async deleteRange(sessionId: string, fromMsgId: string, beforeMsgId: string): Promise<number | undefined> {
+    const from = this.messages.get(fromMsgId);
+    const before = this.messages.get(beforeMsgId);
+    if (!from || !before || from.sessionId !== sessionId || before.sessionId !== sessionId) return undefined;
+    let deleted = 0;
+    for (const [id, m] of [...this.messages.entries()]) {
+      if (m.sessionId === sessionId && m.createdAt >= from.createdAt && m.createdAt < before.createdAt) {
+        this.messages.delete(id);
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+
   async truncateFrom(sessionId: string, anchorMsgId: string): Promise<number | undefined> {
     const anchor = this.messages.get(anchorMsgId);
     if (!anchor || anchor.sessionId !== sessionId) return undefined;

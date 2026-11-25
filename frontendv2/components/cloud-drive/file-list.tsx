@@ -10,7 +10,7 @@
  * cloud_refs 引用条目（plan/1.0.16 §6）可与 files 混排：带「引用」徽章、可删除；
  * status=dead → 「已失效」置灰，不给预览等活动入口（仅保留删除清理）。
  */
-import { Loader2, ChevronDown, Trash2 } from "lucide-react";
+import { Loader2, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import type { CloudVideoItem, RefItem } from "@/lib/api/cloud";
 import { formatBytes } from "@/lib/api/cloud";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,8 @@ interface FileListProps {
     selectedRefId?: number | null;
     onSelectRef?: (id: number) => void;
     onDeleteRef?: (id: number) => void;
+    /** 行内重命名（文件，不含引用） */
+    onRenameFile?: (uuid: string, name: string) => void;
 }
 
 export function FileList({
@@ -43,6 +45,7 @@ export function FileList({
     selectedRefId,
     onSelectRef,
     onDeleteRef,
+    onRenameFile,
 }: FileListProps) {
     return (
         <div className="p-3">
@@ -54,11 +57,18 @@ export function FileList({
                             {active && (
                                 <span className="absolute left-0 top-1/2 h-6 w-[2.5px] -translate-y-1/2 rounded-full bg-accent" />
                             )}
-                            <button
-                                type="button"
+                            <div
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => onSelect(v.uploadUuid)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        onSelect(v.uploadUuid);
+                                    }
+                                }}
                                 className={cn(
-                                    "flex w-full items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                                    "group flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors",
                                     active
                                         ? "bg-accent-soft"
                                         : "hover:bg-border-subtle/70"
@@ -88,10 +98,26 @@ export function FileList({
                                         <span>{formatRelativeTime(v.createdAt)}</span>
                                     </p>
                                 </div>
-                                <span className="hidden shrink-0 items-center sm:flex">
-                                    <VectorStatusDotOnly status={v.vectorStatus} />
+                                <span className="flex shrink-0 items-center gap-0.5">
+                                    {onRenameFile && (
+                                        <button
+                                            type="button"
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                onRenameFile(v.uploadUuid, v.originalName);
+                                            }}
+                                            title="重命名"
+                                            aria-label={`重命名 ${v.title || v.originalName}`}
+                                            className="grid h-7 w-7 place-items-center rounded-full text-secondary opacity-100 transition-opacity hover:bg-border-subtle hover:text-foreground focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                                        >
+                                            <Pencil className="h-3.5 w-3.5" />
+                                        </button>
+                                    )}
+                                    <span className="hidden shrink-0 items-center sm:flex">
+                                        <VectorStatusDotOnly status={v.vectorStatus} />
+                                    </span>
                                 </span>
-                            </button>
+                            </div>
                         </li>
                     );
                 })}

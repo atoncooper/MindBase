@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { ArrowUp, Square, X, FileUp, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
 import { ChatModelPicker, type ChatModelSelection } from "./chat-model-picker";
+import type { ReasoningEffort } from "./effort-slider";
 import { ChatAttachmentsDrawer } from "./chat-attachments-drawer";
 import { StreamElapsed } from "./streaming-elapsed";
 import {
@@ -44,6 +45,9 @@ interface ChatInputProps {
   selectedModel?: string;
   codingPlanModel?: string;
   onModelChange?: (selection: ChatModelSelection) => void;
+  /** 推理强度（min/mid/high/max）：模型弹层底部的滑动变阻器 */
+  reasoningEffort?: ReasoningEffort;
+  onReasoningEffortChange?: (value: ReasoningEffort) => void;
   // 生成中已排队、等待本轮结束后自动发送的消息数量（仅用于提示文案）
   queuedCount?: number;
 }
@@ -56,15 +60,18 @@ interface ChatInputProps {
 // then exactly as tall as the button, so the text sits vertically centered in
 // the card (previously a 24px textarea bottom-aligned against a 32px button
 // left ~4px more space above the text than below -> text looked shifted down).
-// MAX_HEIGHT is only the desktop ceiling; the actual cap is 40% of the
-// viewport (bounded 160–320px) so a pasted multi-line block expands like
-// ChatGPT's composer instead of showing a scrollbar after ~7 lines.
+// The composer stays one line until the draft exceeds EXPAND_AFTER_CHARS (or
+// contains a newline); only then does it grow, up to a viewport-bounded ceiling.
+// Past the ceiling it scrolls internally with a thin scrollbar instead of
+// pushing the message list away.
 const MIN_HEIGHT = 32;
-const MAX_HEIGHT = 420;
-const MAX_HEIGHT_RATIO = 0.5;
-const MIN_MAX_HEIGHT = 160;
+const EXPAND_AFTER_CHARS = 72;
+const MAX_HEIGHT = 160;
+const MAX_HEIGHT_RATIO = 0.25;
+const MIN_MAX_HEIGHT = 96;
 // input starts with "/" followed by no whitespace → slash menu is active
 const SLASH_RE = /^\/(\S*)$/;
+
 
 // ---- 图片压缩:大截图先缩放再附加,不再粗暴拒绝 ----
 // 等比缩到最长边 2000px;优先 PNG(UI 截图文字锐利、压缩率高),超限自动转
@@ -130,6 +137,8 @@ export function ChatInput({
   selectedModel = "",
   codingPlanModel,
   onModelChange,
+  reasoningEffort = "mid",
+  onReasoningEffortChange,
   queuedCount = 0,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
@@ -220,14 +229,26 @@ export function ChatInput({
     setMenuDismissed(false);
   }, [input]);
 
-  // Auto-resize: reset to auto first so scrollHeight reflects content,
-  // then clamp between MIN and MAX. Beyond MAX the textarea scrolls internally.
+  // Threshold-based growth: one-line drafts keep the compact height (no
+  // per-keystroke reflow); past the threshold the composer grows up to the cap,
+  // then scrolls internally with the thin textarea scrollbar.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const next = Math.max(MIN_HEIGHT, Math.min(el.scrollHeight, maxHeight));
+    const full = el.scrollHeight;
+    // Grow only once the draft needs a second line (or passes the char
+    // threshold) — never clip wrapped text, and never reflow on every keystroke
+    // while it still fits.
+    const shouldExpand = input.includes("\n") || input.length > EXPAND_AFTER_CHARS || full > MIN_HEIGHT;
+    if (!shouldExpand) {
+      el.style.height = `${MIN_HEIGHT}px`;
+      el.style.overflowY = "hidden";
+      return;
+    }
+    const next = Math.max(MIN_HEIGHT, Math.min(full, maxHeight));
     el.style.height = `${next}px`;
+    el.style.overflowY = full > maxHeight ? "auto" : "hidden";
   }, [input, maxHeight]);
 
   const canSend = (input.trim().length > 0 || images.length > 0) && !disabled;
@@ -535,6 +556,8 @@ export function ChatInput({
                 models={models}
                 value={selectedModel}
                 codingPlanValue={codingPlanModel}
+                reasoningEffort={reasoningEffort}
+                onReasoningEffortChange={onReasoningEffortChange}
                 onChange={onModelChange}
                 disabled={disabled}
               />

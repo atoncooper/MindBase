@@ -56,16 +56,18 @@ type VideoDetailResponse struct {
 // array replaces the list. Presence and malformed values are tracked so the
 // handler keeps the legacy 422 copy.
 type VideoUpdateRequest struct {
-	Title          *string
-	TitleSet       bool
-	Description    *string
-	DescriptionSet bool
-	Tags           []string
-	TagsSet        bool
-	TagsInvalid    bool
-	FolderID       *int64
-	FolderSet      bool
-	FolderInvalid  bool
+	Title           *string
+	TitleSet        bool
+	Description     *string
+	DescriptionSet  bool
+	Tags            []string
+	TagsSet         bool
+	TagsInvalid     bool
+	FolderID        *int64
+	FolderSet       bool
+	FolderInvalid   bool
+	OriginalName    *string
+	OriginalNameSet bool
 }
 
 // UnmarshalJSON records which fields the caller actually sent.
@@ -101,6 +103,16 @@ func (r *VideoUpdateRequest) UnmarshalJSON(data []byte) error {
 			r.TagsInvalid = true
 		} else {
 			r.Tags = tags
+		}
+	}
+	if v, ok := raw["originalName"]; ok {
+		r.OriginalNameSet = true
+		if !isJSONNull(v) {
+			var name string
+			if err := json.Unmarshal(v, &name); err != nil {
+				return err
+			}
+			r.OriginalName = &name
 		}
 	}
 	if v, ok := raw["folderId"]; ok {

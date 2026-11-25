@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2, RotateCcw } from "lucide-react";
 import { cloudApi } from "@/lib/api/cloud";
 import { toSameOriginUrl } from "./media-url";
+import { VideoControls } from "./video-controls";
 
 interface Props {
     uuid: string;
@@ -36,6 +37,7 @@ type PlayerState = "loading" | "ready" | "error";
 
 export function CloudVideoPlayer({ uuid, initialUrl, expiresIn = 3600, onUrlChange }: Props) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
     const [src, setSrc] = useState(initialUrl);
     const [state, setState] = useState<PlayerState>("loading");
     const [message, setMessage] = useState("");
@@ -153,19 +155,27 @@ export function CloudVideoPlayer({ uuid, initialUrl, expiresIn = 3600, onUrlChan
     }, [refresh]);
 
     return (
-        <div className="relative mx-auto w-full max-w-full overflow-hidden rounded-2xl bg-black">
+        <div
+            ref={containerRef}
+            className="group relative mx-auto w-full max-w-full overflow-hidden rounded-2xl bg-black shadow-[0_20px_60px_-24px_rgba(0,0,0,0.55)] ring-1 ring-black/10"
+        >
             <video
                 ref={videoRef}
                 src={src}
-                controls
                 playsInline
                 preload="metadata"
-                className="mx-auto block max-h-[75dvh] w-full"
+                className="mx-auto block max-h-[75dvh] w-full bg-black object-contain"
                 onLoadedMetadata={handleLoadedMetadata}
                 onCanPlay={() => setState("ready")}
                 onPlaying={() => setState("ready")}
                 onWaiting={() => setState("loading")}
                 onError={handleError}
+            />
+
+            <VideoControls
+                videoRef={videoRef}
+                containerRef={containerRef}
+                disabled={state === "error"}
             />
 
             {state === "loading" && (

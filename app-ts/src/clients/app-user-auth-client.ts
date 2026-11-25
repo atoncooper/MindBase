@@ -18,7 +18,10 @@ export class AppUserAuthError extends Error {
   }
 }
 
-/** Coding Plan lookup TTL: a newly added/edited plan becomes visible within 30s. */
+/**
+ * Coding Plan lookup cache TTL (hardcoded by design): a newly added/edited plan
+ * becomes visible within 30s. Not a deployment knob.
+ */
 const CODING_PLAN_CACHE_MS = 30_000;
 
 /**
@@ -58,6 +61,20 @@ export class AppUserSettingsClient extends InternalServiceClient {
     } catch (err) {
       if (err instanceof AppUserAuthError && err.status === 404) {
         return null;
+      }
+      throw err;
+    }
+  }
+
+  /** Redis-cached provider model catalog for the plan (404 → []). */
+  async getCodingPlanModels(uid: string): Promise<string[]> {
+    try {
+      const res = await this.request("GET", `/internal/settings/coding-plan/${uid}/models`);
+      const body = await this.json<{ models?: string[] }>(res, "app-user coding plan models lookup failed");
+      return body.models ?? [];
+    } catch (err) {
+      if (err instanceof AppUserAuthError && err.status === 404) {
+        return [];
       }
       throw err;
     }
@@ -124,5 +141,10 @@ export class AppUserAuthClient extends InternalServiceClient {
     const plan = await this.settings.getCodingPlan(uid);
     this.codingPlanCache.set(uid, { at: Date.now(), plan });
     return plan;
+  }
+
+  /** Cached Coding Plan model catalog (Redis-backed in app-user). */
+  async getCodingPlanModels(uid: string): Promise<string[]> {
+    return this.settings.getCodingPlanModels(uid);
   }
 }

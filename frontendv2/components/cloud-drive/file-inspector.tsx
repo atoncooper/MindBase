@@ -12,6 +12,7 @@ import { type ReactNode } from "react";
 import Link from "next/link";
 import {
     ArrowLeft,
+    Pencil,
     Trash2,
     Sparkles,
     Loader2,
@@ -29,6 +30,7 @@ interface FileInspectorProps {
     processing: boolean;
     onProcess: (uuid: string) => void;
     onDelete: (uuid: string) => void;
+    onRename?: (uuid: string, name: string) => void;
     onBack: () => void;
     /** 相似文件点击：就地打开另一个文件的详情 */
     onOpenFile?: (uuid: string) => void;

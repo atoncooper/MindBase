@@ -537,7 +537,7 @@ function TaskEditor({
                             rows={5}
                             maxLength={20_000}
                             placeholder="描述要收集什么信息、如何筛选、输出什么格式。"
-                            className="mt-1.5 w-full resize-y rounded-xl border border-border bg-surface px-3 py-2.5 text-[13px] font-normal leading-relaxed outline-none transition-colors focus:border-accent"
+                            className="mt-1.5 max-h-[240px] w-full resize-y overflow-y-auto rounded-xl border border-border bg-surface px-3 py-2.5 text-[13px] font-normal leading-relaxed outline-none transition-colors focus:border-accent"
                         />
                     </label>
 

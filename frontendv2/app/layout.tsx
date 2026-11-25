@@ -1,4 +1,6 @@
 import type { Metadata, Viewport } from "next";
+import "@blocknote/core/fonts/inter.css";
+import "@blocknote/mantine/style.css";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import { AuthProvider } from "@/lib/auth";

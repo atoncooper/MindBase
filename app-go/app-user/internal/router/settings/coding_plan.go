@@ -168,6 +168,44 @@ func registerCodingPlans(e *gin.Engine, d Deps) {
 		c.JSON(http.StatusOK, settingsdto.Message{Message: "Coding Plan 已删除"})
 	})
 
+	// PUT /settings/coding-plans/{id}/default — mark this plan as the chat default.
+	g.PUT("/:id/default", func(c *gin.Context) {
+		if d.CodingPlans == nil {
+			codingPlanUnavailable(c)
+			return
+		}
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		id, ok := codingPlanID(c)
+		if !ok {
+			return
+		}
+		if err := d.CodingPlans.SetDefault(c.Request.Context(), uid, id); err != nil {
+			codingPlanErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, settingsdto.Message{Message: "已设为默认套餐"})
+	})
+
+	// DELETE /settings/coding-plans/default — clear the default selection.
+	g.DELETE("/default", func(c *gin.Context) {
+		if d.CodingPlans == nil {
+			codingPlanUnavailable(c)
+			return
+		}
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		if err := d.CodingPlans.ClearDefault(c.Request.Context(), uid); err != nil {
+			codingPlanErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, settingsdto.Message{Message: "已取消默认套餐"})
+	})
+
 	// GET /settings/coding-plans/{id}/models — provider model catalog for the
 	// chat picker; probes only when the chat dialog asks, never on save.
 	g.GET("/:id/models", func(c *gin.Context) {
@@ -183,7 +221,8 @@ func registerCodingPlans(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		models, err := d.CodingPlans.ListModels(c.Request.Context(), uid, id)
+		refresh := c.Query("refresh") == "1" || c.Query("refresh") == "true"
+		models, err := d.CodingPlans.ListModels(c.Request.Context(), uid, id, refresh)
 		if err != nil {
 			codingPlanErr(c, err)
 			return
@@ -234,14 +273,35 @@ func registerCodingPlans(e *gin.Engine, d Deps) {
 		}
 		c.JSON(http.StatusOK, settingsdto.InternalCodingPlanEnvelope{
 			Plan: settingsdto.InternalCodingPlan{
-				ID:       plan.ID,
-				Provider: plan.Provider,
-				Protocol: plan.Protocol,
-				Label:    plan.Label,
-				BaseURL:  plan.BaseURL,
-				Model:    plan.Model,
-				APIKey:   plan.APIKey,
+				ID:        plan.ID,
+				Provider:  plan.Provider,
+				Protocol:  plan.Protocol,
+				Label:     plan.Label,
+				BaseURL:   plan.BaseURL,
+				Model:     plan.Model,
+				APIKey:    plan.APIKey,
+				IsDefault: plan.IsDefault,
 			},
 		})
+	})
+
+	// GET /internal/settings/coding-plan/{uid}/models — cached provider catalog
+	// used by app-ts to pick the default model when the plan has none.
+	internal.GET("/:uid/models", func(c *gin.Context) {
+		uid, err := strconv.ParseInt(c.Param("uid"), 10, 64)
+		if err != nil || uid <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid uid"})
+			return
+		}
+		if d.CodingPlans == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"detail": settingsservice.ErrMembershipUnavailable.Error()})
+			return
+		}
+		models, err := d.CodingPlans.InternalModels(c.Request.Context(), uid)
+		if err != nil {
+			codingPlanErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, models)
 	})
 }

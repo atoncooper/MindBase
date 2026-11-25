@@ -333,13 +333,14 @@ export function MermaidDiagram({ code }: { code: string }) {
   return (
     <>
     <div className="my-4 overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-[0_1px_2px_rgba(60,64,67,0.05)]">
-      <div className="flex items-center justify-between gap-2 border-b border-border-subtle bg-[#fbfbfd] px-4 py-2">
-        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] font-medium tracking-wide text-secondary">
-          {error ? (
-            <AlertTriangle className="h-3 w-3 shrink-0 text-warning" aria-hidden="true" />
-          ) : (
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-          )}
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-border-subtle bg-[#f5f5f7] px-4 py-2.5">
+        <span className="flex items-center gap-1.5" aria-hidden="true">
+          <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#febc2e]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#28c840]" />
+        </span>
+        <span className="flex min-w-0 items-center justify-center gap-1.5 truncate text-[11px] font-medium tracking-wide text-secondary">
+          {error && <AlertTriangle className="h-3 w-3 shrink-0 text-warning" aria-hidden="true" />}
           Mermaid
           {pending && <span className="font-normal text-tertiary">· 渲染中…</span>}
           {error && <span className="font-normal text-tertiary">· 渲染失败</span>}

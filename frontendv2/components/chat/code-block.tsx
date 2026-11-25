@@ -79,9 +79,14 @@ export function CodeBlock({ children }: CodeBlockProps) {
   }
 
   return (
-    <div className="md-code my-4 overflow-hidden rounded-xl border border-[#2b303b] bg-[#0f1115] shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-[#151922] px-4 py-2">
-        <span className="min-w-0 truncate font-mono text-[11px] tracking-wide text-[#8b949e]">
+    <div className="md-code my-4 overflow-hidden rounded-[14px] border border-[#2b303b] bg-[#0f1115] shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-white/10 bg-[#151922] px-4 py-2.5">
+        <span className="flex items-center gap-1.5" aria-hidden="true">
+          <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#febc2e]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#28c840]" />
+        </span>
+        <span className="min-w-0 truncate text-center font-mono text-[11px] tracking-wide text-[#8b949e]">
           {language || "Code"}
           {collapsible && <span className="ml-2 text-[#6e7681]">{lineCount} 行</span>}
         </span>

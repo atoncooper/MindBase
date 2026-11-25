@@ -193,6 +193,10 @@ export function registerChatRoutes(
         coding_plan_model?: string;
         /** chat-dialog general model catalog selection (config/model.json; all agents) */
         model?: string;
+        /** regenerate: the replaced turn's user msg id (deleted only on success) */
+        regenerate_from_msg_id?: string;
+        /** composer reasoning-effort slider: min | mid | high | max */
+        reasoning_effort?: string;
         /** board (mindmap/whiteboard) chat context — user input, sanitized below */
         board_uuid?: string;
         board_anchor_text?: string;
@@ -313,6 +317,13 @@ export function registerChatRoutes(
             ? body.coding_plan_model.trim().slice(0, 200)
             : undefined,
           ...(requestedModel ? { chatModel: requestedModel } : {}),
+          ...(typeof body.regenerate_from_msg_id === "string" && body.regenerate_from_msg_id.trim()
+            ? { regenerateFromMsgId: body.regenerate_from_msg_id.trim().slice(0, 100) }
+            : {}),
+          ...(typeof body.reasoning_effort === "string" &&
+          ["min", "mid", "high", "max"].includes(body.reasoning_effort)
+            ? { reasoningEffort: body.reasoning_effort as "min" | "mid" | "high" | "max" }
+            : {}),
           ...(board ? { board } : {}),
           ...(academic ? { academicProjectId: academic.projectId } : {}),
           signal: cancel.signal,

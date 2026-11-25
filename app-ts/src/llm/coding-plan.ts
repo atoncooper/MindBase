@@ -25,6 +25,8 @@ export interface CodingPlan {
   model: string;
   /** Plaintext credential — write-only: never include it in logs. */
   api_key: string;
+  /** true = the user marked this plan as the chat default. */
+  is_default?: boolean;
 }
 
 export type CodingPlanProtocol = "openai" | "anthropic";

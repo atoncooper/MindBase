@@ -271,7 +271,9 @@ func main() {
 	// Coding Plan (user configuration, settings domain): the app_pay membership
 	// config is still defined in the auth config section and the AES cipher is
 	// the shared one injected here.
-	codingPlans := settingsservice.NewCodingPlanService(gdb, cfgAuth.AppPay, cipher, cfgSettings.CodingPlan.Providers)
+	codingPlans := settingsservice.NewCodingPlanService(
+		gdb, cfgAuth.AppPay, cipher, cfgSettings.CodingPlan.Providers, sharedRedis,
+	)
 	// Per-user MCP connections: user configuration (settings domain), shared
 	// AES cipher, consumed by app-ts over the internal M2M face.
 	mcpServers := settingsservice.NewMCPService(gdb, cipher, cfgSettings.MCP)

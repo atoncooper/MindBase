@@ -1,11 +1,11 @@
 # Coding Plan（VIP/SVIP 第三方编程套餐）
 
-> 2026-11-09 新增。用户可在账户设置中绑定第三方编程套餐（OpenCode Zen/Go、Kimi Coding、自定义 OpenAI/Anthropic 兼容端点），在聊天模型选择器中显式选用后供站内对话 / **code agent** 使用。仅 **VIP/SVIP** 可添加与启用；free 只看到升级提示。
+> 2026-11-09 新增；2026-11 起支持「默认套餐」。用户可在账户设置中绑定第三方编程套餐（OpenCode Zen/Go、Kimi Coding、自定义 OpenAI/Anthropic 兼容端点），并把其中一个**设为默认**；只有默认套餐会成为聊天默认模型（显式选择系统模型/套餐模型时除外）。仅 **VIP/SVIP** 可添加与启用；free 只看到升级提示。
 
 ## 1. 定位与边界
 
 - Coding Plan 是**用户自带的第三方套餐凭证**，调用不经过 Higress 平台网关，因此不计平台 token 成本；仅按次计入 `coding_plan` 日额度（free=0，vip/svip 限次）。
-- 这是 BYOK 退役后的**唯一例外**：仅当用户在聊天模型选择器中显式选择 Coding Plan 模型时生效；默认模型 / 系统模型仍全部走平台网关，所选 Coding Plan 模型作用于该轮 main/note/code/quiz/board/academic 等所有 agent。
+- 这是 BYOK 退役后的**唯一例外**：用户把某个套餐**设为默认**后，聊天默认模型就是该套餐（模型优先级：聊天框显式选择 > 该套餐的默认 model > 套餐模型列表第一个 > 平台网关默认）；未设默认时只有显式选择套餐模型才会走第三方。所选模型作用于该轮 main/note/code/quiz/board/academic 等所有 agent。
 - 密钥 AES-GCM 加密存 auth 库；接口只返回掩码；日志只记 `plan_id/provider/model`，不记 key。
 
 ## 2. 数据模型（app-user settings 域（同一 MySQL），CREATE-only）
@@ -89,7 +89,9 @@ GET /settings/coding-plans/{id}/models（VIP/SVIP；聊天对话框按需探测�
 | Qwen Coding Plan | https://coding.dashscope.aliyuncs.com/v1 | https://coding.dashscope.aliyuncs.com/apps/anthropic/v1 |
 | DeepSeek | https://api.deepseek.com | https://api.deepseek.com/anthropic/v1 |
 
-- 「默认模型」可选；留空时由聊天模型选择器按套餐模型列表选择。
+- 「默认模型」可选；留空时默认取套餐模型列表第一个（Redis 缓存）。编辑时可从模型下拉建议中选择。
+- 每个套餐行有「设为默认 / 取消默认」；同一时间只有一个默认套餐，列表会显示「默认」徽标。
+- 每行「刷新模型」调用 `GET /settings/coding-plans/{id}/models?refresh=1`，强制重新探测并重写 Redis 缓存。
 - 列表每行「测试」调用 `POST /settings/coding-plans/{id}/test`：先探测 `{base_url}/models`，失败后发一次 `max_tokens=1` 的最小聊天请求，结果内联展示并返回模型数量。
 - 「有没有获取 model 的接口」因厂商而异：MiniMax（OpenAI 协议）、DeepSeek 等提供 `{base}/models`；OpenCode 的模型目录在独立路径：Console `https://opencode.ai/inference/v1/models`、Go `https://opencode.ai/inference/go/v1/models`；Kimi/GLM/Qwen 的 Coding 端点通常也兼容 `{base}/models`；Anthropic 协议按 `/v1/models` 探测。没有列表接口时，聊天选择器只展示「默认模型」（若已配置），但「测试」仍可通过聊天探测确认连接。
 - 创建时 `model` 可为空（后端不再强制），避免账户页添加套餐时出现 422。
@@ -104,4 +106,6 @@ GET /settings/coding-plans/{id}/models（VIP/SVIP；聊天对话框按需探测�
 
 - app-user 新增 `app_pay.base_url`（默认 `http://apisix:9080`）与 `app_pay.key`（默认 `APISIX_CONSUMER_KEY`）；
 - app-ts 的 `quota.limits.coding_plan`：free 0 / vip 100 / svip 300（可按运营调整）；
-- 新增表由 app-user 启动时 CREATE IF NOT EXISTS；DDL guard 测试同步。
+- 新增表由 app-user 启动时 CREATE IF NOT EXISTS；DDL guard 测试同步；
+- 模型列表 Redis 缓存 TTL 固定 **6h**（代码常量，不是配置项/环境变量）；
+- app-ts 的套餐查找进程内缓存 TTL 固定 **30s**（代码常量）。

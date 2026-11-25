@@ -201,6 +201,20 @@ export class ChatSessionsService {
     return { success: true };
   }
 
+  /** Delete [from, before) — regenerate drops the replaced turn + later turns. */
+  async deleteRange(
+    uid: string,
+    sessionId: string,
+    fromMsgId: string,
+    beforeMsgId: string,
+  ): Promise<{ success: true; deleted: number }> {
+    const session = await this.sessions.get(sessionId, uid);
+    if (!session) throw new ChatSessionsError(404, "会话不存在");
+    const deleted = await this.messages.deleteRange(sessionId, fromMsgId, beforeMsgId);
+    if (deleted === undefined) throw new ChatSessionsError(404, "消息不存在");
+    return { success: true, deleted };
+  }
+
   /** Truncate at the anchor (inclusive) — regenerate flow. */
   async truncateFrom(
     uid: string,
