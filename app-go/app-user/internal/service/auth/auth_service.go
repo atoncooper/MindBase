@@ -1170,7 +1170,6 @@ func (s *AuthService) applyProfilePatch(uid int64, p *ProfilePatch) error {
 		}
 	}
 	return nil
-	return s.users.UpdateProfileFields(s.db, uid, fields)
 }
 
 func isDigits(s string) bool {
