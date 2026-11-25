@@ -32,6 +32,7 @@ const basePlan: CodingPlan = {
   base_url: "https://api.example.com/v1/",
   model: "gpt-4o-mini",
   api_key: "sk-super-secret-key",
+  is_default: true,
 };
 
 interface CapturedLog {

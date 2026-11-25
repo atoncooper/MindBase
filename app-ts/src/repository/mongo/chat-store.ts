@@ -354,6 +354,22 @@ export class MongoChatStore implements ChatSessionRepository, MessageRepository 
     return res.deletedCount;
   }
 
+  async deleteRange(sessionId: string, fromMsgId: string, beforeMsgId: string): Promise<number | undefined> {
+    const from = await this.messages.findOne({ _id: fromMsgId, sessionId });
+    const before = await this.messages.findOne({ _id: beforeMsgId, sessionId });
+    if (!from || !before) return undefined;
+    const docs = await this.messages
+      .find(
+        { sessionId, createdAt: { $gte: from.createdAt, $lt: before.createdAt } },
+        { projection: { _id: 1 } },
+      )
+      .toArray();
+    if (docs.length === 0) return 0;
+    const ids = docs.map((doc) => doc._id);
+    const res = await this.messages.deleteMany({ _id: { $in: ids } });
+    return res.deletedCount;
+  }
+
   /** Ops helper: clean up orphaned pending messages (placeholders from cut-off streams, useless after the timeout) */
   async purgeStalePending(olderThanMs: number): Promise<number> {
     const res = await this.messages.deleteMany({

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { MemoryVectorTaskStore } from "../src/repository/memory/vector-tasks.js";
 import { VideoVectorizerService, VecError } from "../src/services/video-vectorizer.js";
 import { QuotaService } from "../src/services/quota.js";
@@ -63,6 +63,9 @@ const CONTENT = "x".repeat(120);
 
 
 const savedQuota = structuredClone(config.quota);
+beforeEach(() => {
+  config.quota.enabled = true;
+});
 afterEach(() => {
   config.quota = structuredClone(savedQuota);
 });

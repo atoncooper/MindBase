@@ -103,8 +103,11 @@ func TestRouteParity(t *testing.T) {
 			"PATCH /settings/coding-plans/:id",
 			"DELETE /settings/coding-plans/:id",
 			"GET /settings/coding-plans/:id/models",
+			"PUT /settings/coding-plans/:id/default",
+			"DELETE /settings/coding-plans/default",
 			"POST /settings/coding-plans/:id/test",
 			"GET /internal/settings/coding-plan/:uid",
+			"GET /internal/settings/coding-plan/:uid/models",
 			// Per-user MCP connections: CRUD here (settings domain), plus the
 			// internal face app-ts reads and the discovery write-back.
 			"GET /settings/mcp/servers",

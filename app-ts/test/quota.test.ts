@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import {
   QuotaService,
   estimateTokens,
@@ -21,6 +21,11 @@ import { config } from "../src/config/index.js";
  */
 
 const savedQuota = structuredClone(config.quota);
+// 2026-11: shipping default is quota.enabled=false (no token limits); these
+// unit tests exercise the enforcement machinery, so opt in explicitly.
+beforeEach(() => {
+  config.quota.enabled = true;
+});
 afterEach(() => {
   config.quota = structuredClone(savedQuota);
 });

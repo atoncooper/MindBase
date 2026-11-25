@@ -10,7 +10,12 @@ import { createVectorSearchTool } from "../tools/chat/vector-search.js";
 import { createKgSearchTool } from "../tools/chat/kg-search.js";
 import { createListVideosTool, createGetVideoSummariesTool } from "../tools/chat/list-videos.js";
 import { createSaveMemoryTool } from "../tools/memory/index.js";
-import { createSaveNoteTool } from "../tools/note/index.js";
+import {
+  createGetNoteTool,
+  createListNotesTool,
+  createSaveNoteTool,
+  createUpdateNoteTool,
+} from "../tools/note/index.js";
 import { createRunCodeTool } from "../tools/code/index.js";
 import type { ResearchExecutionGuard } from "../tools/code/execution-guard.js";
 import { createEmitQuizTool, createEmitGradingTool } from "../tools/quiz/index.js";
@@ -39,6 +44,7 @@ import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import {
   createCloudDocSummaryTool,
+  createCloudFileReadTool,
   createCloudSemanticSearchTool,
   createCloudSimilarFilesTool,
 } from "../tools/cloud/index.js";
@@ -422,10 +428,11 @@ export async function bootstrap() {
   const appCloud = new AppCloudClient();
   registry.register(createCloudDocSummaryTool(appCloud));
   registry.register(createCloudSemanticSearchTool(appCloud));
+  registry.register(createCloudFileReadTool(appCloud));
   registry.register(createCloudSimilarFilesTool(appCloud));
   if (appCloud.configured) {
     log.info(
-      `[BOOT] cloud tools registered: cloud_doc_summary / cloud_semantic_search / cloud_similar_files (app-cloud ${config.appCloud.baseUrl})`,
+      `[BOOT] cloud tools registered: cloud_doc_summary / cloud_file_read / cloud_semantic_search / cloud_similar_files (app-cloud ${config.appCloud.baseUrl})`,
     );
   } else {
     log.warn(
@@ -564,9 +571,12 @@ export async function bootstrap() {
   // Note saving: goes through app-content-mcp (save_note) — never the note tables directly.
   if (contentMcp) {
     registry.register(createSaveNoteTool(contentMcp));
-    log.info("[BOOT] note MCP tool registered (save_note; content MCP)");
+    registry.register(createListNotesTool(contentMcp));
+    registry.register(createGetNoteTool(contentMcp));
+    registry.register(createUpdateNoteTool(contentMcp));
+    log.info("[BOOT] note MCP tools registered (save/list/get/update; content MCP)");
   } else {
-    log.info("[BOOT] note MCP disabled — save_note not registered");
+    log.info("[BOOT] note MCP disabled — note tools not registered");
   }
   // Code execution: the composition root is the only place
   // that decides remote vs stub. Enabled = app-sandbox control plane (HTTP +

@@ -117,4 +117,10 @@ export interface MessageRepository {
   /** delete the anchor message and everything after it (regenerate flow);
    * returns undefined when the anchor msg does not exist in the session */
   truncateFrom(sessionId: string, anchorMsgId: string): Promise<number | undefined>;
+  /**
+   * Delete messages from fromMsgId (inclusive) up to beforeMsgId (exclusive).
+   * Regenerate cleanup: drop the replaced turn + any later turns, keep the new
+   * turn that was appended at the end.
+   */
+  deleteRange(sessionId: string, fromMsgId: string, beforeMsgId: string): Promise<number | undefined>;
 }

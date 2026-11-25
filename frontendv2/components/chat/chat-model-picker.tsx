@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Boxes, Check, ChevronDown, Loader2 } from "lucide-react";
+import { EffortSlider, type ReasoningEffort } from "./effort-slider";
 import {
     codingPlanApi,
     type ChatModel,
@@ -34,6 +35,8 @@ export function ChatModelPicker({
     value,
     codingPlanValue,
     onChange,
+    reasoningEffort = "mid",
+    onReasoningEffortChange,
     disabled = false,
 }: {
     models: ChatModel[];
@@ -42,6 +45,9 @@ export function ChatModelPicker({
     /** 当前选中的 Coding Plan 模型；undefined = 未使用 Coding Plan */
     codingPlanValue?: string;
     onChange: (selection: ChatModelSelection) => void;
+    /** 推理强度（弹层底部滑动变阻器） */
+    reasoningEffort?: ReasoningEffort;
+    onReasoningEffortChange?: (value: ReasoningEffort) => void;
     disabled?: boolean;
 }) {
     const [open, setOpen] = useState(false);
@@ -365,6 +371,23 @@ export function ChatModelPicker({
                     {activeTab === "coding" && !forbidden && (
                         <div className="border-t border-border-subtle px-3 py-2 text-[11px] leading-relaxed text-tertiary">
                             选择 Coding Plan 模型会消耗套餐额度；套餐不可用时自动回退平台模型。
+                        </div>
+                    )}
+
+                    {onReasoningEffortChange && (
+                        <div className="border-t border-border-subtle px-3 pb-2 pt-2.5">
+                            <div className="mb-1.5 flex items-center justify-between">
+                                <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-tertiary">
+                                    推理强度
+                                </span>
+                                <span className="text-[10px] font-medium uppercase tracking-wide text-secondary">
+                                    {reasoningEffort}
+                                </span>
+                            </div>
+                            <EffortSlider
+                                value={reasoningEffort}
+                                onChange={onReasoningEffortChange}
+                            />
                         </div>
                     )}
                 </div>

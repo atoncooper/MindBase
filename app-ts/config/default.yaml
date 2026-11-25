@@ -464,7 +464,8 @@ quota:
   #   · 额度单位 = 标准 token，按模型单价归一（贵模型每个真实 token 扣更多）；
   #   · 订阅价值放大：¥48 VIP ≈ ¥480 等值（默认 planBonus=10）；SVIP ¥148、ProMax ¥248。
   # 失败方向：Redis 不可用 → 放行（可用性优先）；app-pay 不可用 → tier=free（防超卖）。
-  enabled: true
+  # 2026-11：产品要求不做 token 限额（只保留用量记账），因此关闭门禁。
+  enabled: false
   # 标准 token 参考价（元/百万 token）；模型权重 = 模型单价 / 该值
   referencePricePerMTok: 10
   # 订阅权益倍率：额度价值 = 价格 × planBonus（1 = 不放大；10 = 48 元档给 480 元等值）

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
 	"app-user/internal/config"
 	settingsdto "app-user/internal/dto/settings"
 	"app-user/internal/infra/security"
@@ -81,13 +83,14 @@ type CodingPlanPatch struct {
 
 // CodingPlanInternal is the M2M payload (plaintext key only on this face).
 type CodingPlanInternal struct {
-	ID       int64
-	Provider string
-	Protocol string
-	Label    string
-	BaseURL  string
-	Model    string
-	APIKey   string
+	ID        int64
+	Provider  string
+	Protocol  string
+	Label     string
+	BaseURL   string
+	Model     string
+	APIKey    string
+	IsDefault bool
 }
 
 // CodingPlanService owns user CRUD, the VIP/SVIP gate and the internal
@@ -100,6 +103,9 @@ type CodingPlanService struct {
 	http          *http.Client
 	providers     []config.CodingPlanProviderConfig
 	providerIndex map[string]int
+	// redis caches provider model lists (never persisted in MySQL); nil = off.
+	redis     goredis.UniversalClient
+	modelsTTL time.Duration
 }
 
 // NewCodingPlanService wires the service against the shared MySQL connection,
@@ -110,6 +116,7 @@ func NewCodingPlanService(
 	appPay config.AppPayConfig,
 	cipher *security.Cipher,
 	providers []config.CodingPlanProviderConfig,
+	redisClient goredis.UniversalClient,
 ) *CodingPlanService {
 	index := make(map[string]int, len(providers))
 	for i, p := range providers {
@@ -122,6 +129,10 @@ func NewCodingPlanService(
 		membership:    NewMembershipClient(appPay),
 		providers:     providers,
 		providerIndex: index,
+		redis:         redisClient,
+		// Hardcoded by design: the provider model list is volatile cache data,
+		// not an operator knob (users refresh explicitly from the account page).
+		modelsTTL: 6 * time.Hour,
 		http: &http.Client{
 			Timeout:   codingPlanProbeTimeout,
 			Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
@@ -316,8 +327,14 @@ func (s *CodingPlanService) UpdatePlan(ctx context.Context, uid, id int64, patch
 	if refreshed == nil {
 		return nil, ErrCodingPlanNotFound
 	}
+	if refreshed.Enabled != nil && !*refreshed.Enabled {
+		// A disabled plan can no longer be the chat default.
+		_ = s.plans.ClearDefaultIfPlan(s.db, uid, id)
+	}
 	slog.Info("[CODING_PLAN] plan updated",
 		"uid", uid, "plan_id", id, "provider", refreshed.Provider, "model", derefString(refreshed.Model))
+	// Any credential/endpoint/model change invalidates the cached model catalog.
+	s.invalidateModels(ctx, id)
 	return s.toDTO(refreshed), nil
 }
 
@@ -333,6 +350,10 @@ func (s *CodingPlanService) DeletePlan(ctx context.Context, uid, id int64) error
 	if !ok {
 		return ErrCodingPlanNotFound
 	}
+	if err := s.plans.ClearDefaultIfPlan(s.db, uid, id); err != nil {
+		return err
+	}
+	s.invalidateModels(ctx, id)
 	slog.Info("[CODING_PLAN] plan deleted", "uid", uid, "plan_id", id)
 	return nil
 }

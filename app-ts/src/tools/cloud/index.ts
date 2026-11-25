@@ -97,3 +97,5 @@ export function createCloudDocSummaryTool(client: CloudDocSummaryClient) {
     },
   });
 }
+
+export { createCloudFileReadTool } from "./read.js";

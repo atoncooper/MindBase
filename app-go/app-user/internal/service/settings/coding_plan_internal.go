@@ -16,7 +16,7 @@ func (s *CodingPlanService) InternalGet(ctx context.Context, uid int64) (*Coding
 	if err := s.RequireVIP(ctx, uid); err != nil {
 		return nil, err
 	}
-	row, err := s.plans.FirstEnabled(s.db, uid)
+	row, isDefault, err := s.defaultOrFirstEnabled(uid)
 	if err != nil {
 		return nil, err
 	}
@@ -30,13 +30,14 @@ func (s *CodingPlanService) InternalGet(ctx context.Context, uid int64) (*Coding
 	slog.Info("[CODING_PLAN] internal plan served",
 		"uid", uid, "plan_id", row.ID, "provider", row.Provider, "model", derefString(row.Model))
 	return &CodingPlanInternal{
-		ID:       row.ID,
-		Provider: row.Provider,
-		Protocol: row.Protocol,
-		Label:    derefString(row.Label),
-		BaseURL:  s.effectiveBaseURL(row.Provider, row.Protocol, row.BaseURL),
-		Model:    derefString(row.Model),
-		APIKey:   apiKey,
+		ID:        row.ID,
+		Provider:  row.Provider,
+		Protocol:  row.Protocol,
+		Label:     derefString(row.Label),
+		BaseURL:   s.effectiveBaseURL(row.Provider, row.Protocol, row.BaseURL),
+		Model:     derefString(row.Model),
+		APIKey:    apiKey,
+		IsDefault: isDefault,
 	}, nil
 }
 
@@ -48,10 +49,16 @@ func (s *CodingPlanService) toDTO(row *settingsmodel.CodingPlan) *settingsdto.Co
 		slog.Warn("[CODING_PLAN] mask decrypt failed", "uid", row.UID, "plan_id", row.ID, "err", err)
 		key = "****"
 	}
+	isDefault := false
+	if s.db != nil {
+		if def, derr := s.plans.GetDefault(s.db, row.UID); derr == nil && def != nil && def.PlanID == row.ID {
+			isDefault = true
+		}
+	}
 	v := settingsdto.NewCodingPlanView(
 		row.ID, row.Provider, row.Protocol, derefString(row.Label),
 		s.effectiveBaseURL(row.Provider, row.Protocol, row.BaseURL),
-		derefString(row.Model), key, row.Enabled == nil || *row.Enabled,
+		derefString(row.Model), key, row.Enabled == nil || *row.Enabled, isDefault,
 		row.CreatedAt, row.UpdatedAt,
 	)
 	return &v

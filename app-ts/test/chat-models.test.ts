@@ -396,7 +396,7 @@ describe("ChatService · per-turn model", () => {
       undefined,
       async () => {
         resolverCalls += 1;
-        return planModel;
+        return { model: planModel, modelId: "plan/model" };
       },
     );
     await drain(chat.askStream({ query: "hi", sessionId: "s-model-3", uid: "1", model: "plan/model" }));

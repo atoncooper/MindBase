@@ -84,6 +84,8 @@ export interface CloudVideoUpdateParams {
     description?: string;
     tags?: string[];
     folderId?: number | null;
+    /** 重命名：仅改显示名，不移动对象 */
+    originalName?: string;
 }
 
 export interface CloudUploadPart {

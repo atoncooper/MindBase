@@ -31,6 +31,7 @@ var ownedTables = []string{
 	"user_mcp_servers",
 	"user_mcp_oauth",
 	"user_mcp_oauth_states",
+	"coding_plan_defaults",
 }
 
 // Migrate creates the config schema if (and only if) it does not exist yet.
@@ -90,6 +91,14 @@ func schemaDDL() []string {
 			unique key uk_ums_uid_name (uid, name),
 			index idx_ums_uid (uid),
 			constraint user_mcp_servers_ibfk_1 foreign key (uid) references users (uid)
+		)`,
+		// One default Coding Plan per user (companion table keeps coding_plans
+		// CREATE-only; default model still lives on coding_plans.model).
+		`create table if not exists coding_plan_defaults (
+			uid        bigint   not null primary key,
+			plan_id    bigint   not null,
+			created_at datetime null,
+			updated_at datetime null
 		)`,
 		// OAuth 2.1 credentials for one MCP connection (companion table so the
 		// live user_mcp_servers schema stays CREATE-only; auth_kind='oauth').

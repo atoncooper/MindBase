@@ -22,16 +22,18 @@ type AvatarUpload struct {
 
 // CodingPlan is the safe wire shape — api_key is never present, only masked.
 type CodingPlan struct {
-	ID           int64      `json:"id"`
-	Provider     string     `json:"provider"`
-	Protocol     string     `json:"protocol"`
-	Label        string     `json:"label"`
-	BaseURL      string     `json:"base_url"`
-	Model        string     `json:"model"`
-	APIKeyMasked string     `json:"api_key_masked"`
-	Enabled      bool       `json:"enabled"`
-	CreatedAt    *time.Time `json:"created_at"`
-	UpdatedAt    *time.Time `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Provider     string `json:"provider"`
+	Protocol     string `json:"protocol"`
+	Label        string `json:"label"`
+	BaseURL      string `json:"base_url"`
+	Model        string `json:"model"`
+	APIKeyMasked string `json:"api_key_masked"`
+	Enabled      bool   `json:"enabled"`
+	// IsDefault: this plan is the chat default (at most one per user).
+	IsDefault bool       `json:"is_default"`
+	CreatedAt *time.Time `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 // CodingPlanProvider is one entry in the operator-owned provider catalog
@@ -77,13 +79,14 @@ type CodingPlanModels struct {
 // InternalCodingPlan is GET /internal/settings/coding-plan/{uid} — the ONLY
 // face that carries the decrypted api_key (M2M key-auth guarded).
 type InternalCodingPlan struct {
-	ID       int64  `json:"id"`
-	Provider string `json:"provider"`
-	Protocol string `json:"protocol"`
-	Label    string `json:"label"`
-	BaseURL  string `json:"base_url"`
-	Model    string `json:"model"`
-	APIKey   string `json:"api_key"`
+	ID        int64  `json:"id"`
+	Provider  string `json:"provider"`
+	Protocol  string `json:"protocol"`
+	Label     string `json:"label"`
+	BaseURL   string `json:"base_url"`
+	Model     string `json:"model"`
+	APIKey    string `json:"api_key"`
+	IsDefault bool   `json:"is_default"`
 }
 
 // InternalCodingPlanEnvelope is the internal response ({plan:{...}}).
@@ -93,7 +96,7 @@ type InternalCodingPlanEnvelope struct {
 
 // NewCodingPlanView converts decrypted plan fields into the safe wire shape.
 // The plaintext api_key is masked here and never stored on the DTO.
-func NewCodingPlanView(id int64, provider, protocol, label, baseURL, model, apiKey string, enabled bool, createdAt, updatedAt *time.Time) CodingPlan {
+func NewCodingPlanView(id int64, provider, protocol, label, baseURL, model, apiKey string, enabled, isDefault bool, createdAt, updatedAt *time.Time) CodingPlan {
 	return CodingPlan{
 		ID:           id,
 		Provider:     provider,
@@ -103,6 +106,7 @@ func NewCodingPlanView(id int64, provider, protocol, label, baseURL, model, apiK
 		Model:        model,
 		APIKeyMasked: MaskCodingPlanKey(apiKey),
 		Enabled:      enabled,
+		IsDefault:    isDefault,
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
 	}

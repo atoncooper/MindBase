@@ -147,6 +147,15 @@ function resultText(output: unknown): string {
 }
 
 /** Trimmed + capped tool-result preview for the step done frame; undefined when empty. */
+// Composer effort → OpenAI-compatible reasoning_effort. The ladder is monotonic;
+// providers that do not support the field ignore it.
+const REASONING_EFFORT_VALUES: Record<string, string> = {
+  min: "minimal",
+  mid: "low",
+  high: "medium",
+  max: "high",
+};
+
 function compactResult(output: unknown): string | undefined {
   const text = resultText(output).trim();
   if (!text) return undefined;
@@ -250,6 +259,18 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
         messages,
         tools,
         temperature: config.llm.temperature,
+        ...(input.reasoningEffort
+          ? {
+              providerOptions: {
+                "openai-compatible": {
+                  reasoningEffort: REASONING_EFFORT_VALUES[input.reasoningEffort] ?? "medium",
+                },
+                higress: {
+                  reasoningEffort: REASONING_EFFORT_VALUES[input.reasoningEffort] ?? "medium",
+                },
+              },
+            }
+          : {}),
         // L1 省流：输出预算封顶（思考 token 计入输出，随之一并截断）
         ...(maxOutputTokensFor(input.uid) > 0 ? { maxOutputTokens: maxOutputTokensFor(input.uid) } : {}),
         // Turn-level cancellation: client disconnect aborts the upstream request

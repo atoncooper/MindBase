@@ -528,6 +528,25 @@ func updateVideo(d Deps) gin.HandlerFunc {
 				fields["description"] = *req.Description
 			}
 		}
+		if req.OriginalNameSet {
+			if req.OriginalName == nil {
+				apiErr(c, http.StatusUnprocessableEntity, "文件名不能为空")
+				return
+			}
+			name := strings.TrimSpace(*req.OriginalName)
+			// Keep the flat cloud layout: path separators are not valid in a name.
+			name = strings.NewReplacer("/", "_", "\\", "_").Replace(name)
+			if name == "" || name == "." || name == ".." || len([]rune(name)) > 255 {
+				apiErr(c, http.StatusUnprocessableEntity, "文件名需为 1-255 个字符")
+				return
+			}
+			fields["original_name"] = name
+			// Display name = title || original_name; keep them in sync unless the
+			// caller explicitly changed the title in the same request.
+			if !req.TitleSet {
+				fields["title"] = name
+			}
+		}
 		if req.TagsSet {
 			fields["tags"] = req.Tags
 		}

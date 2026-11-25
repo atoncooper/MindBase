@@ -69,6 +69,10 @@ export interface AskStreamRequest {
    * rendered into the system prompt as a controlled section.
    */
   academicProjectId?: string;
+  /** Composer reasoning effort (min|mid|high|max); forwarded to the provider. */
+  reasoningEffort?: "min" | "mid" | "high" | "max";
+  /** Regenerate: the previous turn's user msg id (excluded from model history). */
+  regenerateFromMsgId?: string;
   /** Aborted when the SSE client disconnects: cancels generation + in-flight tools
    * and makes sure the assistant message is finalized instead of left pending. */
   signal?: AbortSignal;
@@ -162,12 +166,12 @@ export class ChatService {
       uid: string | undefined,
       projectId: string,
     ) => Promise<string | undefined>,
-    /** resolve the chat-dialog selected Coding Plan model once per turn; all agents share it */
+    /** resolve the turn's Coding Plan model once (explicit pick or plan default); all agents share it */
     private readonly resolveModel?: (input: {
       uid?: string;
       model?: string;
       sessionId?: string;
-    }) => Promise<LanguageModel | undefined>,
+    }) => Promise<{ model: LanguageModel; modelId: string } | undefined>,
     /**
      * Turn-scoped scratch files (docs/temp-files.md). Only disposeRequest is
      * needed here: the program deletes the turn's directory when the whole
@@ -232,14 +236,25 @@ export class ChatService {
     const sessionId = req.sessionId ?? randomUUID();
     const session = await this.sessions.getOrCreate(sessionId, req.uid);
     const stored = req.images?.length ? await this.storeImages(session.id, req.images) : undefined;
-    const { assistantMsg } = await this.messages.beginTurn(session.id, req.query, stored?.inlineImages, stored?.refs);
+    const { userMsg, assistantMsg } = await this.messages.beginTurn(
+      session.id,
+      req.query,
+      stored?.inlineImages,
+      stored?.refs,
+    );
 
-    const history = await this.hydrateHistoryImages(
+    let history = await this.hydrateHistoryImages(
       await this.messages.recentMessages(
         session.id,
         req.historyLimit ?? historyLimitFor(config.context.recentKeep, gate?.level ?? "L0"),
       ),
     );
+    // Regenerate: the model must not see the answer being replaced (nor the
+    // freshly inserted user row); trim the context at the old turn's anchor.
+    if (req.regenerateFromMsgId) {
+      const anchorIdx = history.findIndex((m) => m.id === req.regenerateFromMsgId);
+      if (anchorIdx >= 0) history = history.slice(0, anchorIdx);
+    }
     const effectiveScope = scopeIsEmpty(req.scope) ? inheritScopeFromHistory(history) : (req.scope ?? {});
     if (scopeIsEmpty(req.scope) && !scopeIsEmpty(effectiveScope)) {
       log.info(`[CHAT] scope inherited from previous sources session=${sessionId}`);
@@ -323,25 +338,28 @@ export class ChatService {
       // Per-turn model resolution. Exactly ONE LanguageModel may reach the harness
       // (`model` there is a LanguageModel, not an id — a string would be treated as
       // a model object). Precedence: explicit chat-catalog pick (config/model.json)
-      // > Coding Plan pick > service default (no model passed; the agent's own
-      // gateway provider uses config.llm.model).
+      // > Coding Plan (explicit pick, else the user's plan default) > service
+      // default (no model passed; the agent's own gateway provider uses
+      // config.llm.model). A configured plan therefore wins over the platform
+      // default; a missing/非-VIP/quota-exhausted plan falls back to the gateway.
       if (req.chatModel) {
         resolvedModel = createGatewayModel("chat", { model: req.chatModel, uid: req.uid });
         turnModelId = req.chatModel;
-      } else if (req.model && this.resolveModel) {
+      } else if (this.resolveModel) {
         try {
-          resolvedModel = await this.resolveModel({
+          const resolved = await this.resolveModel({
             uid: req.uid,
-            model: req.model,
+            ...(req.model ? { model: req.model } : {}),
             // stable per-conversation id for OpenCode's x-opencode-session
             sessionId: session.id,
           });
-          if (resolvedModel) {
-            turnModelId = req.model;
+          if (resolved) {
+            resolvedModel = resolved.model;
+            turnModelId = resolved.modelId;
             externalBilling = true;
           }
         } catch (err) {
-          log.warn("[CHAT] resolve selected model failed, fallback gateway: " + (err instanceof Error ? err.message : String(err)));
+          log.warn("[CHAT] resolve coding plan model failed, fallback gateway: " + (err instanceof Error ? err.message : String(err)));
         }
       }
 
@@ -362,6 +380,7 @@ export class ChatService {
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(extraSystem ? { extraSystem } : {}),
         ...(academicProjectId ? { academicProjectId } : {}),
+        ...(req.reasoningEffort ? { reasoningEffort: req.reasoningEffort } : {}),
         signal: turnAbort.signal,
       })) {
         if (turnAbort.signal.aborted) break;
@@ -386,6 +405,29 @@ export class ChatService {
         yield frame;
       }
       const aborted = turnAbort.signal.aborted;
+      if (!aborted && !hadError && req.regenerateFromMsgId) {
+        // Success: finally drop the replaced turn (and any later turns), keeping
+        // the new turn appended at the end. Done only now so a failed
+        // regeneration leaves the previous answer intact.
+        try {
+          await this.messages.deleteRange(session.id, req.regenerateFromMsgId, userMsg.id);
+        } catch (err) {
+          log.warn(`[CHAT] regenerate cleanup failed session=${sessionId}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      // Drop a failed turn when it produced nothing (no empty bubbles on reload),
+      // and always drop it for regenerate (the previous turn stays authoritative).
+      // A user stop with partial output / a partial failed answer is kept.
+      const isRegenerate = Boolean(req.regenerateFromMsgId);
+      const dropFailedTurn =
+        (hadError || (aborted && deadlineHit)) && (isRegenerate || !fullContent.trim());
+      if (dropFailedTurn) {
+        try {
+          await this.messages.truncateFrom(session.id, userMsg.id);
+        } catch (err) {
+          log.warn(`[CHAT] failed-turn cleanup failed session=${sessionId}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
       await finalizeAssistantTurn({
         sources: finalSources,
         ...(finalArtifacts.length > 0 ? { artifacts: finalArtifacts } : {}),

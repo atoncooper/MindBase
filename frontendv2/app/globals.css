@@ -202,10 +202,10 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
-*::-webkit-scrollbar { width: 11px; height: 11px; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb {
   background: var(--color-scrollbar-thumb);
-  border: 3px solid transparent; /* slimmer visual bar inside a wider hit area */
+  border: 2px solid transparent; /* slimmer visual bar inside a wider hit area */
   background-clip: padding-box;
   border-radius: 999px;
   min-width: 28px;
@@ -222,6 +222,22 @@ body {
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-corner { background: transparent; } /* h+v overlap (md tables) */
 *::-webkit-scrollbar-button { display: none; }
+
+/* Textareas get an even finer bar: long prompts scroll inside a 6px gutter
+   instead of the page-level 8px track. */
+textarea {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(60, 60, 67, 0.22) transparent;
+}
+textarea::-webkit-scrollbar { width: 6px; height: 6px; }
+textarea::-webkit-scrollbar-thumb {
+  background: rgba(60, 60, 67, 0.22);
+  border-radius: 999px;
+  min-height: 24px;
+}
+textarea::-webkit-scrollbar-thumb:hover { background: rgba(60, 60, 67, 0.38); }
+textarea::-webkit-scrollbar-track { background: transparent; }
+textarea::-webkit-scrollbar-button { display: none; }
 
 /* ==================== Components ==================== */
 
@@ -913,10 +929,11 @@ body {
 .md-table-scroll {
   margin: 1.1em 0;
   overflow-x: auto;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: var(--color-surface);
-  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.05);
+  /* Borderless, Apple-like table: no outer frame, only hairline row rules. */
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   scrollbar-width: thin;
   scrollbar-color: rgba(60, 60, 67, 0.2) transparent;
   -webkit-overflow-scrolling: touch;
@@ -937,27 +954,28 @@ body {
 .md-body table {
   width: 100%;
   margin: 0;
-  border-collapse: separate;
+  border-collapse: collapse;
   border-spacing: 0;
   font-size: 13.5px;
 }
 .md-body th,
 .md-body td {
   border: 0;
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid rgba(60, 64, 67, 0.08);
   padding: 10px 14px;
   text-align: left;
   vertical-align: top;
 }
 .md-body th {
-  background: #f7f7f8;
-  border-bottom: 1px solid var(--color-border);
-  color: var(--color-foreground);
+  /* No filled header band: the column labels sit on the page background. */
+  background: transparent;
+  border-bottom: 1px solid rgba(60, 64, 67, 0.14);
+  color: var(--color-secondary);
   font-weight: 600;
   white-space: nowrap;
 }
 .md-body tr:last-child td { border-bottom: 0; }
-.md-body tbody tr:hover { background: #fafafa; }
+.md-body tbody tr:hover { background: rgba(0, 0, 0, 0.025); }
 
 /* ---- Mermaid viewport --------------------------------------------------- */
 .md-diagram-scroll {
@@ -1046,8 +1064,8 @@ body {
 .note-prose pre {
   margin: 1em 0;
   padding: 0.9em 1em;
-  background: var(--color-border-subtle);
-  border: 1px solid var(--color-border);
+  background: #f7f7f8;
+  border: 1px solid rgba(60, 64, 67, 0.06);
   border-radius: 10px;
   overflow-x: auto;
   line-height: 1.6;
@@ -1062,7 +1080,7 @@ body {
 }
 
 .note-prose blockquote {
-  border-left: 3px solid var(--color-accent);
+  border-left: 3px solid var(--color-border);
   margin: 1em 0;
   padding: 0.2em 0 0.2em 1em;
   color: var(--color-secondary);
@@ -1084,14 +1102,21 @@ body {
 }
 .note-prose th,
 .note-prose td {
-  border: 1px solid var(--color-border);
-  padding: 0.5em 0.75em;
+  /* Notion-like: hairline row rules, no side/border frame, no filled header. */
+  border: 0;
+  border-bottom: 1px solid rgba(60, 64, 67, 0.08);
+  padding: 0.55em 0.75em;
   text-align: left;
+  vertical-align: top;
 }
 .note-prose th {
-  background: var(--color-border-subtle);
+  background: transparent;
+  border-bottom: 1px solid rgba(60, 64, 67, 0.14);
+  color: var(--color-secondary);
   font-weight: 600;
+  white-space: nowrap;
 }
+.note-prose tr:last-child td { border-bottom: 0; }
 
 .note-prose img {
   max-width: 100%;
@@ -1237,4 +1262,86 @@ body {
   .quiz-scope .g-field { font-size: 16px; }
   .quiz-scope .g-segmented button { min-width: 44px; }
   .quiz-scope .g-chip { min-height: 36px; }
+}
+
+/* ---- BlockNote (notes WYSIWYG): page-native, no card chrome -------------- */
+.bn-container {
+  --bn-colors-editor-background: transparent;
+  --bn-colors-editor-text: var(--color-foreground);
+  --bn-colors-menu-background: var(--color-surface);
+  --bn-colors-menu-text: var(--color-foreground);
+  --bn-colors-hovered-background: var(--color-border-subtle);
+  --bn-colors-selected-background: var(--color-border-subtle);
+  --bn-colors-side-menu: var(--color-tertiary);
+  font-family: var(--font-sans);
+}
+.bn-editor {
+  padding-inline: 0;
+  padding-block: 0;
+  font-size: 16px;
+  line-height: 1.8;
+  color: var(--color-foreground);
+}
+.bn-block-outer { margin: 2px 0; }
+.bn-editor .bn-inline-content code {
+  background: var(--color-border-subtle);
+  border-radius: 5px;
+  padding: 0.12em 0.35em;
+  font-size: 0.88em;
+}
+
+
+/* ---- Cloud-drive custom video chrome -------------------------------------- */
+.video-seek {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #ffffff var(--progress, 0%),
+    rgba(255, 255, 255, 0.26) var(--progress, 0%)
+  );
+  outline: none;
+  cursor: pointer;
+}
+.video-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  border: none;
+}
+.video-seek::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.video-volume {
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+  outline: none;
+  cursor: pointer;
+}
+.video-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: none;
+}
+.video-volume::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
 }

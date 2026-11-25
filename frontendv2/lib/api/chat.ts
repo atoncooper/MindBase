@@ -128,6 +128,10 @@ export interface ChatRequestPayload {
     // 用户选择的 Coding Plan 模型（来自 /settings/coding-plans/{id}/models）。
     // 与 model 互斥：传这个时不传 model，后端用用户自己的套餐额度。
     coding_plan_model?: string;
+    // 重新生成：被替换的上一轮 user msg id（后端成功后才删除旧轮次）。
+    regenerate_from_msg_id?: string;
+    // 推理强度（输入框滑动选择器）：min | mid | high | max
+    reasoning_effort?: "min" | "mid" | "high" | "max";
     // 检索范围：uploadUuids 非空时后端只在这些云盘文件内检索/回答
     //（/chat?upload_uuid=<uuid> 进入文件级问答）。
     scope?: { uploadUuids?: string[] };
