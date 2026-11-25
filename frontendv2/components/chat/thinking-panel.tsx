@@ -73,26 +73,36 @@ export const ThinkingPanel = memo(function ThinkingPanel({
   // Auto open/close derives from progress (React's "adjust state during render"
   // pattern): expand when thinking arrives, collapse once the turn settles. The
   // first manual toggle (userOpen becoming non-null) takes over permanently.
-  const [autoOpen, setAutoOpen] = useState(() => status === "pending" && hasThinking);
+  const [autoOpen, setAutoOpen] = useState(() => hasThinking && (status === "pending" || !!reasoning));
   const [autoInputs, setAutoInputs] = useState({ status, hasThinking });
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   if (autoInputs.status !== status || autoInputs.hasThinking !== hasThinking) {
     setAutoInputs({ status, hasThinking });
     if (userOpen === null) {
-      // 运行中的整轮保持展开：工具步骤/思考随产生即可见；轮次结束后收起到
-      // 胶囊，用户仍可一键展开；用户手动点过开关后不再自动干预。
-      setAutoOpen(status === "pending" ? hasThinking : false);
+      // 运行中保持展开；轮次结束后，只要存在思考链也继续展开，让用户
+      // 直接滚动阅读。纯工具执行轮次仍收起到摘要行，避免整页工具卡。
+      // 用户手动点过开关后不再自动干预。
+      setAutoOpen(hasThinking && (status === "pending" || !!reasoning));
     }
   }
   const thinkingOpen = userOpen ?? autoOpen;
 
-  // Keep the reasoning stream pinned to the bottom while it grows.
+  // Keep the reasoning stream pinned to the bottom while it grows, but stop
+  // following as soon as the user scrolls up to read an earlier part.
   const reasoningScrollRef = useRef<HTMLDivElement>(null);
+  const [followTail, setFollowTail] = useState(true);
   useEffect(() => {
-    if (!thinkingOpen || status !== "pending") return;
+    if (!thinkingOpen || status !== "pending" || !followTail) return;
     const el = reasoningScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [reasoning, thinkingOpen, status]);
+  }, [reasoning, thinkingOpen, status, followTail]);
+
+  const onReasoningScroll = () => {
+    const el = reasoningScrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setFollowTail(atBottom);
+  };
 
   const [copied, setCopied] = useState(false);
   const handleCopyReasoning = async () => {
@@ -107,7 +117,6 @@ export const ThinkingPanel = memo(function ThinkingPanel({
   };
 
   const reasoningLong = !!reasoning && reasoning.length > LONG_REASONING_CHARS;
-  const [reasoningExpanded, setReasoningExpanded] = useState(false);
 
   // Settled summary: N 秒 = sum of every tool step duration.
   const totalDurationMs = useMemo(
@@ -195,16 +204,6 @@ export const ThinkingPanel = memo(function ThinkingPanel({
                     思考过程
                   </span>
                   <span className="ml-auto flex items-center gap-1 opacity-70 transition-opacity focus-within:opacity-100 sm:opacity-0 sm:group-hover/reasoning:opacity-100">
-                    {reasoningLong && (
-                      <button
-                        type="button"
-                        onClick={() => setReasoningExpanded((v) => !v)}
-                        className="rounded px-1 py-0.5 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
-                        aria-expanded={reasoningExpanded}
-                      >
-                        {reasoningExpanded ? "收起" : "展开"}
-                      </button>
-                    )}
                     <button
                       type="button"
                       onClick={handleCopyReasoning}
@@ -222,12 +221,11 @@ export const ThinkingPanel = memo(function ThinkingPanel({
                 </div>
                 <div
                   ref={reasoningScrollRef}
+                  onScroll={onReasoningScroll}
+                  tabIndex={0}
                   className={cn(
-                    "md-body pr-1 text-[13px] leading-7 text-secondary",
-                    reasoningLong &&
-                      (reasoningExpanded
-                        ? "max-h-96 overflow-y-auto"
-                        : "max-h-44 overflow-hidden")
+                    "md-body pr-2 text-[13px] leading-7 text-secondary",
+                    reasoningLong && "thinking-scroll max-h-64 overflow-y-auto sm:max-h-80"
                   )}
                   aria-label="深度思考内容"
                 >
@@ -249,15 +247,18 @@ export const ThinkingPanel = memo(function ThinkingPanel({
                   <span>执行过程 · {steps.length} 步</span>
                   <span className="h-px flex-1 bg-border-subtle" />
                 </div>
-                <ol className="list-none space-y-1.5">
-                  {steps.map((step, i) => (
-                    <ToolStepCard
-                      key={`${step.step}-${i}`}
-                      step={step}
-                      isLast={i === steps.length - 1}
-                    />
-                  ))}
-                </ol>
+                <div className="rounded-xl border border-border-subtle bg-[#fbfcfe] p-3">
+                  <ol className="list-none">
+                    {steps.map((step, i) => (
+                      <ToolStepCard
+                        key={`${step.step}-${i}`}
+                        step={step}
+                        isLast={i === steps.length - 1}
+                        toneIndex={i}
+                      />
+                    ))}
+                  </ol>
+                </div>
               </div>
             )}
           </div>

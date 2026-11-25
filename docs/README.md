@@ -26,6 +26,10 @@
 | [architecture.md](architecture.md) | 服务拓扑、端口、网关路由、数据归属（本目录入口文档） |
 | [configuration.md](configuration.md) | 分层配置与共享环境变量约定 |
 | [logging.md](logging.md) | app-ts 日志规范：结构化字段、请求关联、脱敏、轮转/压缩/保留、访问日志与排障命令 |
+| [auth-token-security.md](auth-token-security.md) | 会话 token 哈希存储、零停机迁移、forward-auth 单 token/单 uid 限流与边界 |
+| [auth-google-oauth.md](auth-google-oauth.md) | Google OAuth 2.0 登录：Google Cloud 配置、popup 回调、绑定与安全边界 |
+| [mcp-external.md](mcp-external.md) | 第三方 MCP Server：externalMcp 配置、工具前缀、调用与执行轨迹 |
+| [user-mcp.md](user-mcp.md) | 用户自建 MCP 连接：app-user 设置域存储、API Key 加密、mcp_user_call 与调用轨迹 |
 | [service-key-auth.md](service-key-auth.md) | 服务间 API Key 体系：app-user（auth 路由）签发 + APISIX 校验、防串用、演进方向 |
 | [deployment.md](deployment.md) | 生产部署、HTTPS（Caddy）、监控与备份 |
 
@@ -38,7 +42,8 @@
 | [temp-files.md](temp-files.md) | agent 解析临时文件：下载→本地→解析→整轮结束程序删除、uid/轮次隔离、预算与 fd 上限、崩溃 sweep、配置与运维 |
 | [mikro-orm.md](mikro-orm.md) | app-ts MongoDB 的 MikroORM 采用说明与分阶段迁移计划 |
 | [chat-models.md](chat-models.md) | 聊天模型选择：`config/model.json` 目录格式、GET /chat/models、网关路由/默认模型/计价与前端行为 |
-| [ai-quota.md](ai-quota.md) | AI 用量额度：标准 token、5h/日/月三层窗口、模型抵扣倍率、¥48≈¥480 / 三档 10×、配置/API/迁移与调参 |
+| [ai-quota.md](ai-quota.md) | AI 用量额度：Credits、5h/日/月三层窗口、模型抵扣倍率、¥48≈¥480 / 三档 10×、配置/API/迁移与调参 |
+| [ai-tasks.md](ai-tasks.md) | AI 定时任务：任务/运行模型、新闻/文献/汇报模板、调度与租约、API、配置与边界 |
 
 ### 2.3 业务服务（app-*）
 

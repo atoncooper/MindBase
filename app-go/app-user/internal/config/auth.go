@@ -29,6 +29,7 @@ type AuthConfig struct {
 	Email        EmailConfig        `yaml:"email"`
 	SMS          SMSConfig          `yaml:"sms"`
 	WeChat       WeChatConfig       `yaml:"wechat"`
+	Google       GoogleConfig       `yaml:"google"`
 	WorkerID     int                `yaml:"worker_id"`
 	SecurityCORS SecurityCORSConfig `yaml:"security_cors"`
 	Log          LogConfig          `yaml:"log"`
@@ -150,6 +151,10 @@ func defaultRateLimits() map[string]RateLimitRule {
 		"pw_reset_ip":       {Max: 10, Window: 3600},
 		"pw_change_uid":     {Max: 3, Window: 3600},
 		"pw_set_uid":        {Max: 3, Window: 3600},
+		// Forward-auth hot path: protect the DB from stolen/valid token floods.
+		// One token and the aggregate of all tokens for one uid each get a budget.
+		"verify_token": {Max: 300, Window: 60},
+		"verify_uid":   {Max: 600, Window: 60},
 	}
 }
 
@@ -229,6 +234,15 @@ type WeChatConfig struct {
 	AppID       string `yaml:"app_id"`
 	AppSecret   string `yaml:"app_secret"`
 	RedirectURI string `yaml:"redirect_uri"`
+}
+
+// GoogleConfig — Google OAuth 2.0 / OpenID Connect authorization-code flow.
+// RedirectURI must be registered verbatim in Google Cloud Console.
+type GoogleConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	RedirectURI  string `yaml:"redirect_uri"`
 }
 
 type SecurityCORSConfig struct {
@@ -399,6 +413,18 @@ func applyAuthEnv(cfg *AuthConfig) error {
 	}
 	if b, ok := getBool("WECHAT__ENABLED"); ok {
 		cfg.WeChat.Enabled = b
+	}
+	if v := get("GOOGLE__CLIENT_ID"); v != "" {
+		cfg.Google.ClientID = v
+	}
+	if v := get("GOOGLE__CLIENT_SECRET"); v != "" {
+		cfg.Google.ClientSecret = v
+	}
+	if v := get("GOOGLE__REDIRECT_URI"); v != "" {
+		cfg.Google.RedirectURI = v
+	}
+	if b, ok := getBool("GOOGLE__ENABLED"); ok {
+		cfg.Google.Enabled = b
 	}
 
 	// internal M2M guard (/internal/auth/user/*); compose injects the shared

@@ -33,6 +33,14 @@ export const TIER_PROMAX = "promax";
 
 const VALID_TIERS = new Set([TIER_VIP, TIER_SVIP, TIER_PROMAX]);
 
+/** Scheduler priority: free is the lowest, ProMax the highest. */
+export function tierRank(tier: string): number {
+  if (tier === TIER_PROMAX) return 3;
+  if (tier === TIER_SVIP) return 2;
+  if (tier === TIER_VIP) return 1;
+  return 0;
+}
+
 /** 成功结果 TTL 抖动范围（±15%）。 */
 const SUCCESS_TTL_JITTER_MIN = 0.85;
 const SUCCESS_TTL_JITTER_MAX = 1.15;

@@ -78,6 +78,12 @@ type WeChatRequest struct {
 	State string `json:"state" binding:"required"`
 }
 
+// GoogleRequest is POST /auth/google/login and POST /auth/google/bind.
+type GoogleRequest struct {
+	Code  string `json:"code" binding:"required"`
+	State string `json:"state" binding:"required"`
+}
+
 // ── Account ──────────────────────────────────────────────────────────
 
 // SetPasswordRequest is POST /auth/password/set (mandatory second factor).

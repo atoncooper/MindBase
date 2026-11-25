@@ -70,6 +70,16 @@ taskQuiz:
   executorUrl: https://apisix:9443/internal/quiz/generate-llm
   genRetries: 3
 
+aiTasks:
+  # 用户级 AI 定时任务：新闻摘要 / 文献追踪 / 周期汇报 / 自定义 Prompt。
+  # 调度器只读取 nextRunAt，实际执行复用正常 chat agent（独立 session）。
+  enabled: true
+  intervalMs: 30000
+  maxConcurrent: 2
+  maxRunsPerTick: 5
+  leaseMs: 600000
+  timeoutMs: 480000
+
 minio:
   # 技能 zip 存储（skills/{uid}/{skill_id}.zip；空 endpoint = skills 关闭）
   endpoint: http://minio:9000
@@ -238,6 +248,40 @@ contentMcp:
   maxContentChars: 8000
   # /chat/board/complete 的模型覆盖（留空 = llm.model）
   completionModel: ${CONTENT_MCP__COMPLETION_MODEL:}
+
+userMcp:
+  # 用户自己的第三方 MCP 连接（/mcp 页面配置）。连接（URL + API Key）存
+  # app-user 设置域 user_mcp_servers（AES 加密，CRUD 也在那里）；app-ts 只
+  # 执行 MCP 协议（tools/list、tools/call）并经内部 M2M 面读取。
+  enabled: true
+  timeoutMs: 20000
+  maxContentChars: 8000
+  # 读取 app-user 连接的缓存 TTL：编辑/新增最迟这么久对 Agent 生效
+  cacheTtlMs: 30000
+  # 允许 localhost/私网 MCP endpoint（会带来 SSRF 风险，默认关闭）
+  allowPrivateHosts: false
+
+externalMcp:
+  # 第三方 MCP server（Streamable HTTP）。默认关闭；在 config/local.yaml
+  # 或部署配置中声明 servers。
+  # 每个 server 的工具会以 mcp_<name>__<tool> 注册，避免多个 server 重名。
+  enabled: false
+  maxContentChars: 8000
+  servers: []
+  # 公共只读示例（DeepWiki，无需 token；确认可信后再启用）：
+  # - name: deepwiki
+  #   enabled: false
+  #   url: https://mcp.deepwiki.com/mcp
+  #
+  # 带 Bearer 的第三方 server：
+  # - name: github
+  #   enabled: true
+  #   url: https://mcp.example.com/mcp
+  #   headers:
+  #     Authorization: Bearer ${GITHUB_MCP_TOKEN}
+  #   timeoutMs: 30000
+  #   includeTools: [search_repositories]
+  #   discoveryUid: "1"
 
 sandbox:
   # 代码执行沙箱控制层（app-sandbox，plan/1.0.18 §十）。false = run_code 使用

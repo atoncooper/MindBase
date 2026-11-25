@@ -24,7 +24,7 @@ export function ChatHeader({
   isStreaming = false,
 }: ChatHeaderProps) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border-subtle px-2 sm:h-12 sm:px-3">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b border-transparent bg-white px-2 sm:h-12 sm:px-3">
       <div className="flex min-w-0 items-center gap-1">
         <Link
           href="/"
@@ -47,7 +47,7 @@ export function ChatHeader({
           <PanelLeft className="h-[18px] w-[18px]" />
         </button>
 
-        <h1 className="ml-1 truncate text-[15px] font-medium text-foreground sm:text-[14px]">{title}</h1>
+        <h1 className="ml-1 truncate text-[14px] font-medium text-[#0d0d0d]">{title}</h1>
         {isStreaming && (
           <span
             className="ml-1.5 inline-flex shrink-0 items-center gap-1 text-[11px] text-tertiary"

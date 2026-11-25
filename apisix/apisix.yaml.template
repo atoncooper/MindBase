@@ -1273,7 +1273,7 @@ routes:
         key: remote_addr
 
   - id: chat_ts
-    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /ai-tasks, /ai-tasks/*, /mcp/servers/*, /quota/summary]
     priority: 60
     labels:
       domain: user
@@ -1600,6 +1600,29 @@ routes:
         timeout: 5000
         status_code: 401
 
+  # 用户 MCP 连接（settings 域）：CRUD 存 app-user（user_mcp_servers，API Key
+  # 用 AES-256-GCM 加密）；app-ts 只经内部 M2M 面读取连接并执行 MCP 协议
+  # （tools/list 回写、tools/call），不持有用户凭据的落库事实。
+  - id: mcp_connections_user
+    uris: [/settings/mcp, /settings/mcp/*]
+    priority: 60
+    labels:
+      domain: user
+    upstream_id: upstream-app-user-settings
+    plugins:
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "https://app-user:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
   # Coding Plan 内部 M2M（app-ts code agent 取用户套餐）：key-auth 内部 consumer。
   # 返回明文 api_key（仅此面），app-ts 每轮缓存 30s；不经 nginx 暴露。
   - id: coding_plan_internal
@@ -1616,6 +1639,46 @@ routes:
       # app-user re-validates the shared key itself by reading the "apikey"
       # header, so this route intentionally keeps hide_credentials off: APISIX
       # strips "apikey" in the access phase, after proxy-rewrite could re-add it.
+      key-auth:
+        hide_credentials: false
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+
+  # OAuth 回调：第三方授权服务器把浏览器重定向到这里，没有我们的会话，
+  # 因此必须公开；安全依赖一次性 state（10 分钟 TTL，绑定 uid + server）。
+  # priority 高于 mcp_connections_user，避免被 forward-auth 401 拦掉。
+  - id: mcp_oauth_callback
+    uri: /settings/mcp/oauth/callback
+    methods: [GET]
+    priority: 70
+    labels:
+      domain: user
+    upstream_id: upstream-app-user-settings
+    plugins:
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+
+  # 用户 MCP 内部 M2M（app-ts）：GET 读连接（唯一返回明文 API Key 的面）、
+  # PATCH 回写 tools/list 结果。key-auth 内部 consumer，不经 nginx 暴露。
+  - id: mcp_connections_internal
+    uri: /internal/settings/mcp/*
+    methods: [GET, PATCH]
+    priority: 100
+    labels:
+      domain: internal
+    upstream_id: upstream-app-user-settings
+    plugins:
+      request-id:
+        include_in_response: true
+        header_name: X-Request-Id
+      # app-user re-validates the shared key itself by reading the "apikey"
+      # header, so this route intentionally keeps hide_credentials off.
       key-auth:
         hide_credentials: false
       consumer-restriction:

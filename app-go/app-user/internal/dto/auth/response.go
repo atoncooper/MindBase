@@ -32,6 +32,14 @@ type Token struct {
 type Features struct {
 	EmailRegisterEnabled bool `json:"email_register_enabled"`
 	SMSEnabled           bool `json:"sms_enabled"`
+	GoogleEnabled        bool `json:"google_enabled"`
+}
+
+// GoogleOptions is GET /auth/google/options.
+type GoogleOptions struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url,omitempty"`
+	State   string `json:"state,omitempty"`
 }
 
 // Captcha is GET /auth/captcha.

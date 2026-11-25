@@ -48,6 +48,8 @@ export interface McpToolsOptions {
    * 真实工具调用仍按 ToolRunContext.uid 注入。
    */
   discoveryUid?: string;
+  /** Prefix bridged tool names to avoid collisions between MCP servers. */
+  toolPrefix?: string;
 }
 
 /** tools/list → ToolDefinition[] (empty when discovery fails — degrade, don't crash boot). */
@@ -68,7 +70,10 @@ export async function createMcpTools(client: McpToolsClient, opts: McpToolsOptio
       log.warn(`[MCP] ${client.name} tools/list missing allowlisted tool(s): ${missing.join(", ")}`);
     }
   }
-  return listing.tools.filter((t) => allow === null || allow.has(t.name)).map((t) => bridgeMcpTool(client, t, max));
+  const prefix = opts.toolPrefix ?? "";
+  return listing.tools
+    .filter((t) => allow === null || allow.has(t.name))
+    .map((t) => bridgeMcpTool(client, t, max, prefix));
 }
 
 /** createMcpTools + registration (duplicates are skipped with a warning, not fatal). */
@@ -86,10 +91,15 @@ export async function registerMcpTools(registry: ToolRegistry, client: McpToolsC
   return registered;
 }
 
-function bridgeMcpTool(client: McpToolsClient, tool: McpToolInfo, maxContentChars: number): ToolDefinition<Record<string, unknown>> {
+function bridgeMcpTool(
+  client: McpToolsClient,
+  tool: McpToolInfo,
+  maxContentChars: number,
+  toolPrefix: string,
+): ToolDefinition<Record<string, unknown>> {
   return defineTool<Record<string, unknown>>({
-    name: tool.name,
-    description: tool.description ?? tool.title ?? `MCP tool ${tool.name}`,
+    name: toolPrefix + tool.name,
+    description: (tool.description ?? tool.title ?? `MCP tool ${tool.name}`) + `\n\n[MCP server: ${client.name}]`,
     // server-owned JSON Schema, bridged verbatim (validated server-side; the
     // runtime injects the shared timeoutMs budget field at build time)
     inputSchema: (tool.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,

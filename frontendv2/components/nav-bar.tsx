@@ -10,6 +10,7 @@ import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { primaryNavItems, moreNavItems, accountNavItems } from "@/lib/nav-config";
 import { MobileTabBar } from "./mobile-tab-bar";
+import { useAiTaskNotifications } from "@/lib/use-ai-task-notifications";
 
 interface NavBarProps {
   onLoginClick?: () => void;
@@ -20,6 +21,7 @@ export function NavBar({ onLoginClick }: NavBarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const isAuthed = status === "authenticated";
+  useAiTaskNotifications(isAuthed);
 
   const [moreOpen, setMoreOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef } from "react";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Pencil, Trash2, MessageSquare, Search, X, ChevronDown, FlaskConical } from "lucide-react";
+import { Plus, Pencil, Trash2, MessageSquare, Search, X, ChevronDown, FlaskConical, ListTodo, Plug, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatSessionSummary } from "./types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -165,7 +166,7 @@ export function ChatSidebar({
 
       <aside
         className={cn(
-          "flex flex-col bg-surface",
+          "flex flex-col bg-[#f9f9f9] md:border-r md:border-[#ececec]",
           // mobile: overlay drawer
           "absolute inset-y-0 left-0 z-40 transition-transform duration-300",
           // desktop: in-flow, collapsible by width
@@ -181,13 +182,13 @@ export function ChatSidebar({
           {/* New chat CTA: 直接开普通对话；右侧箭头可选择绑定一个科研项目 */}
           <div className="p-3">
             <div ref={newChatRef} className="relative">
-              <div className="flex items-stretch overflow-hidden rounded-full border border-border-subtle bg-surface">
+              <div className="flex items-stretch overflow-hidden rounded-lg transition-colors hover:bg-[#ececec]">
                 <button
                   type="button"
                   onClick={() => onNewChat()}
-                  className="flex flex-1 items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium text-foreground transition-colors hover:bg-border-subtle/40 sm:py-2"
+                  className="flex flex-1 items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium text-[#0d0d0d] transition-colors sm:py-2"
                 >
-                  <Plus className="h-4 w-4 text-accent" aria-hidden="true" />
+                  <Plus className="h-4 w-4 text-[#5f6368]" aria-hidden="true" />
                   <span>开启新对话</span>
                 </button>
                 {researchProjects.length > 0 && (
@@ -197,7 +198,7 @@ export function ChatSidebar({
                     aria-haspopup="menu"
                     aria-expanded={newChatOpen}
                     aria-label="选择科研项目并开启新对话"
-                    className="grid w-9 place-items-center border-l border-border-subtle text-tertiary transition-colors hover:bg-border-subtle/40 hover:text-foreground"
+                    className="grid w-9 place-items-center border-l border-[#e5e5e5] text-tertiary transition-colors hover:bg-[#e5e5e5]/60 hover:text-foreground"
                   >
                     <ChevronDown
                       className={cn("h-3.5 w-3.5 transition-transform", newChatOpen && "rotate-180")}
@@ -318,7 +319,7 @@ export function ChatSidebar({
                           key={session.id}
                           className={cn(
                             "group relative flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2.5 transition-colors sm:py-2",
-                            isActive ? "bg-accent-soft" : "hover:bg-border-subtle/60"
+                            isActive ? "bg-[#ececec]" : "hover:bg-[#ececec]/70"
                           )}
                           onClick={() => !isEditing && onSessionSelect(session.id)}
                           onMouseEnter={() => setHoveredSession(session.id)}
@@ -349,7 +350,7 @@ export function ChatSidebar({
                                 <div
                                   className={cn(
                                     "flex min-w-0 items-center gap-1 text-[13px] leading-snug",
-                                    isActive ? "font-medium text-accent" : "text-foreground/90"
+                                    isActive ? "font-medium text-[#0d0d0d]" : "text-[#2f2f2f]"
                                   )}
                                 >
                                   {session.academicProjectId && (
@@ -407,6 +408,42 @@ export function ChatSidebar({
               ))
             )}
           </div>
+
+          {/* 会话列表底部入口：与 ChatGPT 侧栏一致，固定在滚动区下方。 */}
+          <footer className="shrink-0 border-t border-[#ececec] p-3">
+            <Link
+              href="/tasks"
+              onClick={() => {
+                if (typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches) onClose();
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-[#2f2f2f] transition-colors hover:bg-[#ececec]"
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white text-[#5f6368]">
+                <ListTodo className="h-4 w-4" aria-hidden="true" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">AI 定时任务</span>
+                <span className="block truncate text-[10px] text-[#8f8f8f]">新闻 · 文献 · 汇报</span>
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#8f8f8f]" aria-hidden="true" />
+            </Link>
+            <Link
+              href="/mcp"
+              onClick={() => {
+                if (typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches) onClose();
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-[#2f2f2f] transition-colors hover:bg-[#ececec]"
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white text-[#0b57d0]">
+                <Plug className="h-4 w-4" aria-hidden="true" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">MCP 接入</span>
+                <span className="block truncate text-[10px] text-[#8f8f8f]">第三方工具 · 调用轨迹</span>
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#8f8f8f]" aria-hidden="true" />
+            </Link>
+          </footer>
         </div>
       </aside>
 

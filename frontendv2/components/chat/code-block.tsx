@@ -79,18 +79,18 @@ export function CodeBlock({ children }: CodeBlockProps) {
   }
 
   return (
-    <div className="md-code my-3 overflow-hidden rounded-[7px] border border-border bg-[#f5f5f7]">
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5">
-        <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-wide text-tertiary">
-          {language || "code"}
-          {collapsible && <span className="ml-2 normal-case">{lineCount} 行</span>}
+    <div className="md-code my-4 overflow-hidden rounded-xl border border-[#2b303b] bg-[#0f1115] shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
+      <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-[#151922] px-4 py-2">
+        <span className="min-w-0 truncate font-mono text-[11px] tracking-wide text-[#8b949e]">
+          {language || "Code"}
+          {collapsible && <span className="ml-2 text-[#6e7681]">{lineCount} 行</span>}
         </span>
         <span className="flex shrink-0 items-center gap-0.5">
           {collapsible && (
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-[#c9d1d9] transition-colors hover:bg-white/10 hover:text-white"
               aria-expanded={expanded}
               aria-label={expanded ? "折叠代码" : "展开代码"}
             >
@@ -104,7 +104,7 @@ export function CodeBlock({ children }: CodeBlockProps) {
           <button
             type="button"
             onClick={handleCopy}
-            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-[#c9d1d9] transition-colors hover:bg-white/10 hover:text-white"
             aria-label={copied ? "已复制" : "复制代码"}
           >
             {copied ? (
@@ -118,25 +118,25 @@ export function CodeBlock({ children }: CodeBlockProps) {
       </div>
       <div className="relative">
         <pre
-          className={`m-0 overflow-x-auto px-3 py-2.5 text-[13px] leading-relaxed [tab-size:2] ${
-            // ~24 lines preview at 13px/1.625 line height
+          className={`m-0 overflow-x-auto bg-transparent px-4 py-3.5 text-[13px] leading-[1.65] text-[#c9d1d9] [tab-size:2] ${
+            // ~24 lines preview at 13px/1.65 line height
             collapsed ? "max-h-[24rem] overflow-hidden" : ""
           }`}
         >
           {html != null ? (
             <code
-              className={`font-mono text-foreground language-${language}`}
+              className={`font-mono language-${language}`}
               dangerouslySetInnerHTML={{ __html: html }}
             />
           ) : (
-            <code className="font-mono text-foreground">{escapeCodeText(text)}</code>
+            <code className="font-mono">{escapeCodeText(text)}</code>
           )}
         </pre>
         {/* Fade-out hint that there is more code below */}
         {collapsed && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent to-[#f5f5f7]"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent to-[#0f1115]"
           />
         )}
       </div>

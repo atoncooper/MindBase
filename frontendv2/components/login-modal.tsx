@@ -82,6 +82,8 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
   const [pwLoading, setPwLoading] = useState(false);
   const [pwError, setPwError] = useState("");
   const [features, setFeatures] = useState<AuthFeatures | null>(null);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError, setGoogleError] = useState("");
 
   // 密码登录（邮箱或手机号）
   const [identifier, setIdentifier] = useState("");
@@ -410,6 +412,56 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
     return () => window.removeEventListener("message", handler);
   }, [isOpen, tab, completeWeChatLogin]);
 
+  // Google OAuth popup: the callback page posts the resulting session token
+  // back to this window. No token is ever placed in the parent URL.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (ev: MessageEvent) => {
+      if (ev.origin !== window.location.origin) return;
+      const data = ev.data as {
+        source?: string;
+        sessionToken?: string;
+        user?: UserInfo;
+        error?: string;
+      } | null;
+      if (!data || data.source !== "google-callback") return;
+      setGoogleLoading(false);
+      if (data.error) {
+        setGoogleError(data.error);
+        return;
+      }
+      if (data.sessionToken && data.user) {
+        onSuccess(data.sessionToken, data.user);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [isOpen, onSuccess]);
+
+  const startGoogleLogin = useCallback(async () => {
+    setGoogleError("");
+    setGoogleLoading(true);
+    try {
+      const options = await authApi.googleOptions("login");
+      if (!options.enabled || !options.url) {
+        setGoogleError("Google 登录尚未配置");
+        return;
+      }
+      const popup = window.open(
+        options.url,
+        "mindbase-google-oauth",
+        "popup=yes,width=520,height=680,resizable=yes,scrollbars=yes",
+      );
+      if (!popup) {
+        setGoogleError("浏览器阻止了登录弹窗，请允许弹窗后重试");
+        setGoogleLoading(false);
+      }
+    } catch (err) {
+      setGoogleError(err instanceof Error ? err.message : "Google 登录启动失败");
+      setGoogleLoading(false);
+    }
+  }, []);
+
   if (!isOpen || typeof document === "undefined") return null;
 
   const smsEnabled = features?.sms_enabled === true;
@@ -427,52 +479,100 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
           exit={{ opacity: 0 }}
         >
           <div
-            className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+            className="absolute inset-0 bg-[#202124]/40 backdrop-blur-[3px]"
             onClick={onClose}
           />
           <motion.div
-            initial={{ opacity: 0, y: 16, scale: 0.97 }}
+            initial={{ opacity: 0, y: 14, scale: 0.985 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.97 }}
-            transition={{ duration: 0.22, ease: [0.28, 0.11, 0.32, 1] }}
-            className="relative max-h-[92vh] w-full max-w-[400px] overflow-y-auto rounded-[18px] border border-border bg-surface p-7 shadow-[0_20px_60px_rgba(0,0,0,0.18)]"
+            exit={{ opacity: 0, y: 14, scale: 0.985 }}
+            transition={{ duration: 0.2, ease: [0.28, 0.11, 0.32, 1] }}
+            className="g-account relative max-h-[92vh] w-full max-w-[672px] overflow-y-auto rounded-xl border border-[#dadce0] bg-white px-6 py-7 shadow-[0_24px_80px_rgba(32,33,36,0.22)] sm:px-10 sm:py-10"
+            style={{ backgroundColor: "#ffffff" }}
           >
             <button
+              type="button"
               onClick={onClose}
-              className="absolute right-4 top-4 grid h-7 w-7 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+              aria-label="关闭登录"
+              className="absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-full text-[#5f6368] transition-colors hover:bg-[#f1f3f4] hover:text-[#202124] sm:right-5 sm:top-5"
             >
               <X className="h-4 w-4" />
             </button>
 
-            <h2 className="text-[22px] font-semibold tracking-tight text-foreground">登录 MindBase</h2>
-            <p className="mt-1 text-[13px] text-secondary">把收藏变成可对话的知识</p>
+            <div className="flex items-center gap-2.5">
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-[#0b57d0] text-[15px] font-semibold text-white">
+                M
+              </span>
+              <span className="text-[14px] font-medium text-[#5f6368]">MindBase</span>
+            </div>
 
-            {/* Tabs */}
-            <div className="mt-6 flex gap-1 rounded-full bg-border-subtle p-1">
-              {(wechatCfg?.enabled ? (["qr", "wechat", "password"] as const) : (["qr", "password"] as const)).map((t) => (
+            <h2 className="mt-6 text-[24px] font-normal leading-8 tracking-[-0.01em] text-[#202124]">
+              登录
+            </h2>
+            <p className="mt-1.5 text-[14px] leading-6 text-[#5f6368]">
+              使用您的 MindBase 账号继续
+            </p>
+
+            {features?.google_enabled && (
+              <>
                 <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`flex-1 rounded-full py-1.5 text-[13px] font-medium transition-colors ${
-                    tab === t ? "bg-surface text-foreground shadow-sm" : "text-secondary hover:text-foreground"
-                  }`}
+                  type="button"
+                  onClick={() => void startGoogleLogin()}
+                  disabled={googleLoading}
+                  className="mt-6 flex h-10 w-full items-center justify-center gap-2.5 rounded-md border border-[#dadce0] bg-white text-[13px] font-medium text-[#3c4043] transition-colors hover:bg-[#f8f9fa] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {t === "qr" ? "扫码登录" : t === "wechat" ? "微信登录" : "账号登录"}
+                  <GoogleGlyph />
+                  <span>{googleLoading ? "正在打开 Google…" : "使用 Google 账号登录"}</span>
                 </button>
-              ))}
+                {googleError && (
+                  <p className="mt-2 text-[12px] leading-5 text-[#d93025]">{googleError}</p>
+                )}
+                <div className="my-5 flex items-center gap-3">
+                  <span className="h-px flex-1 bg-[#e8eaed]" />
+                  <span className="text-[11px] text-[#80868b]">或使用其他方式</span>
+                  <span className="h-px flex-1 bg-[#e8eaed]" />
+                </div>
+              </>
+            )}
+
+            {/* Google-style tabs: text + active underline, no pill background. */}
+            <div className="mt-6 flex gap-6 border-b border-[#e8eaed]">
+              {(wechatCfg?.enabled ? (["qr", "wechat", "password"] as const) : (["qr", "password"] as const)).map((t) => {
+                const active = tab === t;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setTab(t)}
+                    className={`relative pb-2.5 text-[13px] transition-colors ${
+                      active
+                        ? "font-medium text-[#0b57d0] after:absolute after:inset-x-0 after:bottom-[-1px] after:h-[2px] after:rounded-full after:bg-[#0b57d0]"
+                        : "text-[#5f6368] hover:text-[#202124]"
+                    }`}
+                  >
+                    {t === "qr" ? "扫码登录" : t === "wechat" ? "微信登录" : "账号登录"}
+                  </button>
+                );
+              })}
             </div>
 
             {/* QR panel */}
             {tab === "qr" && (
-              <div className="mt-6 flex flex-col items-center">
-                <div className="grid h-44 w-44 place-items-center overflow-hidden rounded-2xl border border-border bg-background">
+              <div className="mt-7 flex flex-col items-center">
+                <div className="grid h-52 w-52 place-items-center overflow-hidden rounded-xl border border-[#dadce0] bg-[#f8f9fa]">
                   {qrStatus === "loading" && (
-                    <span className="text-[13px] text-secondary">加载二维码…</span>
+                    <span className="text-[13px] text-[#5f6368]">加载二维码…</span>
                   )}
                   {qrStatus === "error" && (
-                    <div className="flex flex-col items-center gap-3">
-                      <span className="px-3 text-center text-[13px] text-danger">{qrError || "二维码已失效"}</span>
-                      <button onClick={getQR} className="btn-pill btn-ghost h-8 px-4 text-[12px]">
+                    <div className="flex flex-col items-center gap-3 px-3">
+                      <span className="text-center text-[12px] leading-5 text-[#d93025]">
+                        {qrError || "二维码已失效"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={getQR}
+                        className="h-8 rounded-md border border-[#dadce0] px-3 text-[12px] text-[#0b57d0] transition-colors hover:bg-[#f1f3f4]"
+                      >
                         重新获取
                       </button>
                     </div>
@@ -488,7 +588,7 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
                     />
                   )}
                 </div>
-                <p className="mt-4 text-[13px] text-secondary">
+                <p className="mt-5 text-center text-[13px] leading-5 text-[#5f6368]">
                   {qrStatus === "scanned" && "已扫描，请在手机上确认"}
                   {qrStatus === "success" && "登录成功，正在进入…"}
                   {(qrStatus === "ready" || qrStatus === "loading") && "使用哔哩哔哩 APP 扫描二维码"}
@@ -496,20 +596,21 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
               </div>
             )}
 
-            {/* WeChat panel — qrconnect iframe via official wxLogin.js */}
+            {/* WeChat panel */}
             {tab === "wechat" && (
-              <div className="mt-6 flex flex-col items-center">
-                <div className="grid h-[220px] w-[220px] place-items-center overflow-hidden rounded-2xl border border-border bg-white">
+              <div className="mt-7 flex flex-col items-center">
+                <div className="grid h-[220px] w-[220px] place-items-center overflow-hidden rounded-xl border border-[#dadce0] bg-white">
                   {wxError ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <span className="px-4 text-center text-[13px] text-danger">{wxError}</span>
+                    <div className="flex flex-col items-center gap-3 px-4">
+                      <span className="text-center text-[12px] leading-5 text-[#d93025]">{wxError}</span>
                       <button
+                        type="button"
                         onClick={() => {
                           setWxError("");
                           setWechatCfg(null);
                           void refreshWeChatCfg();
                         }}
-                        className="btn-pill btn-ghost h-8 px-4 text-[12px]"
+                        className="h-8 rounded-md border border-[#dadce0] px-3 text-[12px] text-[#0b57d0] transition-colors hover:bg-[#f1f3f4]"
                       >
                         重新加载
                       </button>
@@ -518,33 +619,34 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
                     <div id={WECHAT_QR_CONTAINER_ID} className="h-full w-full" />
                   )}
                 </div>
-                <p className="mt-4 text-[13px] text-secondary">请使用微信扫一扫</p>
+                <p className="mt-5 text-center text-[13px] text-[#5f6368]">请使用微信扫一扫</p>
               </div>
             )}
 
-            {/* Account panel — 密码 / 短信 / 注册 */}
+            {/* Account panel */}
             {tab === "password" && accountView !== "register" && (
               <>
-                {/* Sub-mode toggle */}
-                <div className="mt-6 flex gap-1 rounded-full bg-border-subtle p-1">
+                <div className="mt-5 flex gap-5 text-[12px]">
                   <button
+                    type="button"
                     onClick={() => setAccountView("password")}
-                    className={`flex-1 rounded-full py-1.5 text-[13px] font-medium transition-colors ${
+                    className={
                       accountView === "password"
-                        ? "bg-surface text-foreground shadow-sm"
-                        : "text-secondary hover:text-foreground"
-                    }`}
+                        ? "font-medium text-[#0b57d0]"
+                        : "text-[#5f6368] hover:text-[#202124]"
+                    }
                   >
                     密码登录
                   </button>
                   {smsEnabled && (
                     <button
+                      type="button"
                       onClick={() => setAccountView("sms")}
-                      className={`flex-1 rounded-full py-1.5 text-[13px] font-medium transition-colors ${
+                      className={
                         accountView === "sms"
-                          ? "bg-surface text-foreground shadow-sm"
-                          : "text-secondary hover:text-foreground"
-                      }`}
+                          ? "font-medium text-[#0b57d0]"
+                          : "text-[#5f6368] hover:text-[#202124]"
+                      }
                     >
                       短信登录
                     </button>
@@ -552,155 +654,176 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
                 </div>
 
                 {accountView === "password" ? (
-                  <form onSubmit={handlePasswordLogin} className="mt-4 flex flex-col gap-3">
-                    <input
-                      type="text"
-                      className="field"
-                      placeholder="邮箱或手机号"
-                      value={identifier}
-                      onChange={(e) => setIdentifier(e.target.value)}
-                      required
-                      autoFocus
-                    />
-                    <input
-                      type="password"
-                      className="field"
-                      placeholder="密码"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                    />
+                  <form onSubmit={handlePasswordLogin} className="mt-5 flex flex-col gap-4">
+                    <label className="block text-[12px] font-medium text-[#3c4043]">
+                      邮箱或手机号
+                      <input
+                        type="text"
+                        className="field mt-1.5 w-full"
+                        placeholder="name@example.com"
+                        value={identifier}
+                        onChange={(e) => setIdentifier(e.target.value)}
+                        required
+                        autoFocus
+                      />
+                    </label>
+                    <label className="block text-[12px] font-medium text-[#3c4043]">
+                      密码
+                      <input
+                        type="password"
+                        className="field mt-1.5 w-full"
+                        placeholder="输入密码"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                      />
+                    </label>
                     <CaptchaField key={`pwd-${captchaKey}`} onChange={setCaptcha} />
-                    {pwError && <p className="text-[12px] text-danger">{pwError}</p>}
+                    {pwError && <p className="text-[12px] leading-5 text-[#d93025]">{pwError}</p>}
                     <button
                       type="submit"
                       disabled={pwLoading}
-                      className="btn-pill btn-primary mt-1 h-10 text-[14px]"
+                      className="mt-1 h-10 w-full rounded-md bg-[#0b57d0] text-[14px] font-medium text-white transition-colors hover:bg-[#0a4cb5] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {pwLoading ? "登录中…" : "登录"}
                     </button>
                   </form>
                 ) : (
-                  <form onSubmit={handleSmsLogin} className="mt-4 flex flex-col gap-3">
-                    <input
-                      type="tel"
-                      className="field"
-                      placeholder="手机号"
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value.replace(/[^\d+]/g, ""))}
-                      maxLength={14}
-                      required
-                      autoFocus
-                    />
-                    <div className="flex gap-2">
+                  <form onSubmit={handleSmsLogin} className="mt-5 flex flex-col gap-4">
+                    <label className="block text-[12px] font-medium text-[#3c4043]">
+                      手机号
                       <input
-                        type="text"
-                        className="field"
-                        placeholder="短信验证码"
-                        value={smsCode}
-                        onChange={(e) => setSmsCode(e.target.value.replace(/\D/g, ""))}
-                        maxLength={6}
+                        type="tel"
+                        className="field mt-1.5 w-full"
+                        placeholder="+86 138 0000 0000"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value.replace(/[^\d+]/g, ""))}
+                        maxLength={14}
                         required
+                        autoFocus
                       />
-                      <button
-                        type="button"
-                        onClick={sendSmsCode}
-                        disabled={smsSending || smsCooldown > 0 || !phone.trim()}
-                        className="inline-flex h-12 shrink-0 items-center rounded-[var(--radius)] border border-border px-3 text-[12px] text-secondary transition-colors hover:bg-border-subtle disabled:opacity-40"
-                      >
-                        {smsCooldown > 0 ? `${smsCooldown}s` : smsSending ? "发送中…" : "发送验证码"}
-                      </button>
-                    </div>
+                    </label>
+                    <label className="block text-[12px] font-medium text-[#3c4043]">
+                      短信验证码
+                      <div className="mt-1.5 flex gap-2">
+                        <input
+                          type="text"
+                          className="field min-w-0 flex-1"
+                          placeholder="6 位验证码"
+                          value={smsCode}
+                          onChange={(e) => setSmsCode(e.target.value.replace(/\D/g, ""))}
+                          maxLength={6}
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={sendSmsCode}
+                          disabled={smsSending || smsCooldown > 0 || !phone.trim()}
+                          className="h-10 shrink-0 rounded-md border border-[#dadce0] px-3 text-[12px] text-[#0b57d0] transition-colors hover:bg-[#f1f3f4] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {smsCooldown > 0 ? `${smsCooldown}s` : smsSending ? "发送中…" : "发送验证码"}
+                        </button>
+                      </div>
+                    </label>
                     <CaptchaField key={`sms-${captchaKey}`} onChange={setCaptcha} />
-                    {pwError && <p className="text-[12px] text-danger">{pwError}</p>}
+                    {pwError && <p className="text-[12px] leading-5 text-[#d93025]">{pwError}</p>}
                     <button
                       type="submit"
                       disabled={pwLoading}
-                      className="btn-pill btn-primary mt-1 h-10 text-[14px]"
+                      className="mt-1 h-10 w-full rounded-md bg-[#0b57d0] text-[14px] font-medium text-white transition-colors hover:bg-[#0a4cb5] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {pwLoading ? "登录中…" : "登录 / 注册"}
                     </button>
                   </form>
                 )}
 
-                {accountView === "password" && emailEnabled && (
-                  <p className="mt-2 text-center text-[12px] text-tertiary">
+                <div className="mt-5 flex flex-col gap-2 text-[12px]">
+                  {accountView === "password" && emailEnabled && (
                     <Link
                       href="/forgot-password"
-                      className="text-foreground underline underline-offset-2 hover:text-primary"
+                      className="text-[#0b57d0] hover:underline"
                     >
                       忘记密码？
                     </Link>
-                  </p>
-                )}
-
-                {registerEnabled && (
-                  <p className="mt-3 text-center text-[12px] text-tertiary">
-                    没有账号？{" "}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPwError("");
-                        setAccountView("register");
-                      }}
-                      className="text-foreground underline underline-offset-2 hover:text-primary"
-                    >
-                      邮箱注册
-                    </button>
-                  </p>
-                )}
+                  )}
+                  {registerEnabled && (
+                    <p className="text-[#5f6368]">
+                      没有账号？{" "}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPwError("");
+                          setAccountView("register");
+                        }}
+                        className="font-medium text-[#0b57d0] hover:underline"
+                      >
+                        创建账号
+                      </button>
+                    </p>
+                  )}
+                </div>
               </>
             )}
 
             {/* Register view */}
             {tab === "password" && accountView === "register" && (
-              <form onSubmit={handleRegister} className="mt-6 flex flex-col gap-3">
-                <input
-                  type="email"
-                  className="field"
-                  placeholder="邮箱"
-                  value={regEmail}
-                  onChange={(e) => setRegEmail(e.target.value)}
-                  required
-                  autoFocus
-                />
-                <input
-                  type="password"
-                  className="field"
-                  placeholder="设置密码（8 位以上，含字母和数字）"
-                  value={regPassword}
-                  onChange={(e) => setRegPassword(e.target.value)}
-                  required
-                />
-                <div className="flex gap-2">
+              <form onSubmit={handleRegister} className="mt-6 flex flex-col gap-4">
+                <h3 className="text-[20px] font-normal leading-7 text-[#202124]">创建账号</h3>
+                <label className="block text-[12px] font-medium text-[#3c4043]">
+                  邮箱
                   <input
-                    type="text"
-                    className="field"
-                    placeholder="邮箱验证码"
-                    value={regCode}
-                    onChange={(e) => setRegCode(e.target.value.replace(/\D/g, ""))}
-                    maxLength={6}
+                    type="email"
+                    className="field mt-1.5 w-full"
+                    placeholder="name@example.com"
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label className="block text-[12px] font-medium text-[#3c4043]">
+                  密码
+                  <input
+                    type="password"
+                    className="field mt-1.5 w-full"
+                    placeholder="8 位以上，含字母和数字"
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
                     required
                   />
-                  <button
-                    type="button"
-                    onClick={sendRegisterCode}
-                    disabled={regSending || regCooldown > 0 || !regEmail.trim()}
-                    className="inline-flex h-12 shrink-0 items-center rounded-[var(--radius)] border border-border px-3 text-[12px] text-secondary transition-colors hover:bg-border-subtle disabled:opacity-40"
-                  >
-                    {regCooldown > 0 ? `${regCooldown}s` : regSending ? "发送中…" : "发送验证码"}
-                  </button>
-                </div>
+                </label>
+                <label className="block text-[12px] font-medium text-[#3c4043]">
+                  邮箱验证码
+                  <div className="mt-1.5 flex gap-2">
+                    <input
+                      type="text"
+                      className="field min-w-0 flex-1"
+                      placeholder="6 位验证码"
+                      value={regCode}
+                      onChange={(e) => setRegCode(e.target.value.replace(/\D/g, ""))}
+                      maxLength={6}
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={sendRegisterCode}
+                      disabled={regSending || regCooldown > 0 || !regEmail.trim()}
+                      className="h-10 shrink-0 rounded-md border border-[#dadce0] px-3 text-[12px] text-[#0b57d0] transition-colors hover:bg-[#f1f3f4] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {regCooldown > 0 ? `${regCooldown}s` : regSending ? "发送中…" : "发送验证码"}
+                    </button>
+                  </div>
+                </label>
                 <CaptchaField key={`reg-${captchaKey}`} onChange={setCaptcha} />
-                {pwError && <p className="text-[12px] text-danger">{pwError}</p>}
+                {pwError && <p className="text-[12px] leading-5 text-[#d93025]">{pwError}</p>}
                 <button
                   type="submit"
                   disabled={pwLoading}
-                  className="btn-pill btn-primary mt-1 h-10 text-[14px]"
+                  className="mt-1 h-10 w-full rounded-md bg-[#0b57d0] text-[14px] font-medium text-white transition-colors hover:bg-[#0a4cb5] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {pwLoading ? "注册中…" : "注册并登录"}
+                  {pwLoading ? "注册中…" : "创建账号并登录"}
                 </button>
-                <p className="text-center text-[12px] text-tertiary">
+                <p className="text-center text-[12px] text-[#5f6368]">
                   已有账号？{" "}
                   <button
                     type="button"
@@ -708,7 +831,7 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
                       setPwError("");
                       setAccountView("password");
                     }}
-                    className="text-foreground underline underline-offset-2 hover:text-primary"
+                    className="font-medium text-[#0b57d0] hover:underline"
                   >
                     返回登录
                   </button>
@@ -720,5 +843,18 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
       )}
     </AnimatePresence>,
     document.body,
+  );
+}
+
+
+/** Google G mark used by the OAuth entry button. */
+function GoogleGlyph() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8.1 3.2l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20c11 0 19.5-8 19.5-20 0-1.3-.1-2.3-.4-3.5z"/>
+      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 18.9 12 24 12c3.1 0 5.9 1.2 8.1 3.2l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.3 35.5 26.8 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.7 39.7 16.3 44 24 44z"/>
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34.5 44 24c0-1.3-.1-2.3-.4-3.5z"/>
+    </svg>
   );
 }

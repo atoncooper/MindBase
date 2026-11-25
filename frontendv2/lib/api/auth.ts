@@ -1,7 +1,7 @@
 /**
  * Auth API - B站扫码 / 邮箱密码登录 / token 管理.
  */
-import { request, requireAuthHeaders } from "./client";
+import { getAuthHeaders, request, requireAuthHeaders } from "./client";
 import { computeDeviceFingerprint, isAutomationEnv } from "@/lib/device-attest";
 
 export interface QRCodeResponse {
@@ -67,6 +67,14 @@ export interface AuthFeatures {
     email_register_enabled: boolean;
     /** phone SMS-code login/register available (SMS provider configured) */
     sms_enabled: boolean;
+    /** Google OAuth 2.0 login configured */
+    google_enabled?: boolean;
+}
+
+export interface GoogleOptions {
+    enabled: boolean;
+    url?: string;
+    state?: string;
 }
 
 export interface LoginStatusResponse {
@@ -118,6 +126,16 @@ export const authApi = {
     // 邮箱密码登录（captcha 为图形验证码，服务端一次性消费）
     // 登录/注册能力探测（未配置渠道的入口据此隐藏）
     getFeatures: () => request<AuthFeatures>("/auth/features"),
+
+    googleOptions: (purpose: "login" | "bind" = "login") =>
+        request<GoogleOptions>(`/auth/google/options?purpose=${purpose}`),
+
+    googleLogin: (code: string, state: string) =>
+        request<TokenResponse>("/auth/google/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ code, state }),
+        }),
 
     // 邮箱或手机号 + 密码登录（email/phone 二选一）
     login: (

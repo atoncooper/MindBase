@@ -39,6 +39,7 @@ type Deps struct {
 	IPGuard      *service.FixedWindowLimiter
 	RateLimits   *service.RateLimits
 	WeChat       *service.WeChatService
+	Google       *service.GoogleService
 	Passport     *service.BilibiliPassport
 }
 
@@ -108,15 +109,31 @@ func registerInternalAuth(e *gin.Engine, d Deps) {
 			c.JSON(http.StatusOK, authdto.InternalVerify{OK: false})
 			return
 		}
-		uid := d.Tokens.Validate(c.Request.Context(), token)
+		ctx := c.Request.Context()
+		uid := d.Tokens.Validate(ctx, token)
 		if uid == 0 {
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "token 无效或已过期"})
 			return
 		}
+		// Stolen/valid-token flood guard: per-token first, then the aggregate of
+		// every token belonging to the uid. Non-2xx is relayed by APISIX
+		// forward-auth, so 429 reaches the caller with Retry-After.
+		if d.RateLimits != nil {
+			if ok, retry := d.RateLimits.AllowStrict(ctx, "verify_token", service.TokenHash(token)); !ok {
+				c.Header("Retry-After", strconv.Itoa(retry))
+				c.JSON(http.StatusTooManyRequests, gin.H{"detail": "请求过于频繁，请稍后重试"})
+				return
+			}
+			if ok, retry := d.RateLimits.AllowStrict(ctx, "verify_uid", strconv.FormatInt(uid, 10)); !ok {
+				c.Header("Retry-After", strconv.Itoa(retry))
+				c.JSON(http.StatusTooManyRequests, gin.H{"detail": "该账号请求过于频繁，请稍后重试"})
+				return
+			}
+		}
 		// Status gate + roles are served from the authz cache on the steady
 		// state (0 SQL per forward-auth request); a disabled account is
 		// rejected here even while its opaque token has not expired.
-		roles, err := d.Auth.Authorize(c.Request.Context(), uid)
+		roles, err := d.Auth.Authorize(ctx, uid)
 		if err != nil {
 			if errors.Is(err, service.ErrAccountDisabled) {
 				c.JSON(http.StatusUnauthorized, gin.H{"detail": err.Error()})

@@ -98,6 +98,8 @@ auth:
       pw_reset_ip:       { max: 10, window: 3600 }  # per-IP reset confirms
       pw_change_uid:     { max: 3,  window: 3600 }  # per-uid password changes
       pw_set_uid:        { max: 3,  window: 3600 }  # per-uid first-time password sets
+      verify_token:      { max: 300, window: 60 }    # forward-auth per-token request budget
+      verify_uid:        { max: 600, window: 60 }    # forward-auth per-uid aggregate budget
 
   # app-pay membership lookup used by the Coding Plan VIP/SVIP gate.
   # The client calls {base_url}/internal/pay/membership/{uid} through APISIX
@@ -162,6 +164,13 @@ auth:
     app_id: ""
     app_secret: ""
     redirect_uri: ""
+
+  google:
+    enabled: false             # inject via GOOGLE__ENABLED
+    client_id: ""
+    client_secret: ""
+    # Must exactly match the Authorized redirect URI in Google Cloud Console.
+    redirect_uri: "https://localhost/oauth/google/callback"
 
   worker_id: 2                # snowflake worker id — MUST differ from the Python backend (default 1) to avoid uid collisions
 
@@ -349,6 +358,31 @@ settings:
     base_url: "http://app-cloud:8007"
     api_key: ""
     timeout_ms: 30000
+
+  # ============================================================
+  # 用户 MCP 连接（/settings/mcp/servers）
+  # ============================================================
+  # 每个用户自己的第三方 MCP Server（API Key 鉴权，AES 加密落库）。
+  # 存储/CRUD 归设置域；app-ts 只经内部 M2M 面读取连接并执行 MCP 协议。
+  mcp:
+    enabled: true
+    max_servers: 10
+    # OAuth 2.1（PKCE + 动态客户端注册）连接 Figma 等 OAuth-only MCP Server。
+    # callback_url 会注册给 provider，必须浏览器可达（经网关/nginx）；
+    # frontend_url 是回调完成后跳回的页面。本地开发用 https://localhost。
+    oauth:
+      callback_url: "https://localhost/mindbase/api/v1/settings/mcp/oauth/callback"
+      frontend_url: "https://localhost/mcp"
+      # DCR 时发送的客户端名称；provider 按白名单审批时用它匹配。
+      client_name: "MindBase"
+      # 若 provider 要求预注册客户端（发 client_id/secret，不允许 DCR），
+      # 在这里配置后跳过注册流程（单个部署一个客户端）。
+      client_id: ""
+      client_secret: ""
+      # 覆盖发现到的 scope（空格分隔）；空 = 用 provider 元数据。
+      scopes: ""
+      allow_private_hosts: false
+      timeout_ms: 10000
 
   # ============================================================
   # Coding Plan 厂商目录（地址唯一来源）

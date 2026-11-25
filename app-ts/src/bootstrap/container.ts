@@ -14,7 +14,10 @@ import { createSaveNoteTool } from "../tools/note/index.js";
 import { createRunCodeTool } from "../tools/code/index.js";
 import type { ResearchExecutionGuard } from "../tools/code/execution-guard.js";
 import { createEmitQuizTool, createEmitGradingTool } from "../tools/quiz/index.js";
-import { McpClient, registerMcpTools } from "../mcp/index.js";
+import { McpClient, createMcpTools, registerMcpTools } from "../mcp/index.js";
+import { AppUserSettingsMcpClient } from "../clients/app-user-settings-mcp-client.js";
+import { UserMcpBridge } from "../mcp/user-connections.js";
+import { createUserMcpCallTool } from "../tools/mcp/user-call.js";
 import { buildServer } from "../transport/http/server.js";
 import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
@@ -84,6 +87,11 @@ import { MongoResearchDocumentRevisionRepository } from "../repository/mongo/res
 import type { ResearchAutopilotRepository } from "../repository/research-autopilot.js";
 import { MemoryResearchAutopilotRepository } from "../repository/memory/research-autopilot.js";
 import { MongoResearchAutopilotRepository } from "../repository/mongo/research-autopilot.js";
+import type { AiTaskRepository } from "../repository/ai-tasks.js";
+import { MemoryAiTaskRepository } from "../repository/memory/ai-tasks.js";
+import { MongoAiTaskRepository } from "../repository/mongo/ai-tasks.js";
+import { AiTaskService, AiTaskRunner, AiTaskScheduler } from "../services/tasks/index.js";
+import { resolveTier } from "../utils/membership.js";
 import type { AcademicNotificationRepository } from "../repository/academic-notifications.js";
 import { MemoryAcademicNotificationRepository } from "../repository/memory/academic-notifications.js";
 import { MongoAcademicNotificationRepository } from "../repository/mongo/academic-notifications.js";
@@ -651,6 +659,11 @@ export async function bootstrap() {
   let autopilotRepository: ResearchAutopilotRepository | undefined;
   let mongoAutopilot: MongoResearchAutopilotRepository | null = null;
   let autopilotTimer: NodeJS.Timeout | undefined;
+  let aiTaskRepository: AiTaskRepository | undefined;
+  let mongoAiTasks: MongoAiTaskRepository | null = null;
+  let aiTaskService: AiTaskService | undefined;
+  let aiTaskRunner: AiTaskRunner | undefined;
+  let aiTaskScheduler: AiTaskScheduler | undefined;
   let mongoNotifications: MongoAcademicNotificationRepository | null = null;
   let researchAnalysis: ResearchAnalysisService | undefined;
   if (config.academic.enabled) {
@@ -1012,6 +1025,58 @@ export async function bootstrap() {
   } else {
     log.info("[BOOT] board MCP disabled — board tools not registered");
   }
+
+  // Third-party MCP servers declared in config (externalMcp.servers): each
+  // server owns its tools and names are prefixed mcp_<server>__ so multiple
+  // servers cannot collide. A failed discovery degrades to zero tools for that
+  // server and never blocks boot.
+  const externalToolNames: string[] = [];
+  if (config.externalMcp.enabled) {
+    for (const server of config.externalMcp.servers ?? []) {
+      if (!server.enabled || !server.url) continue;
+      const prefix = "mcp_" + server.name.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase() + "__";
+      try {
+        const client = new McpClient({
+          name: server.name,
+          url: server.url,
+          timeoutMs: server.timeoutMs,
+          defaultHeaders: server.headers ?? {},
+        });
+        const tools = await createMcpTools(client, {
+          maxContentChars: config.externalMcp.maxContentChars,
+          toolPrefix: prefix,
+          ...(server.includeTools.length > 0 ? { includeToolNames: server.includeTools } : {}),
+          ...(server.discoveryUid ? { discoveryUid: server.discoveryUid } : {}),
+        });
+        for (const tool of tools) {
+          registry.register(tool);
+          externalToolNames.push(tool.name);
+        }
+        log.info(`[BOOT] external MCP ${server.name}: ${tools.length} tool(s) registered`);
+      } catch (err) {
+        log.warn(`[BOOT] external MCP ${server.name} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // Per-user third-party MCP connections (/mcp): the connections (URL + API
+  // key) are user configuration stored in app-user's settings domain
+  // (user_mcp_servers, AES-encrypted). app-ts only runs the MCP protocol and
+  // reads the decrypted list through the internal M2M face. The generic
+  // mcp_user_call tool and the prompt catalog are scoped to the current turn's
+  // uid; the catalog read is fail-open so an app-user outage never breaks chat.
+  let userMcpService: UserMcpBridge | undefined;
+  const userMcpToolNames: string[] = [];
+  if (config.userMcp.enabled) {
+    userMcpService = new UserMcpBridge(new AppUserSettingsMcpClient());
+    registry.register(createUserMcpCallTool(userMcpService));
+    userMcpToolNames.push("mcp_user_call");
+    log.info("[BOOT] user MCP enabled (settings domain store; mcp_user_call)");
+  } else {
+    log.info("[BOOT] user MCP disabled");
+  }
+  const mcpCatalogService = userMcpService;
+
   const runtime = new AgentRuntime(() => registry.list());
 
   // 5. Context services: shared summary compression + per-agent persistent contexts.
@@ -1113,6 +1178,8 @@ export async function bootstrap() {
     skillManager
       ? { indexSection: (uid) => skillManager.indexSection(uid), forcedSection: (uid, ids) => skillManager.forcedSection(uid, ids) }
       : undefined,
+    [...userMcpToolNames, ...externalToolNames],
+    mcpCatalogService ? (uid) => mcpCatalogService.catalog(uid) : undefined,
   );
   const noteAgent = createNoteAgent(runtime, prompts, contextBinding);
   // Chat turns: when the user explicitly selects a Coding Plan model in the
@@ -1180,6 +1247,40 @@ export async function bootstrap() {
     codingPlanResolver({ uid: input.uid, model: input.model }),
   tempWorkspaces,
   );
+  // Per-user scheduled AI tasks (/ai-tasks): Mongo-backed repo + in-process
+  // scheduler. Each run reuses ChatService in an isolated session; the memory
+  // repo is the offline/test fallback (same pattern as the other stores).
+  if (config.aiTasks.enabled) {
+    aiTaskRepository = new MemoryAiTaskRepository();
+    if (config.mongo.uri) {
+      mongoAiTasks = await MongoAiTaskRepository.connect();
+      if (mongoAiTasks) aiTaskRepository = mongoAiTasks;
+      else log.warn("[BOOT] ai tasks: memory fallback (mongodb unreachable)");
+    } else {
+      log.warn("[BOOT] ai tasks: memory fallback (MONGO__URI not set)");
+    }
+    aiTaskService = new AiTaskService(aiTaskRepository);
+    aiTaskRunner = new AiTaskRunner(
+      aiTaskRepository,
+      chat,
+      messages,
+      config.aiTasks.timeoutMs,
+      { appTask, appAuth },
+      { sessions, messages },
+    );
+    aiTaskScheduler = new AiTaskScheduler(aiTaskRepository, aiTaskRunner, {
+      intervalMs: config.aiTasks.intervalMs,
+      maxConcurrent: config.aiTasks.maxConcurrent,
+      maxRunsPerTick: config.aiTasks.maxRunsPerTick,
+      leaseMs: config.aiTasks.leaseMs,
+      tierOf: (uid) => resolveTier(uid),
+    });
+    aiTaskScheduler.start();
+    log.info("[BOOT] ai tasks enabled (scheduler started)");
+  } else {
+    log.info("[BOOT] ai tasks disabled");
+  }
+
   // Experiment completion callback: continue the same chat session with a
   // synthetic AI turn instead of making the model poll the sandbox.
   experimentRunner?.setCallback(async (exp) => {
@@ -1294,6 +1395,8 @@ export async function bootstrap() {
     versions: documentVersionsService,
     reviewResponse: reviewResponseService,
     autopilot: researchAutopilot,
+    aiTasks: aiTaskService && aiTaskRunner ? { tasks: aiTaskService, runner: aiTaskRunner } : undefined,
+    userMcp: userMcpService,
     researchMetrics,
     // research workbench REST (experiments/evidence/validation/analysis/workspace):
     // registered only when every service was actually assembled (academic on).
@@ -1366,8 +1469,10 @@ export async function bootstrap() {
     await mongoAcademicEvidence?.close();
     await mongoNotifications?.close();
     await mongoRevisions?.close();
+    aiTaskScheduler?.stop();
     if (autopilotTimer) clearInterval(autopilotTimer);
     await mongoAutopilot?.close();
+    await mongoAiTasks?.close();
     reconJob.stop();
     await biliEvents.stop();
     await shutdownTracing();

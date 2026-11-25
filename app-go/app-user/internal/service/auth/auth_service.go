@@ -110,6 +110,10 @@ type ProfilePatch struct {
 	Nickname *string
 	Avatar   *string
 	Bio      *string
+	// Email is only populated by providers that return a verified email
+	// (Google). It fills an empty local email; existing emails are never
+	// overwritten by a third-party profile.
+	Email *string
 }
 
 // AuthService — user lifecycle: OAuth ensure/bind, self registration,
@@ -1149,9 +1153,23 @@ func (s *AuthService) applyProfilePatch(uid int64, p *ProfilePatch) error {
 	if p.Bio != nil {
 		fields["bio"] = *p.Bio
 	}
-	if len(fields) == 0 {
-		return nil
+	if len(fields) > 0 {
+		if err := s.users.UpdateProfileFields(s.db, uid, fields); err != nil {
+			return err
+		}
 	}
+	if p.Email != nil && *p.Email != "" {
+		existing, err := s.users.GetByEmail(s.db, *p.Email)
+		if err != nil {
+			return err
+		}
+		if existing == nil || existing.UID == uid {
+			if err := s.users.SetVerifiedEmailIfEmpty(s.db, uid, *p.Email); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 	return s.users.UpdateProfileFields(s.db, uid, fields)
 }
 

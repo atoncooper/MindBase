@@ -24,6 +24,7 @@
 
 import { memo, useMemo, useState } from "react";
 import {
+  ArrowDown,
   ArrowRight,
   BookOpenCheck,
   Bot,
@@ -48,6 +49,7 @@ import {
   NotebookPen,
   Puzzle,
   Search,
+  Server,
   SquareTerminal,
   Terminal,
   Wrench,
@@ -111,6 +113,23 @@ const TOOL_META: Record<string, ToolMeta> = {
 };
 
 const FALLBACK_TOOL: ToolMeta = { label: "工具调用", icon: Wrench };
+
+/** step.args is a compact JSON preview string; parse only for the generic MCP tool label. */
+function parseArgs(raw?: string): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Parse mcp_<server>__<tool> names emitted by the external MCP bridge. */
+function parseExternalMcp(action: string): { server: string; tool: string } | null {
+  const m = /^mcp_([a-z0-9_]+?)__(.+)$/.exec(action);
+  return m ? { server: m[1], tool: m[2] } : null;
+}
 
 // Collapse thresholds: args are usually compact JSON (pretty-printed here);
 // the result preview is capped server-side at 400 chars.
@@ -193,13 +212,26 @@ function dedupeSources(sources: ChatSource[]): ChatSource[] {
 
 interface ToolStepCardProps {
   step: ReasoningStep;
-  /** last row in the timeline: no bottom spacing after it */
+  /** last row in the timeline: no connector after it */
   isLast?: boolean;
+  /** index used to cycle the pastel flow colours */
+  toneIndex?: number;
 }
+
+// Execution-flow pastels: each connected stage gets a distinct, readable tone
+// (blue / amber / green / purple), matching the "execution process" diagram
+// language while staying quiet enough for long transcripts.
+const STEP_TONES = [
+  "border-[#c7dafc] bg-[#e8f0fe]",
+  "border-[#f6d9a8] bg-[#fef7e0]",
+  "border-[#b7e1c1] bg-[#e6f4ea]",
+  "border-[#d7c4f5] bg-[#f3e8fd]",
+] as const;
 
 export const ToolStepCard = memo(function ToolStepCard({
   step,
   isLast = false,
+  toneIndex = 0,
 }: ToolStepCardProps) {
   // "start" = tool still running; "done" (or a duration without a status, for
   // legacy frames) = settled. Missing status + missing duration is treated as a
@@ -225,7 +257,18 @@ export const ToolStepCard = memo(function ToolStepCard({
   const [copied, setCopied] = useState<"args" | "result" | null>(null);
 
   const known = step.action in TOOL_META;
-  const meta = known ? TOOL_META[step.action] : FALLBACK_TOOL;
+  const externalMcp = known ? null : parseExternalMcp(step.action);
+  const userMcpArgs = step.action === "mcp_user_call" ? parseArgs(step.args) : {};
+  const userMcp =
+    typeof userMcpArgs.server === "string" && typeof userMcpArgs.tool === "string"
+      ? { server: userMcpArgs.server, tool: userMcpArgs.tool }
+      : null;
+  const mcp = externalMcp ?? userMcp;
+  const meta = mcp
+    ? { label: "MCP 工具", icon: Server }
+    : known
+      ? TOOL_META[step.action]
+      : FALLBACK_TOOL;
   const Icon = meta.icon;
 
   const argsText = useMemo(() => prettyArgs(step.args), [step.args]);
@@ -258,8 +301,9 @@ export const ToolStepCard = memo(function ToolStepCard({
         open={open}
         onOpenChange={(next) => setUserOpen(next)}
         className={cn(
-          "overflow-hidden rounded-lg border bg-surface transition-colors",
-          running ? "border-accent/30" : "border-border-subtle"
+          "overflow-hidden rounded-lg border transition-colors",
+          STEP_TONES[toneIndex % STEP_TONES.length],
+          running && "ring-1 ring-accent/25"
         )}
       >
         {/* Trigger: icon + step no. + Chinese label + live/settled status + chevron. */}
@@ -267,7 +311,7 @@ export const ToolStepCard = memo(function ToolStepCard({
           <button
             type="button"
             title={step.action}
-            className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-border-subtle/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-white/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
           >
             <span
               className={cn(
@@ -286,9 +330,14 @@ export const ToolStepCard = memo(function ToolStepCard({
               {String(step.step).padStart(2, "0")}
             </span>
             <span className="min-w-0 truncate text-[12.5px] font-medium text-foreground">
-              {meta.label}
+              {mcp ? `MCP · ${mcp.server}` : meta.label}
             </span>
-            {!known && step.action && (
+            {mcp && (
+              <code className="min-w-0 truncate rounded bg-border-subtle/60 px-1 py-px font-mono text-[11px] text-tertiary">
+                {mcp.tool}
+              </code>
+            )}
+            {!known && !mcp && step.action && (
               <code className="min-w-0 truncate rounded bg-border-subtle/60 px-1 py-px font-mono text-[11px] text-tertiary">
                 {step.action}
               </code>
@@ -322,12 +371,14 @@ export const ToolStepCard = memo(function ToolStepCard({
         </CollapsibleTrigger>
 
         <CollapsibleContent>
-          <div className="space-y-2.5 border-t border-border-subtle px-2.5 py-2.5">
+          <div className="space-y-2.5 border-t border-black/5 px-3 py-2.5">
             {/* Args - pretty JSON, collapsed past ~6 lines / 240 chars. */}
             {argsText && (
               <div>
                 <div className="mb-1 flex items-center gap-1.5">
-                  <span className="text-[11px] font-medium text-tertiary">参数</span>
+                  <span className="text-[11px] font-medium text-tertiary">
+                    {mcp ? "MCP 参数" : "参数"}
+                  </span>
                   {argsLong && (
                     <button
                       type="button"
@@ -371,7 +422,9 @@ export const ToolStepCard = memo(function ToolStepCard({
             {resultText && (
               <div>
                 <div className="mb-1 flex items-center gap-1.5">
-                  <span className="text-[11px] font-medium text-tertiary">结果</span>
+                  <span className="text-[11px] font-medium text-tertiary">
+                    {mcp ? "MCP 返回" : "结果"}
+                  </span>
                   {resultLong && (
                     <button
                       type="button"
@@ -464,6 +517,13 @@ export const ToolStepCard = memo(function ToolStepCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
+      {!isLast && (
+        <div className="flex h-7 items-center justify-center" aria-hidden="true">
+          <span className="grid h-5 w-5 place-items-center rounded-full border border-border-subtle bg-surface text-tertiary shadow-sm">
+            <ArrowDown className="h-3 w-3" />
+          </span>
+        </div>
+      )}
     </li>
   );
 });

@@ -2,7 +2,7 @@
 
 import { memo, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, FileText, FlaskConical, Loader2, X } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChatSidebar } from "./chat-sidebar";
@@ -256,6 +256,13 @@ interface ChatViewProps {
 
 export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewProps = {}) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlSessionId = searchParams.get("session");
+  // Snapshot the first URL value so the one-time session loader doesn't re-run
+  // when we replace the URL after selecting a session.
+  const initialUrlSessionRef = useRef(urlSessionId);
+  const seenSessionUrlRef = useRef(!!urlSessionId);
+  const initialUrlAppliedRef = useRef(false);
   // 手机默认收起（侧栏是覆盖式抽屉）；桌面由下面的 media query 打开。
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sessions, setSessions] = useState<UISession[]>([]);
@@ -409,6 +416,10 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   // depend only on activeSessionId (not the whole sessions array, which changes
   // on every streamed token and would re-trigger the effect).
   const loadedRef = useRef<Set<string>>(new Set());
+  const loadingHistoryRef = useRef<Set<string>>(new Set());
+  // A session click updates state before router.push lands. Remember the target
+  // so the URL-sync effect cannot briefly snap back to the previous ?session=.
+  const pendingSessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // ---- 科研项目上下文（/chat?academic_project=<id>）----
@@ -489,15 +500,30 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
             academicProjectId ? `/chat?academic_project=${encodeURIComponent(academicProjectId)}` : "/chat",
           );
         } else if (mapped.length > 0) {
-          setActiveSessionId(mapped[0].id);
+          const requested = initialUrlSessionRef.current;
+          const selected = requested && mapped.some((s) => s.id === requested)
+            ? requested
+            : mapped[0].id;
+          setActiveSessionId(selected);
+          // Make the visible conversation addressable and refresh-safe. Invalid
+          // ?session= ids fall back to the newest conversation.
+          if (selected !== requested) {
+            router.replace(`/chat?session=${encodeURIComponent(selected)}`, { scroll: false });
+          }
         } else {
           // 没有任何会话：保持草稿态，不在服务端落空会话（第一条消息才创建）。
           setActiveSessionId(null);
+          if (initialUrlSessionRef.current) {
+            router.replace("/chat", { scroll: false });
+          }
         }
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : "加载会话列表失败");
       } finally {
-        if (!cancelled) setIsLoadingSessions(false);
+        if (!cancelled) {
+          setIsLoadingSessions(false);
+          initialUrlAppliedRef.current = true;
+        }
       }
     })();
     return () => {
@@ -505,17 +531,49 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     };
   }, []);
 
+  // Back/forward (and manual ?session= edits) select the matching conversation.
+  // This runs after the one-time loader so the first /chat render is not
+  // overwritten by the no-session branch.
+  useEffect(() => {
+    if (!initialUrlAppliedRef.current || isLoadingSessions) return;
+    if (!urlSessionId) {
+      // Back to /chat after visiting a conversation = new draft. Do not clear
+      // during the first /chat render before its auto-selected session URL lands.
+      if (seenSessionUrlRef.current && activeSessionId) setActiveSessionId(null);
+      return;
+    }
+    seenSessionUrlRef.current = true;
+    // Wait for a session click's router.push to land before applying the stale
+    // URL. Without this, clicking B while the URL still says A briefly selects
+    // A again, cancels B's history fetch, and leaves the panel empty.
+    if (pendingSessionRef.current && pendingSessionRef.current === activeSessionId) {
+      if (urlSessionId === activeSessionId) pendingSessionRef.current = null;
+      else return;
+    }
+    if (urlSessionId === activeSessionId) return;
+    if (sessions.some((s) => s.id === urlSessionId)) {
+      pendingSessionRef.current = null;
+      setActiveSessionId(urlSessionId);
+      stickToBottomRef.current = true;
+      setEditingMessageId(null);
+    }
+  }, [urlSessionId, isLoadingSessions, startNew, sessions, activeSessionId]);
+
   // ---- Load message history when active session changes (once per session) ----
   useEffect(() => {
     if (!activeSessionId) return;
     if (loadedRef.current.has(activeSessionId)) return;
-    loadedRef.current.add(activeSessionId);
+    if (loadingHistoryRef.current.has(activeSessionId)) return;
+    loadingHistoryRef.current.add(activeSessionId);
+    let completed = false;
 
     let cancelled = false;
     (async () => {
       try {
         const res = await fetchLatestHistory(activeSessionId);
         if (cancelled) return;
+        loadedRef.current.add(activeSessionId);
+        completed = true;
         setSessions((prev) =>
           prev.map((s) =>
             s.id === activeSessionId
@@ -531,6 +589,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         );
       } catch (e) {
         if (cancelled) return;
+        loadedRef.current.delete(activeSessionId);
         const msg = e instanceof Error ? e.message : "加载历史消息失败";
         setSessions((prev) =>
           prev.map((s) =>
@@ -552,6 +611,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               : s
           )
         );
+      } finally {
+        loadingHistoryRef.current.delete(activeSessionId);
+        if (!completed) loadedRef.current.delete(activeSessionId);
       }
     })();
     return () => {
@@ -1023,6 +1085,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
           loadedRef.current.add(ui.id);
           setSessions((prev) => [ui, ...prev]);
           setActiveSessionId(ui.id);
+          router.replace(`/chat?session=${encodeURIComponent(ui.id)}`, { scroll: false });
           sessionId = ui.id;
         } catch (e) {
           setLoadError(e instanceof Error ? e.message : "创建会话失败");
@@ -1059,7 +1122,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
     // eslint-disable-next-line react-hooks/preserve-manual-memoization -- see handleSend comment above
-    [activeSessionId, updateSession, streamQuestion, effectiveAcademicProjectId]
+    [activeSessionId, updateSession, streamQuestion, effectiveAcademicProjectId, router]
   );
 
   // ---- 生成中排队发送：Enter 不打断当前轮，加入 FIFO 队列，轮次结束后自动发送 ----
@@ -1391,6 +1454,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       }
       // 切到新对话时丢弃尚未发送的排队消息（避免发到另一个会话）。
       clearQueue();
+      pendingSessionRef.current = null;
       // 进入草稿：不创建服务端会话；项目选择留到第一条消息创建时写入绑定。
       setDraftAcademicProjectId(projectId);
       setActiveSessionId(null);
@@ -1401,12 +1465,12 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       ) {
         setSidebarOpen(false);
       }
-      // URL 上的 academic_project 只是入口提示；本次选择已记入草稿，清掉参数。
-      if (academicProjectId) {
-        router.replace(
-          uploadUuid ? `/chat?upload_uuid=${encodeURIComponent(uploadUuid)}` : "/chat"
-        );
-      }
+      // URL 上的 session/academic_project 只是入口提示；本次选择已记入草稿，
+      // 回到无 session 的草稿 URL（上传文件上下文仍保留给云盘入口）。
+      router.replace(
+        uploadUuid ? `/chat?upload_uuid=${encodeURIComponent(uploadUuid)}` : "/chat",
+        { scroll: false }
+      );
     },
     [activeSessionId, sessions, academicProjectId, uploadUuid, router, clearQueue]
   );
@@ -1414,7 +1478,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   const handleSessionSelect = useCallback((sessionId: string) => {
     // 切换会话时丢弃队列，避免把排队消息发到另一个会话。
     clearQueue();
+    pendingSessionRef.current = sessionId;
     setActiveSessionId(sessionId);
+    router.push(`/chat?session=${encodeURIComponent(sessionId)}`, { scroll: false });
     // Fresh session view starts pinned to the bottom.
     stickToBottomRef.current = true;
     setShowJumpToBottom(false);
@@ -1427,7 +1493,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     ) {
       setSidebarOpen(false);
     }
-  }, [clearQueue]);
+  }, [clearQueue, router]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -1435,20 +1501,26 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         await chatApi.deleteSession(sessionId);
         if (activeSessionId === sessionId) clearQueue();
         loadedRef.current.delete(sessionId);
-        setSessions((prev) => {
-          const next = prev.filter((s) => s.id !== sessionId);
-          if (activeSessionId === sessionId) {
-            setActiveSessionId(next[0]?.id ?? null);
-          }
-          return next;
-        });
+        const remaining = sessions.filter((s) => s.id !== sessionId);
+        setSessions(remaining);
+        if (activeSessionId === sessionId) {
+          const nextActive = remaining[0]?.id ?? null;
+          pendingSessionRef.current = nextActive;
+          setActiveSessionId(nextActive);
+          router.replace(
+            nextActive
+              ? `/chat?session=${encodeURIComponent(nextActive)}`
+              : "/chat",
+            { scroll: false }
+          );
+        }
         // Deleting the last session falls back to the draft state — a session
         // without messages does not need to exist on the server.
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : "删除会话失败");
       }
     },
-    [activeSessionId, sessions.length, clearQueue]
+    [activeSessionId, sessions, clearQueue, router]
   );
 
   const handleRenameSession = useCallback(
@@ -1505,7 +1577,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         onClose={() => setSidebarOpen(false)}
       />
 
-      <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
         <ChatHeader
           title={activeSession?.title ?? "MindBase"}
           hasMessages={messages.length > 0}
@@ -1624,7 +1696,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         </div>
 
         {/* Input area - bottom padding keeps clear of the iOS home indicator */}
-        <div className="relative z-10 shrink-0 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-5">
+        <div className="relative z-10 shrink-0 bg-gradient-to-t from-white via-white to-white/90 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-5">
           <div className="mx-auto max-w-[768px]">
             {/* 文件级问答提示：/chat?upload_uuid= 进入时只基于该文件回答 */}
             {uploadUuid && (

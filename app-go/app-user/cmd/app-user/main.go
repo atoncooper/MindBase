@@ -185,6 +185,7 @@ func main() {
 	ipGuard := authservice.NewFixedWindowLimiter(sharedRedis, "mind-base:rl:auth:")
 	rateLimits := authservice.NewRateLimits(sharedRedis, cfgAuth.Security.RateLimit)
 	wechatSvc := authservice.NewWeChatService(cfgAuth, sharedRedis)
+	googleSvc := authservice.NewGoogleService(cfgAuth, sharedRedis)
 	verification := authservice.NewVerification(cfgAuth,
 		authservice.NewEmailService(cfgAuth), authservice.NewSMSService(cfgAuth), authSvc)
 	passport := authservice.NewBilibiliPassport()
@@ -210,6 +211,7 @@ func main() {
 		IPGuard:      ipGuard,
 		RateLimits:   rateLimits,
 		WeChat:       wechatSvc,
+		Google:       googleSvc,
 		Passport:     passport,
 	})
 
@@ -270,10 +272,14 @@ func main() {
 	// config is still defined in the auth config section and the AES cipher is
 	// the shared one injected here.
 	codingPlans := settingsservice.NewCodingPlanService(gdb, cfgAuth.AppPay, cipher, cfgSettings.CodingPlan.Providers)
+	// Per-user MCP connections: user configuration (settings domain), shared
+	// AES cipher, consumed by app-ts over the internal M2M face.
+	mcpServers := settingsservice.NewMCPService(gdb, cipher, cfgSettings.MCP)
 	settingsEngine := settingsrouter.New(settingsrouter.Deps{
 		Cfg:            cfgSettings,
 		Svc:            settingsSvc,
 		CodingPlans:    codingPlans,
+		MCP:            mcpServers,
 		InternalAPIKey: cfgAuth.Internal.APIKey,
 	})
 

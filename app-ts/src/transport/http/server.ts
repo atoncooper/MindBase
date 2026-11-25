@@ -41,6 +41,9 @@ import { registerNotificationRoutes } from "././routes/notifications.js";
 import { registerAutopilotRoutes } from "././routes/autopilot.js";
 import { registerResearchRoutes } from "././routes/research.js";
 import { registerSandboxRoutes } from "././routes/sandbox.js";
+import { registerAiTaskRoutes } from "././routes/ai-tasks.js";
+import { registerUserMcpRoutes } from "././routes/user-mcp.js";
+import type { UserMcpBridge } from "../../mcp/user-connections.js";
 import type { ResearchRouteDeps } from "././routes/research.js";
 import type { SandboxRouteDeps } from "././routes/sandbox.js";
 import type { SkillManager, SkillStoreClient } from "../../skills/manager.js";
@@ -144,6 +147,8 @@ export interface BuildServerOptions {
   submissionPackage?: import("../../services/research/submission-package.js").SubmissionPackageService;
   /** project autopilot service; absent = autopilot routes not registered */
   autopilot?: import("../../services/research/autopilot.js").ResearchAutopilotService;
+  /** user scheduled AI tasks; absent = /ai-tasks/* not registered */
+  aiTasks?: import("./routes/ai-tasks.js").AiTaskRouteDeps;
   /** in-process research counters for /agent/runtime */
   researchMetrics?: import("../../services/research/metrics.js").ResearchMetrics;
   /** document version snapshots (diff/restore); absent = version routes 503 */
@@ -162,6 +167,8 @@ export interface BuildServerOptions {
   plans?: { engine: PlanRunEngine; runner: PlanRunner };
   /** process-local plan metrics; absent = /agent/runtime omits the plans block */
   planMetrics?: () => PlanRuntimeStats;
+  /** per-user MCP discovery (connections live in app-user); absent = /mcp/servers/:id/discover not registered */
+  userMcp?: UserMcpBridge;
   /** scheduled-quiz flow (agent chat + register + executor callback); absent = routes not registered */
   taskQuiz?: {
     generation: TaskQuizGenerationService;
@@ -291,6 +298,7 @@ export async function buildServer(opts: BuildServerOptions) {
   registerSystemRoutes(app, { rag: opts.rag, harness: opts.harness, capabilities: opts.capabilities, quota: opts.quota, recon: opts.recon ?? null, plan: opts.planMetrics });
   // gateway usage-logger sink (always registered — 204 when the ledger is down)
   registerAiUsageRoutes(app, { ledger: opts.ledger ?? null });
+  if (opts.userMcp) registerUserMcpRoutes(app, { service: opts.userMcp });
   if (opts.quota) {
     registerQuotaRoutes(app, { quota: opts.quota });
   }
@@ -336,6 +344,7 @@ export async function buildServer(opts: BuildServerOptions) {
         metrics: opts.researchMetrics,
       });
     if (opts.notifications) registerNotificationRoutes(app, { notifications: opts.notifications });
+    if (opts.aiTasks) registerAiTaskRoutes(app, opts.aiTasks);
     if (opts.autopilot)
       registerAutopilotRoutes(app, {
         autopilot: opts.autopilot,
