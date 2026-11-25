@@ -28,6 +28,9 @@ func Use(gdb *gorm.DB) { DB = gdb }
 var ownedTables = []string{
 	"user_preferences",
 	"coding_plans",
+	"user_mcp_servers",
+	"user_mcp_oauth",
+	"user_mcp_oauth_states",
 }
 
 // Migrate creates the config schema if (and only if) it does not exist yet.
@@ -67,6 +70,65 @@ func schemaDDL() []string {
 			updated_at  datetime     null,
 			index idx_cp_uid (uid),
 			constraint coding_plans_ibfk_1 foreign key (uid) references users (uid)
+		)`,
+		// Per-user third-party MCP connections (app-ts agent tools). API keys
+		// are AES-256-GCM ciphertext; tools_json is the last tools/list result
+		// (written back by app-ts through the internal M2M face).
+		`create table if not exists user_mcp_servers (
+			id          bigint auto_increment primary key,
+			uid         bigint       not null,
+			name        varchar(32)  not null,
+			url         varchar(500) not null,
+			auth_kind   varchar(16)  not null default 'none',
+			auth_header varchar(64)  null,
+			api_key_enc text         null,
+			enabled     tinyint(1) default 1 null,
+			tools_json  mediumtext   null,
+			last_error  varchar(500) null,
+			created_at  datetime     null,
+			updated_at  datetime     null,
+			unique key uk_ums_uid_name (uid, name),
+			index idx_ums_uid (uid),
+			constraint user_mcp_servers_ibfk_1 foreign key (uid) references users (uid)
+		)`,
+		// OAuth 2.1 credentials for one MCP connection (companion table so the
+		// live user_mcp_servers schema stays CREATE-only; auth_kind='oauth').
+		`create table if not exists user_mcp_oauth (
+			uid                bigint       not null,
+			server_id          bigint       not null,
+			issuer             varchar(500) not null,
+			token_endpoint     varchar(500) not null,
+			client_id          varchar(255) not null,
+			client_secret_enc  text         null,
+			token_auth_method  varchar(32)  null,
+			scope              varchar(500) null,
+			resource           varchar(500) null,
+			access_token_enc   text         null,
+			refresh_token_enc  text         null,
+			expires_at         datetime     null,
+			token_type         varchar(32)  null,
+			authorized_at      datetime     null,
+			created_at         datetime     null,
+			updated_at         datetime     null,
+			primary key (uid, server_id)
+		)`,
+		// Pending authorization requests (state → PKCE verifier + DCR client).
+		`create table if not exists user_mcp_oauth_states (
+			state              varchar(128) not null primary key,
+			uid                bigint       not null,
+			server_id          bigint       not null,
+			issuer             varchar(500) not null,
+			token_endpoint     varchar(500) not null,
+			client_id          varchar(255) not null,
+			client_secret_enc  text         null,
+			token_auth_method  varchar(32)  null,
+			code_verifier_enc  text         not null,
+			redirect_uri       varchar(500) not null,
+			scope              varchar(500) null,
+			resource           varchar(500) null,
+			expires_at         datetime     not null,
+			created_at         datetime     null,
+			index idx_umos_expires (expires_at)
 		)`,
 	}
 }

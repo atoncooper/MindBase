@@ -10,7 +10,6 @@ import {
   ThumbsDown,
   RefreshCw,
   AlertCircle,
-  Sparkles,
   Pencil,
   ArrowRight,
 } from "lucide-react";
@@ -143,7 +142,7 @@ function EditableUserMessage({
 
   return (
     <div className="flex flex-col items-end gap-2">
-      <div className="w-[85%] rounded-[18px] rounded-br-md border border-accent/40 bg-surface px-3.5 py-2.5 focus-within:border-accent sm:w-[78%] sm:px-4">
+      <div className="w-[85%] rounded-[22px] border border-[#e5e5e5] bg-white px-4 py-2.5 focus-within:border-[#b4b4b4] sm:w-[78%]">
         <textarea
           ref={textareaRef}
           value={draft}
@@ -455,7 +454,7 @@ function ChatMessage({
           )}
           {content && (
             <div className="flex max-w-full items-center justify-end gap-2">
-              <div className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-[18px] rounded-br-[6px] bg-[#dce8fb] px-3.5 py-2.5 text-[15px] leading-relaxed text-foreground shadow-[0_1px_2px_rgba(60,64,67,0.06)] sm:px-4">
+              <div className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-[22px] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-relaxed text-[#0d0d0d] sm:px-5">
                 {content}
               </div>
               {onEdit && <UserEditButton onEdit={onEdit} />}
@@ -474,18 +473,12 @@ function ChatMessage({
 // ---- Assistant message: avatar-led, full-width, no bubble ----
   return (
     <div
-      className="group flex gap-3"
+      className="group"
       role="article"
       aria-roledescription="助手消息"
       aria-live={isPending ? "polite" : "off"}
     >
-      {/* No vertical offset: the pending loading row below is h-7 too, so
-          the "thinking" indicator sits exactly on the avatar's centerline. */}
-      <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
-        <Sparkles className="h-3.5 w-3.5" />
-      </div>
-
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0">
         {/* Unified thinking panel: model reasoning stream + tool-execution
             timeline behind one collapsible pill (see thinking-panel.tsx). */}
         <ThinkingPanel
@@ -510,7 +503,7 @@ function ChatMessage({
             // Markdown renders during streaming too - flushes are throttled
             // upstream (~80ms) so re-parsing stays cheap, and the switch from
             // streaming to the final render no longer jumps/reflows the text.
-            <div className="md-body text-[15px] leading-relaxed text-foreground">
+            <div className="md-body text-[15.5px] leading-7 text-[#0d0d0d] sm:text-[16px]">
               <Markdown>{content}</Markdown>
               {/* Blinking caret at the tail of the streamed answer; removed as
                   soon as the turn settles (completed / failed). */}

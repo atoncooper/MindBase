@@ -389,9 +389,9 @@ export function ChatInput({
       )}
 
       <div
-        className={`rounded-[20px] border bg-surface px-3 pb-1.5 pt-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-colors sm:rounded-[22px] ${
-          canSend ? "border-border" : "border-border-subtle"
-        } ${isStreaming ? "border-accent/40" : ""}`}
+        className={`rounded-[24px] border bg-white px-3 pb-1.5 pt-2.5 shadow-[0_2px_6px_rgba(0,0,0,0.04)] transition-colors sm:rounded-[26px] ${
+          canSend ? "border-[#e5e5e5]" : "border-[#ececec]"
+        } ${isStreaming ? "border-[#d9d9d9]" : ""}`}
       >
         <input
           ref={fileInputRef}
@@ -432,7 +432,7 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="block w-full resize-none bg-transparent px-1 py-1 text-[16px] leading-6 text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50 sm:text-[15px] [scrollbar-width:thin]"
+          className="block w-full resize-none bg-transparent px-1 py-1 text-[16px] leading-6 text-[#0d0d0d] placeholder:text-[#8f8f8f] focus:outline-none disabled:opacity-50 [scrollbar-width:thin]"
           style={{ minHeight: `${MIN_HEIGHT}px`, maxHeight: `${maxHeight}px` }}
           aria-label="聊天消息输入"
           aria-disabled={disabled}
@@ -547,7 +547,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick={handleSend}
-                    className="grid h-9 w-9 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover sm:h-8 sm:w-8"
+                    className="grid h-9 w-9 place-items-center rounded-full bg-[#0d0d0d] text-white transition-all hover:bg-[#2f2f2f] sm:h-8 sm:w-8"
                     aria-label="排队发送（本轮结束后自动发送）"
                     title="排队发送：本轮生成结束后自动发送"
                   >
@@ -557,7 +557,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={onStop}
-                  className="grid h-9 w-9 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80 sm:h-8 sm:w-8"
+                  className="grid h-9 w-9 place-items-center rounded-full bg-[#0d0d0d] text-white transition-opacity hover:opacity-80 sm:h-8 sm:w-8"
                   aria-label="停止生成"
                 >
                   <Square className="h-3 w-3 fill-current" aria-hidden="true" />
@@ -568,7 +568,7 @@ export function ChatInput({
                 type="button"
                 onClick={handleSend}
                 disabled={!canSend}
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-border-subtle disabled:text-tertiary sm:h-8 sm:w-8"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#0d0d0d] text-white transition-all hover:bg-[#2f2f2f] disabled:cursor-not-allowed disabled:bg-[#e5e5e5] disabled:text-[#b4b4b4] sm:h-8 sm:w-8"
                 aria-label="发送消息"
               >
                 <ArrowUp className="h-4 w-4" aria-hidden="true" />

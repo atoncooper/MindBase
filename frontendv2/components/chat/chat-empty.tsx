@@ -33,20 +33,11 @@ const suggestions = [
 export function ChatEmpty({ onSuggestionClick }: EmptyStateProps) {
   return (
     <div className="mx-auto flex h-full max-w-[680px] flex-col items-center justify-center px-4 py-8 text-center sm:px-5 sm:py-10">
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: [0.28, 0.11, 0.32, 1] }}
-        className="grid h-14 w-14 place-items-center rounded-2xl bg-accent-soft text-accent"
-      >
-        <Search className="h-6 w-6" />
-      </motion.div>
-
       <motion.h1
-        initial={{ opacity: 0, y: 12 }}
+        initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.05, ease: [0.28, 0.11, 0.32, 1] }}
-        className="mt-5 text-[22px] font-semibold tracking-tight text-foreground sm:text-[26px]"
+        transition={{ duration: 0.45, ease: [0.28, 0.11, 0.32, 1] }}
+        className="text-[28px] font-normal tracking-[-0.02em] text-[#0d0d0d] sm:text-[32px]"
       >
         有什么可以帮你？
       </motion.h1>
@@ -54,7 +45,7 @@ export function ChatEmpty({ onSuggestionClick }: EmptyStateProps) {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.1, ease: [0.28, 0.11, 0.32, 1] }}
-        className="mt-2 text-[13px] leading-relaxed text-secondary sm:text-[14px]"
+        className="mt-3 text-[13px] leading-relaxed text-[#8f8f8f] sm:text-[14px]"
       >
         把 B 站收藏夹变成可提问的知识库 · 检索、总结、对比、规划
       </motion.p>
@@ -71,7 +62,7 @@ export function ChatEmpty({ onSuggestionClick }: EmptyStateProps) {
               transition={{ duration: 0.4, delay: 0.15 + i * 0.06, ease: [0.28, 0.11, 0.32, 1] }}
               whileHover={{ y: -2 }}
               onClick={() => onSuggestionClick?.(s.prompt)}
-              className="flex items-start gap-3 rounded-2xl border border-border-subtle bg-surface px-4 py-3 text-left transition-colors hover:border-border hover:bg-border-subtle/40"
+              className="flex items-start gap-3 rounded-xl border border-[#ececec] bg-white px-4 py-3 text-left transition-colors hover:border-[#d9d9d9] hover:bg-[#f7f7f8]"
               aria-label={`${s.title}：${s.prompt}`}
             >
               <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-border-subtle text-secondary">

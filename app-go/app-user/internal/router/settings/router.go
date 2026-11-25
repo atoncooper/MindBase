@@ -27,6 +27,9 @@ type Deps struct {
 	Svc *settingsservice.Service
 	// CodingPlans owns Coding Plan CRUD + the VIP/SVIP gate (settings domain).
 	CodingPlans *settingsservice.CodingPlanService
+	// MCP owns per-user MCP connection CRUD (settings domain); app-ts reads
+	// the decrypted list through /internal/settings/mcp/{uid}.
+	MCP *settingsservice.MCPService
 	// InternalAPIKey guards the M2M face (/internal/settings/coding-plan/{uid}).
 	// Main passes the shared APISIX consumer key from the auth config.
 	InternalAPIKey string
@@ -61,6 +64,7 @@ func New(d Deps) *gin.Engine {
 	registerPreferences(e)
 	registerAvatar(e)
 	registerCodingPlans(e, d)
+	registerMCP(e, d)
 
 	e.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "接口不存在"})

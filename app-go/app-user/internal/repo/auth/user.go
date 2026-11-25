@@ -79,6 +79,15 @@ func (r *UserRepo) exists(db *gorm.DB, col, val string) (bool, error) {
 	return n > 0, err
 }
 
+// SetVerifiedEmailIfEmpty fills an empty email after a provider verified it.
+// Existing emails are never overwritten; a unique-index conflict is returned
+// to the caller (the OAuth login then continues without changing email).
+func (r *UserRepo) SetVerifiedEmailIfEmpty(db *gorm.DB, uid int64, email string) error {
+	return db.Model(&model.User{}).
+		Where("uid = ? AND (email IS NULL OR email = '')", uid).
+		Updates(map[string]any{"email": email, "email_verified": true}).Error
+}
+
 // Create inserts a user + empty profile in one transaction.
 func (r *UserRepo) Create(db *gorm.DB, u *model.User, p *model.UserProfile) error {
 	return db.Transaction(func(tx *gorm.DB) error {

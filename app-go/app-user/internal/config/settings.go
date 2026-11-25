@@ -20,11 +20,41 @@ type SettingsConfig struct {
 	RDBMS      RDBMSConfig      `yaml:"rdbms"`
 	AppCloud   AppCloudConfig   `yaml:"app_cloud"`
 	CodingPlan CodingPlanConfig `yaml:"coding_plan"`
+	MCP        MCPConfig        `yaml:"mcp"`
 }
 
 // CodingPlanConfig is the operator-owned provider catalog for Coding Plans.
 // All provider base URLs live here (default.yaml) instead of being hardcoded in
 // Go or the frontend; the account editor and probe/list/test paths share it.
+// MCPConfig controls the per-user third-party MCP connection surface
+// (/settings/mcp/servers). Credentials use the shared AES cipher
+// (security.api_key_encryption_key); app-ts reads connections via the
+// internal M2M face.
+type MCPConfig struct {
+	Enabled    bool           `yaml:"enabled"`
+	MaxServers int            `yaml:"max_servers"`
+	OAuth      MCPOAuthConfig `yaml:"oauth"`
+}
+
+// MCPOAuthConfig is the deployment-specific half of the OAuth 2.1 flow:
+// callback_url is registered with the provider via dynamic client registration
+// and must be browser-reachable through the gateway; frontend_url is where the
+// callback redirects afterwards.
+type MCPOAuthConfig struct {
+	CallbackURL string `yaml:"callback_url"`
+	FrontendURL string `yaml:"frontend_url"`
+	// ClientName is sent to providers during dynamic client registration.
+	ClientName string `yaml:"client_name"`
+	// ClientID/ClientSecret skip DCR and use a pre-registered OAuth client
+	// (providers that issue credentials instead of allowing registration).
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	// Scopes overrides the discovered scopes (space separated).
+	Scopes            string `yaml:"scopes"`
+	AllowPrivateHosts bool   `yaml:"allow_private_hosts"`
+	TimeoutMs         int    `yaml:"timeout_ms"`
+}
+
 type CodingPlanConfig struct {
 	Providers []CodingPlanProviderConfig `yaml:"providers"`
 }
@@ -115,6 +145,32 @@ func applySettingsEnv(cfg *SettingsConfig) {
 	}
 	if v := get("APPSETTINGS__LOG__FILE__PATH"); v != "" {
 		cfg.Log.File.Path = v
+	}
+	if b, ok := getBool("APPSETTINGS__MCP__ENABLED"); ok {
+		cfg.MCP.Enabled = b
+	}
+	atoi("APPSETTINGS__MCP__MAX_SERVERS", &cfg.MCP.MaxServers)
+	if v := get("APPSETTINGS__MCP__OAUTH__CALLBACK_URL"); v != "" {
+		cfg.MCP.OAuth.CallbackURL = v
+	}
+	if v := get("APPSETTINGS__MCP__OAUTH__FRONTEND_URL"); v != "" {
+		cfg.MCP.OAuth.FrontendURL = v
+	}
+	if b, ok := getBool("APPSETTINGS__MCP__OAUTH__ALLOW_PRIVATE_HOSTS"); ok {
+		cfg.MCP.OAuth.AllowPrivateHosts = b
+	}
+	atoi("APPSETTINGS__MCP__OAUTH__TIMEOUT_MS", &cfg.MCP.OAuth.TimeoutMs)
+	if v := get("APPSETTINGS__MCP__OAUTH__CLIENT_NAME"); v != "" {
+		cfg.MCP.OAuth.ClientName = v
+	}
+	if v := get("APPSETTINGS__MCP__OAUTH__CLIENT_ID"); v != "" {
+		cfg.MCP.OAuth.ClientID = v
+	}
+	if v := get("APPSETTINGS__MCP__OAUTH__CLIENT_SECRET"); v != "" {
+		cfg.MCP.OAuth.ClientSecret = v
+	}
+	if v := get("APPSETTINGS__MCP__OAUTH__SCOPES"); v != "" {
+		cfg.MCP.OAuth.Scopes = v
 	}
 }
 

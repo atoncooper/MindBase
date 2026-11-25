@@ -35,3 +35,7 @@ export * from "./skills";
 export * from "./sandbox";
 export * from "./preferences";
 export * from "./quota";
+
+export * from "./mcp";
+
+export * from "./ai-tasks";

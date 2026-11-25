@@ -126,8 +126,17 @@ describe("MCP 动态工具桥接（createMcpTools）", () => {
   it("server 工具被原样桥接（name/description/inputSchema 零改写）", async () => {
     const tools = await createMcpTools(fakeClient([]));
     expect(tools.map((t) => t.name)).toEqual(["list_boards", "get_board"]);
-    expect(tools[0].description).toBe("列出板子");
+    expect(tools[0].description).toContain("列出板子");
+    expect(tools[0].description).toContain("[MCP server: content]");
     expect(tools[0].inputSchema).toEqual({ type: "object", properties: { search: { type: "string" } } });
+  });
+
+  it("toolPrefix 让第三方 server 工具与内置工具隔离，但调用仍用服务端原名", async () => {
+    const captured: Captured[] = [];
+    const tools = await createMcpTools(fakeClient(captured), { toolPrefix: "mcp_pubmed__" });
+    expect(tools.map((t) => t.name)).toEqual(["mcp_pubmed__list_boards", "mcp_pubmed__get_board"]);
+    await tools[0].execute({ search: "x" }, makeCtx(1));
+    expect(captured[0].name).toBe("list_boards");
   });
 
   it("includeToolNames 只桥接白名单工具（合并 server 多域共存时不重名）", async () => {

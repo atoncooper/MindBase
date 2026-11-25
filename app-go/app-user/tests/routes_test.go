@@ -38,6 +38,8 @@ func TestRouteParity(t *testing.T) {
 			"GET /auth/qrcode/poll/:qrcode_key",
 			"GET /auth/wechat/qrcode",
 			"POST /auth/wechat/login",
+			"GET /auth/google/options",
+			"POST /auth/google/login",
 			"POST /auth/login",
 			"GET /auth/attest/challenge",
 			"POST /auth/attest",
@@ -66,6 +68,7 @@ func TestRouteParity(t *testing.T) {
 			"GET /auth/devices",
 			"GET /auth/security",
 			"POST /auth/wechat/bind",
+			"POST /auth/google/bind",
 		}},
 		{"bili", "8010", biliEngine, []string{
 			"GET /health",
@@ -102,6 +105,18 @@ func TestRouteParity(t *testing.T) {
 			"GET /settings/coding-plans/:id/models",
 			"POST /settings/coding-plans/:id/test",
 			"GET /internal/settings/coding-plan/:uid",
+			// Per-user MCP connections: CRUD here (settings domain), plus the
+			// internal face app-ts reads and the discovery write-back.
+			"GET /settings/mcp/servers",
+			"POST /settings/mcp/servers",
+			"PATCH /settings/mcp/servers/:id",
+			"DELETE /settings/mcp/servers/:id",
+			"GET /internal/settings/mcp/:uid",
+			"PATCH /internal/settings/mcp/:uid/:id/discovery",
+			"POST /internal/settings/mcp/:uid/:id/refresh",
+			"POST /settings/mcp/servers/:id/oauth/start",
+			"DELETE /settings/mcp/servers/:id/oauth",
+			"GET /settings/mcp/oauth/callback",
 		}},
 	}
 	for _, tc := range cases {

@@ -39,6 +39,34 @@ func (r *TokenRepo) FindValid(db *gorm.DB, sessionToken string) (*model.UserToke
 	return &t, nil
 }
 
+// FindValidLegacy is the rollout-only lookup for rows issued before hashing.
+// The NOT LIKE guard is essential: without it a leaked stored hash could be
+// replayed as a Bearer token through the fallback path.
+func (r *TokenRepo) FindValidLegacy(db *gorm.DB, sessionToken string) (*model.UserToken, error) {
+	var t model.UserToken
+	now := time.Now()
+	err := db.Where(
+		"session_token = ? AND session_token NOT LIKE 'sha256:%' AND (is_revoked IS NULL OR is_revoked = 0) AND deleted_at IS NULL "+
+			"AND (expires_at IS NULL OR expires_at > ?)",
+		sessionToken, now,
+	).First(&t).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+// Rehash migrates one legacy plaintext row to its hashed representation.
+// The caller has already verified that the plaintext token is still valid.
+func (r *TokenRepo) Rehash(db *gorm.DB, oldToken, newToken string) error {
+	return db.Model(&model.UserToken{}).
+		Where("session_token = ? AND session_token NOT LIKE 'sha256:%'", oldToken).
+		Update("session_token", newToken).Error
+}
+
 // BumpActivity refreshes last_active_at (throttled to once per minute by the
 // service layer to avoid a write per request).
 func (r *TokenRepo) BumpActivity(db *gorm.DB, sessionToken string) error {

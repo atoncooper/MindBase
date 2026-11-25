@@ -43,6 +43,8 @@ func registerAuth(e *gin.Engine, d Deps) {
 	g.GET("/qrcode/poll/:qrcode_key", pollQRCode(d))
 	g.GET("/wechat/qrcode", wechatQROptions(d))
 	g.POST("/wechat/login", wechatLogin(d))
+	g.GET("/google/options", googleOptions(d))
+	g.POST("/google/login", googleLogin(d))
 	g.POST("/login", passwordLogin(d))
 	g.GET("/attest/challenge", attestChallenge(d))
 	g.POST("/attest", attestDevice(d))
@@ -74,6 +76,7 @@ func registerAuth(e *gin.Engine, d Deps) {
 	authed.GET("/devices", listDevices(d))
 	authed.GET("/security", getSecurity(d))
 	authed.POST("/wechat/bind", wechatBind(d))
+	authed.POST("/google/bind", googleBind(d))
 
 	// Coding Plan moved to the settings domain (user configuration, not
 	// identity): /settings/coding-plans on the settings listener (8015).
@@ -87,6 +90,7 @@ func featuresHandler(d Deps) gin.HandlerFunc {
 		c.JSON(http.StatusOK, authdto.Features{
 			EmailRegisterEnabled: d.Cfg.Email.Enabled,
 			SMSEnabled:           d.Cfg.SMS.Configured(),
+			GoogleEnabled:        d.Google != nil && d.Google.Enabled(),
 		})
 	}
 }

@@ -67,6 +67,20 @@ export interface AppConfig {
     /** structured-output retries for the generation LLM call */
     genRetries: number;
   };
+  aiTasks: {
+    /** Master switch for user-scheduled AI tasks. */
+    enabled: boolean;
+    /** Scheduler poll interval (ms). */
+    intervalMs: number;
+    /** Max task executions in flight. */
+    maxConcurrent: number;
+    /** Max due tasks claimed per poll. */
+    maxRunsPerTick: number;
+    /** Scheduler lease before a crashed runner can be reclaimed. */
+    leaseMs: number;
+    /** Hard timeout for one task agent turn. */
+    timeoutMs: number;
+  };
   minio: {
     /** object storage for skill zips; empty endpoint = skills subsystem disabled */
     endpoint: string;
@@ -215,6 +229,35 @@ export interface AppConfig {
     maxContentChars: number;
     /** optional model override for /chat/board/complete; empty = llm.model */
     completionModel: string;
+  };
+  userMcp: {
+    /** Register the mcp_user_call tool (connections themselves live in app-user). */
+    enabled: boolean;
+    timeoutMs: number;
+    maxContentChars: number;
+    /** TTL for the per-uid app-user connection cache (edits appear within it). */
+    cacheTtlMs: number;
+    /** Allow localhost/private/LAN MCP endpoints (SSRF risk; default false). */
+    allowPrivateHosts: boolean;
+  };
+  externalMcp: {
+    /** Enable third-party MCP servers declared below. */
+    enabled: boolean;
+    /** Optional global cap for bridged tool output sent to the model. */
+    maxContentChars: number;
+    servers: Array<{
+      name: string;
+      enabled: boolean;
+      /** Streamable-HTTP MCP endpoint. */
+      url: string;
+      /** Static auth/extra headers (keep secrets in local.yaml / env). */
+      headers: Record<string, string>;
+      timeoutMs: number;
+      /** Empty = bridge every discovered tool; otherwise exact server tool names. */
+      includeTools: string[];
+      /** Temporary non-zero uid for boot-time tools/list when the server requires identity. */
+      discoveryUid?: string;
+    }>;
   };
   sandbox: {
     /**
@@ -519,5 +562,50 @@ export const config: AppConfig = (() => {
     process.env.AI_GATEWAY__NATIVE_BASE_URL ??
     raw.aiGateway.baseUrl.replace(/\/v1\/?$/, "") + "/api/v1";
   applyTempFilesEnvAlias(raw.tempFiles);
+  applyExternalMcpEnv(raw.externalMcp);
   return raw;
 })();
+
+/**
+ * Single-server deployment shortcut for third-party MCP:
+ * EXTERNAL_MCP__URL + EXTERNAL_MCP__HEADERS_JSON. Multiple servers still use
+ * the externalMcp.servers YAML list.
+ */
+function applyExternalMcpEnv(section: AppConfig["externalMcp"]): void {
+  const url = process.env.EXTERNAL_MCP__URL;
+  if (!url) return;
+  const enabled = process.env.EXTERNAL_MCP__ENABLED;
+  section.enabled = enabled === undefined ? true : enabled === "true" || enabled === "1";
+  let headers: Record<string, string> = {};
+  const rawHeaders = process.env.EXTERNAL_MCP__HEADERS_JSON;
+  if (rawHeaders) {
+    try {
+      const parsed = JSON.parse(rawHeaders) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        headers = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>)
+            .filter(([, value]) => typeof value === "string")
+            .map(([key, value]) => [key, value as string]),
+        );
+      }
+    } catch {
+      headers = {};
+    }
+  }
+  section.servers = [
+    {
+      name: process.env.EXTERNAL_MCP__NAME || "external",
+      enabled: true,
+      url,
+      headers,
+      timeoutMs: Number(process.env.EXTERNAL_MCP__TIMEOUT_MS || 30000),
+      includeTools: (process.env.EXTERNAL_MCP__INCLUDE_TOOLS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      ...(process.env.EXTERNAL_MCP__DISCOVERY_UID
+        ? { discoveryUid: process.env.EXTERNAL_MCP__DISCOVERY_UID }
+        : {}),
+    },
+  ];
+}

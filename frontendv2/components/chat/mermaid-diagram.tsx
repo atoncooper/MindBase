@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useId, useRef, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, Copy, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Copy, Maximize2, RotateCcw, X } from "lucide-react";
 import type { MermaidConfig } from "mermaid";
 
 type MermaidModule = typeof import("mermaid");
@@ -226,6 +226,7 @@ function renderKeyOf(source: string, retryNonce: number): string {
 export function MermaidDiagram({ code }: { code: string }) {
   const [result, setResult] = useState<RenderResult | null>(null);
   const [showSource, setShowSource] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
 
@@ -314,18 +315,34 @@ export function MermaidDiagram({ code }: { code: string }) {
     colorizeMermaidDom(diagramRef.current, source);
   }, [svg, source]);
 
+  // Fullscreen viewer: lock page scroll and close with Escape.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previous;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [fullscreen]);
+
   return (
-    <div className="md-code my-3 overflow-hidden rounded-[7px] border border-border bg-surface">
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5">
-        <span className="flex min-w-0 items-center gap-1.5 truncate font-mono text-[11px] uppercase tracking-wide text-tertiary">
+    <>
+    <div className="my-4 overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-[0_1px_2px_rgba(60,64,67,0.05)]">
+      <div className="flex items-center justify-between gap-2 border-b border-border-subtle bg-[#fbfbfd] px-4 py-2">
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] font-medium tracking-wide text-secondary">
           {error ? (
             <AlertTriangle className="h-3 w-3 shrink-0 text-warning" aria-hidden="true" />
           ) : (
             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
           )}
           Mermaid
-          {pending && <span className="normal-case">· 渲染中…</span>}
-          {error && <span className="normal-case">· 渲染失败</span>}
+          {pending && <span className="font-normal text-tertiary">· 渲染中…</span>}
+          {error && <span className="font-normal text-tertiary">· 渲染失败</span>}
         </span>
         <span className="flex shrink-0 items-center gap-0.5">
           {error && (
@@ -337,6 +354,17 @@ export function MermaidDiagram({ code }: { code: string }) {
             >
               <RotateCcw className="h-3 w-3" aria-hidden="true" />
               重试
+            </button>
+          )}
+          {svg && (
+            <button
+              type="button"
+              onClick={() => setFullscreen(true)}
+              className={ACTION_BUTTON_CLASS}
+              aria-label="查看 Mermaid 图表大图"
+            >
+              <Maximize2 className="h-3 w-3" aria-hidden="true" />
+              大图
             </button>
           )}
           {!isEmpty && !error && (
@@ -385,25 +413,25 @@ export function MermaidDiagram({ code }: { code: string }) {
               图表语法可能有误。可复制源码检查，或修正后重试。
             </p>
           </div>
-          <pre className="m-0 max-h-[24rem] overflow-auto bg-[#f5f5f7] px-3 py-2.5 text-[13px] leading-relaxed">
+          <pre className="m-0 max-h-[24rem] overflow-auto bg-[#f7f7f8] px-4 py-3 text-[13px] leading-relaxed">
             <code className="font-mono text-foreground">{text}</code>
           </pre>
         </>
       ) : svg ? (
         <>
-          <div className="overflow-auto bg-[#fbfbfd] px-3 py-3">
+          <div className="md-diagram-scroll bg-[#fbfbfd] px-5 py-5">
             {/* Mermaid sanitizes this markup itself (securityLevel "strict"
                 runs DOMPurify before serializing the SVG), so injecting the
                 returned string is safe. width="100%" plus an inline max-width
                 cap from mermaid keeps the diagram responsive in the column. */}
             <div
               ref={diagramRef}
-              className="mx-auto flex justify-center [&_svg]:block [&_svg]:h-auto [&_svg]:max-w-full"
+              className="mx-auto flex min-h-[120px] min-w-0 justify-center [&_svg]:block [&_svg]:h-auto [&_svg]:max-w-full"
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </div>
           {showSource && (
-            <pre className="m-0 max-h-[24rem] overflow-auto border-t border-border/60 bg-[#f5f5f7] px-3 py-2.5 text-[13px] leading-relaxed">
+            <pre className="m-0 max-h-[24rem] overflow-auto border-t border-border-subtle bg-[#f7f7f8] px-4 py-3 text-[13px] leading-relaxed">
               <code className="font-mono text-foreground">{text}</code>
             </pre>
           )}
@@ -423,5 +451,37 @@ export function MermaidDiagram({ code }: { code: string }) {
         </div>
       )}
     </div>
+    {fullscreen && svg && (
+      <div
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-3 backdrop-blur-[2px] sm:p-6"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Mermaid 图表大图"
+        onClick={() => setFullscreen(false)}
+      >
+        <div
+          className="flex h-full max-h-[92vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl border border-white/20 bg-surface shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-border-subtle bg-[#fbfbfd] px-4 py-3">
+            <span className="text-[12px] font-medium text-foreground">Mermaid 图表</span>
+            <button
+              type="button"
+              onClick={() => setFullscreen(false)}
+              className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+              aria-label="关闭大图"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+          <div
+            className="md-diagram-scroll h-full flex-1 bg-[#fbfbfd] p-6"
+            style={{ maxHeight: "none" }}
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        </div>
+      </div>
+    )}
+    </>
   );
 }

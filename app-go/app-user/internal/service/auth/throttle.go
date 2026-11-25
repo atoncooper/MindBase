@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -137,10 +138,12 @@ func NewFixedWindowLimiter(rdb redis.UniversalClient, ns string) *FixedWindowLim
 	return &FixedWindowLimiter{rdb: rdb, ns: ns}
 }
 
-// Allow records a hit and reports whether key is within limit per window.
-func (l *FixedWindowLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) bool {
+// AllowResult records a hit and returns (allowed, error). Callers that protect
+// a database can use error to choose fail-closed/local fallback instead of
+// silently disabling the limit when Redis is down.
+func (l *FixedWindowLimiter) AllowResult(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	if l.rdb == nil {
-		return true
+		return false, errors.New("redis unavailable")
 	}
 	ms := window.Milliseconds()
 	if ms <= 0 {
@@ -148,10 +151,20 @@ func (l *FixedWindowLimiter) Allow(ctx context.Context, key string, limit int, w
 	}
 	n, err := fixedWindowScript.Run(ctx, l.rdb, []string{l.ns + key}, ms).Int64()
 	if err != nil {
-		// Fail open: the limiter is a safety net, never a request-path dependency.
+		return false, err
+	}
+	return n <= int64(limit), nil
+}
+
+// Allow records a hit and reports whether key is within limit per window.
+// Login/registration callers keep the historical fail-open behavior; the
+// forward-auth path uses RateLimits.AllowStrict with a local fallback.
+func (l *FixedWindowLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) bool {
+	ok, err := l.AllowResult(ctx, key, limit, window)
+	if err != nil {
 		return true
 	}
-	return n <= int64(limit)
+	return ok
 }
 
 // RetryAfter returns the remaining TTL of the window key (seconds, rounded up

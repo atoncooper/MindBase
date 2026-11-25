@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,16 @@ func NewTokenService(db *gorm.DB, ttlDays int, c *cache.Cache) *TokenService {
 	}
 }
 
+const tokenHashPrefix = "sha256:"
+
+// TokenHash is the at-rest representation of a session token. Only the hash is
+// persisted in MySQL/cache; the plaintext token exists solely in the client's
+// Authorization header and the response that issued it.
+func TokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return tokenHashPrefix + hex.EncodeToString(sum[:])
+}
+
 // Issue creates a fresh session token row and returns the token string.
 // deviceID/ip/userAgent are best-effort metadata (nil tolerated).
 func (s *TokenService) Issue(ctx context.Context, uid int64, deviceID, ip, userAgent *string) (string, error) {
@@ -50,7 +61,7 @@ func (s *TokenService) Issue(ctx context.Context, uid int64, deviceID, ip, userA
 	expires := now.AddDate(0, 0, s.ttlDays)
 	tt := "access"
 	row := &model.UserToken{
-		SessionToken: token,
+		SessionToken: TokenHash(token),
 		UID:          uid,
 		DeviceID:     deviceID,
 		TokenType:    &tt,
@@ -63,7 +74,7 @@ func (s *TokenService) Issue(ctx context.Context, uid int64, deviceID, ip, userA
 	if err := s.tokens.Create(s.db, row); err != nil {
 		return "", err
 	}
-	s.cache.SetTokenUID(ctx, token, uid)
+	s.cache.SetTokenUID(ctx, TokenHash(token), uid)
 	return token, nil
 }
 
@@ -78,28 +89,45 @@ func (s *TokenService) Validate(ctx context.Context, token string) int64 {
 	// Revoked tombstones and negatively cached invalid tokens must be checked
 	// before the positive cache: a concurrent Validate can otherwise re-add a
 	// token that was being revoked at the same moment.
-	if s.cache.IsBlocked(token) {
+	tokenHash := TokenHash(token)
+	if s.cache.IsBlocked(tokenHash) {
 		return 0
 	}
-	if uid := s.cache.GetTokenUID(ctx, token); uid != 0 {
-		s.bumpThrottled(token)
+	if uid := s.cache.GetTokenUID(ctx, tokenHash); uid != 0 {
+		s.bumpThrottled(tokenHash)
 		return uid
 	}
-	row, err := s.tokens.FindValid(s.db, token)
+	row, err := s.tokens.FindValid(s.db, tokenHash)
 	if err != nil {
 		slog.Error("[AUTH_TOKEN] find_valid failed", "err", err)
 		return 0
 	}
 	if row == nil {
+		// Zero-downtime migration: rows issued before hashing still contain the
+		// plaintext token. Validate once, then rewrite that row to its hash.
+		legacy, legacyErr := s.tokens.FindValidLegacy(s.db, token)
+		if legacyErr != nil {
+			slog.Error("[AUTH_TOKEN] legacy find_valid failed", "err", legacyErr)
+			return 0
+		}
+		if legacy != nil {
+			if migrateErr := s.tokens.Rehash(s.db, token, tokenHash); migrateErr != nil {
+				slog.Warn("[AUTH_TOKEN] rehash failed", "err", migrateErr)
+				return 0
+			}
+			row = legacy
+		}
+	}
+	if row == nil {
 		// Short L1 negative cache: random-token spam must not hit MySQL on
 		// every forward-auth request.
-		s.cache.MarkInvalid(token)
+		s.cache.MarkInvalid(tokenHash)
 		return 0
 	}
-	if err := s.tokens.BumpActivity(s.db, token); err != nil {
+	if err := s.tokens.BumpActivity(s.db, tokenHash); err != nil {
 		slog.Warn("[AUTH_TOKEN] bump activity failed", "err", err)
 	}
-	s.cache.SetTokenUID(ctx, token, row.UID)
+	s.cache.SetTokenUID(ctx, tokenHash, row.UID)
 	return row.UID
 }
 
@@ -107,12 +135,16 @@ func (s *TokenService) Validate(ctx context.Context, token string) int64 {
 // both before and after the DB write: a concurrent Validate that read the row
 // just before the revoke must not be able to re-populate the cache afterwards.
 func (s *TokenService) Revoke(ctx context.Context, token string) error {
-	s.cache.DeleteToken(ctx, token)
-	if err := s.tokens.Revoke(s.db, token); err != nil {
+	return s.revokeHash(ctx, TokenHash(token))
+}
+
+func (s *TokenService) revokeHash(ctx context.Context, tokenHash string) error {
+	s.cache.DeleteToken(ctx, tokenHash)
+	if err := s.tokens.Revoke(s.db, tokenHash); err != nil {
 		return err
 	}
-	s.cache.DeleteToken(ctx, token)
-	s.deleteBumpState(token)
+	s.cache.DeleteToken(ctx, tokenHash)
+	s.deleteBumpState(tokenHash)
 	return nil
 }
 
@@ -136,15 +168,16 @@ func (s *TokenService) RevokeAllForUser(ctx context.Context, uid int64) error {
 
 // RevokeOthersForUser revokes all sessions except keepToken (password change).
 func (s *TokenService) RevokeOthersForUser(ctx context.Context, uid int64, keepToken string) error {
+	keepHash := TokenHash(keepToken)
 	rows, err := s.tokens.ListActive(s.db, uid)
 	if err != nil {
 		return err
 	}
-	if _, err := s.tokens.RevokeOthersForUser(s.db, uid, keepToken); err != nil {
+	if _, err := s.tokens.RevokeOthersForUser(s.db, uid, keepHash); err != nil {
 		return err
 	}
 	for _, row := range rows {
-		if row.SessionToken == keepToken {
+		if row.SessionToken == keepHash {
 			continue
 		}
 		s.cache.DeleteToken(ctx, row.SessionToken)
@@ -156,6 +189,14 @@ func (s *TokenService) RevokeOthersForUser(ctx context.Context, uid int64, keepT
 // SessionID is the opaque, non-credential id exposed to the session-management
 // UI. The real session token never leaves the server in list responses or URLs.
 func SessionID(token string) string {
+	// Rows now store "sha256:<hex>"; accepting both forms keeps the public
+	// session id stable across the plaintext→hash migration.
+	if strings.HasPrefix(token, tokenHashPrefix) {
+		hash := strings.TrimPrefix(token, tokenHashPrefix)
+		if len(hash) >= 16 {
+			return hash[:16]
+		}
+	}
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])[:16]
 }
@@ -170,7 +211,7 @@ func (s *TokenService) RevokeBySessionID(ctx context.Context, uid int64, session
 		if SessionID(row.SessionToken) != sessionID {
 			continue
 		}
-		if err := s.Revoke(ctx, row.SessionToken); err != nil {
+		if err := s.revokeHash(ctx, row.SessionToken); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -181,18 +222,19 @@ func (s *TokenService) RevokeBySessionID(ctx context.Context, uid int64, session
 // RevokeOwned revokes a token only when it belongs to uid (ownership check
 // for the DELETE /auth/tokens/{token} endpoint). Reports whether revoked.
 func (s *TokenService) RevokeOwned(ctx context.Context, uid int64, token string) (bool, error) {
-	row, err := s.tokens.FindValid(s.db, token)
+	tokenHash := TokenHash(token)
+	row, err := s.tokens.FindValid(s.db, tokenHash)
 	if err != nil {
 		return false, err
 	}
 	if row == nil || row.UID != uid {
 		return false, nil
 	}
-	if err := s.tokens.Revoke(s.db, token); err != nil {
+	if err := s.tokens.Revoke(s.db, tokenHash); err != nil {
 		return false, err
 	}
-	s.cache.DeleteToken(ctx, token)
-	s.deleteBumpState(token)
+	s.cache.DeleteToken(ctx, tokenHash)
+	s.deleteBumpState(tokenHash)
 	return true, nil
 }
 

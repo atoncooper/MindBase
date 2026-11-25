@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,14 @@ func TestSessionIDIsStableOpaqueID(t *testing.T) {
 	}
 	if other := authservice.SessionID("another-token"); other == id {
 		t.Fatal("different tokens must produce different ids")
+	}
+	// The DB/cache store only the prefixed hash; the public session id must
+	// remain identical to the pre-hash contract.
+	if stored := authservice.TokenHash("session-token-value"); authservice.SessionID(stored) != id {
+		t.Fatalf("session id changed after hashing: %q vs %q", authservice.SessionID(stored), id)
+	}
+	if !strings.HasPrefix(authservice.TokenHash("session-token-value"), "sha256:") {
+		t.Fatal("token hash must be prefixed for unambiguous migration")
 	}
 }
 

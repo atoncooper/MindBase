@@ -90,7 +90,7 @@ func listSessions(d Deps) gin.HandlerFunc {
 				CreatedAt:    t.CreatedAt,
 				LastActiveAt: t.LastActiveAt,
 				ExpiresAt:    t.ExpiresAt,
-				IsCurrent:    t.SessionToken == token,
+				IsCurrent:    t.SessionToken == service.TokenHash(token),
 			})
 		}
 		c.JSON(http.StatusOK, authdto.Sessions{Sessions: sessions})

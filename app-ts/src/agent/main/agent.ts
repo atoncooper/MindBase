@@ -50,6 +50,10 @@ export function createMainAgent(
   includeKgTool = false,
   /** skills facade (index/forced injection); absent = no SKILLS_SECTION */
   skills?: { indexSection: (uid: string) => Promise<string>; forcedSection: (uid: string, ids: string[]) => Promise<string> },
+  /** Externally configured MCP tools (already prefixed) available to the main agent. */
+  extraToolNames: readonly string[] = [],
+  /** Per-user MCP catalog rendered into the prompt (never global tool names). */
+  mcpCatalog?: (uid: string) => Promise<string>,
 ) {
   return createReactAgent({
     name: "main",
@@ -85,6 +89,7 @@ export function createMainAgent(
       "cloud_similar_files",
       "docx_inspect",
       ...(includeKgTool ? ["kg_search"] : []),
+      ...extraToolNames,
     ],
     purpose: "chat",
     async buildSystemPrompt(input: AgentInvokeInput) {
@@ -114,8 +119,13 @@ export function createMainAgent(
         KG_SEARCH_SECTION: includeKgTool ? KG_SEARCH_SECTION : "",
         SKILLS_SECTION: skillsSection,
       });
+      const mcpSection =
+        mcpCatalog && input.uid !== undefined
+          ? await mcpCatalog(input.uid).catch(() => "")
+          : "";
+      const withMcp = mcpSection ? `${base}\n\n${mcpSection}` : base;
       // client-supplied system directives (OpenAI-compat endpoint) ride below our own prompt
-      return input.extraSystem ? `${base}\n\n# 用户附加指令\n${input.extraSystem}` : base;
+      return input.extraSystem ? `${withMcp}\n\n# 用户附加指令\n${input.extraSystem}` : withMcp;
     },
   });
 }
