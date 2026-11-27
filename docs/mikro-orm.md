@@ -14,7 +14,7 @@
 - 初始化失败自动回退到原直接驱动；再失败回退 memory（原有策略不变）。
 
 为什么不是 v6：v6 要求 Node >= 18，但依赖 `mongodb` 6.x，会在一个进程里引入两套
-驱动/BSON；v7 要求 Node >= 22.17，与 app-ts Docker `node:22-alpine` 及
+驱动/BSON；v7 要求 Node >= 22.17，与 app-ts Docker `node:22-bookworm-slim` 及
 `mongodb@7` 对齐。因此 `package.json` engines 已提升到 `>=22.17.0`。
 
 ## 2. 配置

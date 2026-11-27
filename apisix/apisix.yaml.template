@@ -1273,7 +1273,7 @@ routes:
         key: remote_addr
 
   - id: chat_ts
-    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /ai-tasks, /ai-tasks/*, /mcp/servers/*, /quota/summary]
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /chat/office/document, /ai-tasks, /ai-tasks/*, /mcp/servers/*, /quota/summary]
     priority: 60
     labels:
       domain: user

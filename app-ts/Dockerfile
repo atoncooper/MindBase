@@ -1,26 +1,25 @@
-# ====== app-ts: agent + RAG service (Node/Fastify) ======
-# Build context = REPO ROOT (compose/CI pass context "." with this Dockerfile)
-# so the shared proto/kg/v1/kg.proto can be copied in (runtime-loaded gRPC
-# contract). Runs via tsx (no compile step); the "build" script is a type check.
-FROM node:22-alpine
+# app-ts: Node 22 / Fastify agent service (tsx 直跑，无编译产物)。
+# 纯 npm 依赖，无系统包：Office -> PDF 走 Gotenberg 侧车，PDF -> PNG 用 @hyzyla/pdfium (WASM)。
+# LibreOffice/poppler 只出现在 CI/评测镜像 docker/office-eval.Dockerfile。
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# Deps first (cache)
+# 依赖层（package*.json 变化才重建）
 COPY app-ts/package.json app-ts/package-lock.json* ./
-# npm 默认源在本机网络不可达（连接被重置）；与宿主 ~/.npmrc 及 lockfile 对齐走 npmmirror
-RUN npm install --registry=https://registry.npmmirror.com
+# 默认 npmmirror；需要官方源时 --build-arg NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm install --registry=$NPM_REGISTRY
 
-# Source + runtime assets
+ENV NODE_ENV=production
+ENV LANG=C.UTF-8
+
+# 源码 + gRPC proto（运行时加载）
 COPY app-ts/ ./
 COPY proto/ ./proto/
 
-ENV NODE_ENV=production
-# /app/logs must pre-exist owned by the runtime user — the file log target
-# (default.yaml log.file) is /app/logs/app-ts.log and pino/sonic-boom aborts
-# the process on EACCES otherwise (same pattern as the MCP server images).
+# 日志目录必须存在且可写，否则 pino 启动失败
 RUN mkdir -p /app/logs && chown -R node:node /app/logs
-# 8000 = the port the retired Python backend owned; app-ts inherits it
 EXPOSE 8000
 USER node
 

@@ -24,6 +24,7 @@
     "@radix-ui/react-dropdown-menu": "^2.2.1",
     "@radix-ui/react-hover-card": "^1.2.1",
     "clsx": "^2.1.1",
+    "docx-preview": "^0.4.1",
     "framer-motion": "^13.0.0",
     "hls.js": "^1.7.4",
     "katex": "^0.16.47",

@@ -233,6 +233,8 @@ export interface DocxDetail {
   paragraphsTruncated: boolean;
   tables: DocxTableInfo[];
   tableCount: number;
+  /** Body order (paragraphs/tables interleaved) — used by the document preview. */
+  bodyOrder: Array<{ kind: "paragraph" | "table"; index: number }>;
   headers: DocxHeaderFooterInfo[];
   metadata?: DocxMetadataInfo;
   stats: { runCount: number; fontSizeSet: number[] };
@@ -1160,6 +1162,7 @@ export async function parseDocxDetail(
 
     const paragraphs: DocxParagraphInfo[] = [];
     const tables: DocxTableInfo[] = [];
+    const bodyOrder: Array<{ kind: "paragraph" | "table"; index: number }> = [];
     let paragraphCount = 0;
     let tableCount = 0;
     let runCount = 0;
@@ -1179,13 +1182,18 @@ export async function parseDocxDetail(
         for (const run of paragraph.runs) {
           if (run.sizePt !== undefined) fontSizeSet.add(run.sizePt);
         }
-        if (paragraphs.length < maxParagraphs) paragraphs.push(paragraph);
-        else paragraphsTruncated = true;
+        if (paragraphs.length < maxParagraphs) {
+          paragraphs.push(paragraph);
+          bodyOrder.push({ kind: "paragraph", index: paragraph.index });
+        } else paragraphsTruncated = true;
         return;
       }
       const table = parseTable(node, tableCount, maxRowsPerTable);
       tableCount += 1;
-      if (tables.length < maxTables) tables.push(table);
+      if (tables.length < maxTables) {
+        tables.push(table);
+        bodyOrder.push({ kind: "table", index: table.index });
+      }
     });
 
     const headerParts = await parseHeaderFooterParts(
@@ -1201,6 +1209,7 @@ export async function parseDocxDetail(
       styleCount: stylesResult.styleCount,
       paragraphs,
       paragraphCount,
+      bodyOrder,
       paragraphsTruncated,
       tables,
       tableCount,

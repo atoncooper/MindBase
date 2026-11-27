@@ -299,6 +299,48 @@ export interface AppConfig {
     /** Periodic sweep interval in ms (default 10min; 0 = no timer). */
     sweepIntervalMs: number;
   };
+  officeExport: {
+    /** Optional JSON file with template/brand overrides; empty = built-in templates only. */
+    templatesFile: string;
+    /**
+     * Root cloud-drive folder (under the user's drive root) that receives every
+     * generated Office file. Created at registration and auto-created on demand;
+     * folderPath/folderId on the tool narrow the destination further.
+     */
+    rootFolder: string;
+    /** Folder-id cache TTL (ms) so repeated exports do not list the drive. */
+    folderCacheTtlMs: number;
+    /** Output ceiling per file in bytes; exceeding it rejects the export. */
+    maxBytes: number;
+  };
+  officeRender: {
+    /** Master switch: false = renderer disabled (structure-only inspection). */
+    enabled: boolean;
+    /** Rendering backend: soffice = LibreOffice inside the image, http = remote converter (Gotenberg). */
+    backend: "soffice" | "http";
+    /** Remote converter settings (backend=http). */
+    http: {
+      url: string;
+      endpoint: string;
+      timeoutMs: number;
+    };
+    /** soffice binary; empty = resolved from PATH. */
+    sofficePath: string;
+    /** pdftoppm binary (poppler); empty = resolved from PATH. */
+    pdftoppmPath: string;
+    /** Whole render budget (soffice + rasterize), ms. */
+    timeoutMs: number;
+    /** Hard page ceiling per render. */
+    maxPages: number;
+    /** Default page count when the caller does not ask. */
+    defaultPages: number;
+    /** Rasterization DPI. */
+    dpi: number;
+    /** Max page images sent to the vision model in one review. */
+    maxImages: number;
+    /** Vision model id; empty = reuse the OCR vision model. */
+    visionModel: string;
+  };
   search: { defaultK: number };
   web: {
     maxBytes: number;

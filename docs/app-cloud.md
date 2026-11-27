@@ -102,6 +102,10 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
   `GET /internal/cloud/kg/document?uid=&upload_uuid=` 读取正文（按字符截断 200k，size_chars
   为全文长度）。供 app-ts 构建云盘知识点；同样走 internal.api_key + uid 校验，无能力门
   （Mongo 未启用时列表为空页、详情 404）。历史文档 size_chars 可能为 0（重新解析后补齐）。
+- **M2M 文件夹（2026-11-25，agent/ 目录）**：`GET /internal/cloud/folders?uid=&parent_id=`
+  单层列出该用户云盘目录（`parent_id` 缺省=根；返回 `{"items":[{id,name,parent_id}]}`，按 name 排序）。
+  app-user 建号时据此 find-or-create 默认目录 `agent/`，app-ts 的 Office 导出把产物写进去；
+  与 `POST /internal/cloud/folders`、`/internal/cloud/files` 共用 internal.api_key + uid 鉴权。
 - **文件级 AI**：云盘详情页展示摘要/AI 标签/关键点/待办/可回答问题与相似文件；「问这份文件」进入
   `/chat?upload_uuid=<uuid>`，聊天只以该文件为检索范围；聊天来源支持 uploadUuid 深链回云盘详情。
 - **配置**：`pipeline.ocr.*`（enabled/model/max_image_bytes/max_pdf_pages/max_images/timeout_seconds；

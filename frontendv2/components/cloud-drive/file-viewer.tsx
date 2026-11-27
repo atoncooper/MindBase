@@ -12,18 +12,31 @@
  *                                   browser's native PDF viewer takes over
  *  - video / audio / image       -> browser element with the presigned URL
  *  - html / markdown / text      -> inline content (no CORS fetch)
+ *  - docx                        -> structured paper-style document preview
+ *                                   on demand (no page screenshots)
  *  - anything else                -> download link
  *
- * Layout: sticky frosted header (back + icon + name + size + download) + a
- * centered reading column.
+ * Layout: sticky frosted header + an edge-to-edge preview that fills the whole
+ * remaining viewport. AI summary / similar files / "ask this file" live in a
+ * right-hand drawer opened from the header, not in a column under the preview.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Markdown } from "@/components/markdown";
-import { ArrowLeft, Loader2, AlertCircle, Download, FileText, Pencil } from "lucide-react";
+import {
+    ArrowLeft,
+    Loader2,
+    AlertCircle,
+    Download,
+    FileText,
+    Pencil,
+    Sparkles,
+    X,
+} from "lucide-react";
 import { cloudApi, formatBytes, type CloudHlsResponse, type CloudRawFileResponse } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
 import { FileAiPanel } from "./file-ai-panel";
+import { FileDocumentPreview, isDocxDocument } from "./file-document-preview";
 import { RenameFileDialog } from "./rename-file-dialog";
 import { describeMimeType } from "./helpers";
 import { toSameOriginUrl } from "./media-url";
@@ -31,6 +44,8 @@ import { CloudVideoPlayer } from "./video-player";
 import { HlsVideoPlayer } from "./hls-video-player";
 import { HlsFailureCard, HlsPackagingCard } from "./hls-packaging-card";
 import { useHlsPlayback } from "./use-hls-playback";
+
+const AI_DRAWER_ID = "file-ai-drawer";
 
 export function FileViewer() {
     const pathname = usePathname();
@@ -45,6 +60,12 @@ export function FileViewer() {
     const [renameOpen, setRenameOpen] = useState(false);
     const [renaming, setRenaming] = useState(false);
     const [renameError, setRenameError] = useState<string | null>(null);
+    // The drawer is open only for the file it was opened for: switching files
+    // closes it without a state-resetting effect (the summary is file-scoped).
+    const [aiOpenUuid, setAiOpenUuid] = useState<string | null>(null);
+    const aiOpen = aiOpenUuid === uuid;
+    const aiTriggerRef = useRef<HTMLButtonElement | null>(null);
+    const aiCloseRef = useRef<HTMLButtonElement | null>(null);
     const hls = useHlsPlayback(uuid, raw?.viewMode === "video", hlsInitial);
 
     // PDF: open the file in a NEW tab and let the browser's native viewer
@@ -92,6 +113,32 @@ export function FileViewer() {
         };
     }, [uuid]);
 
+    const closeAi = useCallback(() => {
+        setAiOpenUuid(null);
+        // Return focus to the trigger so keyboard users stay oriented.
+        aiTriggerRef.current?.focus();
+    }, []);
+
+    // Drawer behaviour: lock background scrolling, close on Esc, move focus in.
+    useEffect(() => {
+        if (!aiOpen) return;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeAi();
+            }
+        };
+        document.addEventListener("keydown", onKeyDown);
+        const focusTimer = window.setTimeout(() => aiCloseRef.current?.focus(), 0);
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            document.removeEventListener("keydown", onKeyDown);
+            window.clearTimeout(focusTimer);
+        };
+    }, [aiOpen, closeAi]);
+
     if (loading) {
         return (
             <div className="flex h-[100dvh] items-center justify-center">
@@ -121,6 +168,9 @@ export function FileViewer() {
         );
     }
 
+    // Videos keep the AI drawer hidden (same rule as the old inline panel).
+    const aiAvailable = !raw.mimeType.startsWith("video/");
+
     return (
         <div className="flex h-[100dvh] flex-col">
             {/* Sticky frosted header */}
@@ -145,6 +195,21 @@ export function FileViewer() {
                         <span title={raw.mimeType}>{describeMimeType(raw.mimeType)}</span>
                     </p>
                 </div>
+                {aiAvailable && (
+                    <button
+                        ref={aiTriggerRef}
+                        type="button"
+                        onClick={() => setAiOpenUuid(uuid)}
+                        aria-label="打开 AI 摘要侧边栏"
+                        aria-expanded={aiOpen}
+                        aria-controls={AI_DRAWER_ID}
+                        title="AI 摘要"
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-border-subtle bg-surface px-3 text-[12px] font-medium text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                    >
+                        <Sparkles className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
+                        AI 摘要
+                    </button>
+                )}
                 {raw && (
                     <button
                         type="button"
@@ -196,14 +261,9 @@ export function FileViewer() {
                 }}
             />
 
-            {/* Body */}
-            <div className="flex-1 overflow-y-auto">
-                <div className="mx-auto max-w-[960px] px-6 py-8 sm:px-10">
-                    {uuid && raw && !raw.mimeType.startsWith("video/") ? (
-                        <div className="mb-8 rounded-2xl border border-border-subtle bg-surface/60 p-4">
-                            <FileAiPanel uploadUuid={uuid} />
-                        </div>
-                    ) : null}
+            {/* Body: edge-to-edge preview filling the remaining viewport. */}
+            <div className="relative min-h-0 flex-1 overflow-y-auto">
+                <div className="h-full w-full">
                     <RawContent
                         raw={raw}
                         uuid={uuid}
@@ -217,6 +277,70 @@ export function FileViewer() {
                     />
                 </div>
             </div>
+
+            {/* AI drawer: slides in from the right over a dimmed overlay. */}
+            {aiOpen && (
+                <>
+                    <div
+                        className="file-ai-overlay fixed inset-0 z-30 bg-black/20"
+                        onClick={closeAi}
+                        aria-hidden="true"
+                    />
+                    <aside
+                        id={AI_DRAWER_ID}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="file-ai-drawer-title"
+                        className="file-ai-drawer fixed inset-y-0 right-0 z-40 flex w-[420px] max-w-[92vw] flex-col border-l border-border-subtle bg-background shadow-xl"
+                    >
+                        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
+                            <h2
+                                id="file-ai-drawer-title"
+                                className="flex items-center gap-2 text-[13px] font-semibold text-foreground"
+                            >
+                                <Sparkles className="h-4 w-4 text-accent" aria-hidden="true" />
+                                AI 摘要
+                            </h2>
+                            <button
+                                ref={aiCloseRef}
+                                type="button"
+                                onClick={closeAi}
+                                title="关闭"
+                                aria-label="关闭 AI 摘要"
+                                className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                            >
+                                <X className="h-[18px] w-[18px]" />
+                            </button>
+                        </header>
+                        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                            <FileAiPanel uploadUuid={uuid} />
+                        </div>
+                    </aside>
+                </>
+            )}
+
+            <style>{`
+                @keyframes file-ai-drawer-in {
+                    from { transform: translateX(100%); }
+                    to { transform: translateX(0); }
+                }
+                @keyframes file-ai-overlay-in {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+                .file-ai-drawer {
+                    animation: file-ai-drawer-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+                }
+                .file-ai-overlay {
+                    animation: file-ai-overlay-in 150ms ease-out;
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    .file-ai-drawer,
+                    .file-ai-overlay {
+                        animation: none;
+                    }
+                }
+            `}</style>
         </div>
     );
 }
@@ -252,30 +376,39 @@ function RawContent({
                         posterUrl={hls.posterUrl}
                         expiresIn={hls.expiresIn}
                         onFallback={onHlsFallback}
+                        fill
                     />
                 );
             }
             if (hls && (hls.status === "queued" || hls.status === "processing")) {
                 return (
-                    <HlsPackagingCard
-                        progress={hls.progress}
-                        attempts={hls.attempts}
-                        onPlayRaw={onPlayRaw}
-                    />
+                    <div className="flex h-full w-full items-center justify-center px-4">
+                        <div className="w-full max-w-xl">
+                            <HlsPackagingCard
+                                progress={hls.progress}
+                                attempts={hls.attempts}
+                                onPlayRaw={onPlayRaw}
+                            />
+                        </div>
+                    </div>
                 );
             }
             if (hls?.status === "failed") {
                 // A failed package is surfaced (with retry) instead of silently
                 // downgrading to the MP4 fallback.
                 return (
-                    <HlsFailureCard
-                        message={hlsError}
-                        attempts={hls.attempts}
-                        retryable={hls.retryable !== false}
-                        retrying={hlsRetrying}
-                        onRetry={onRetryHls}
-                        onPlayRaw={onPlayRaw}
-                    />
+                    <div className="flex h-full w-full items-center justify-center px-4">
+                        <div className="w-full max-w-xl">
+                            <HlsFailureCard
+                                message={hlsError}
+                                attempts={hls.attempts}
+                                retryable={hls.retryable !== false}
+                                retrying={hlsRetrying}
+                                onRetry={onRetryHls}
+                                onPlayRaw={onPlayRaw}
+                            />
+                        </div>
+                    </div>
                 );
             }
             return (
@@ -284,11 +417,12 @@ function RawContent({
                     initialUrl={raw.url}
                     expiresIn={raw.expiresIn}
                     onUrlChange={onUrlChange}
+                    fill
                 />
             );
         case "audio":
             return (
-                <div className="flex flex-col items-center justify-center py-16">
+                <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center">
                     <span className="grid h-20 w-20 place-items-center rounded-3xl bg-accent-soft text-accent">
                         <FileText className="h-8 w-8" />
                     </span>
@@ -300,18 +434,20 @@ function RawContent({
             );
         case "image":
             return (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                    src={raw.url}
-                    alt={raw.fileName}
-                    className="mx-auto max-w-full rounded-2xl border border-border-subtle"
-                />
+                <div className="flex h-full w-full items-center justify-center p-3 sm:p-5">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                        src={raw.url}
+                        alt={raw.fileName}
+                        className="max-h-full max-w-full rounded-lg border border-border-subtle object-contain"
+                    />
+                </div>
             );
         case "pdf":
             // The auto-open effect opened a new tab (native PDF viewer); this
             // card covers the popup-blocked case with a real anchor link.
             return (
-                <div className="flex flex-col items-center justify-center py-24 text-center">
+                <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center">
                     <span className="grid h-14 w-14 place-items-center rounded-2xl bg-border-subtle text-secondary">
                         <FileText className="h-6 w-6" />
                     </span>
@@ -341,31 +477,49 @@ function RawContent({
                     srcDoc={raw.content}
                     title={raw.fileName}
                     sandbox="allow-same-origin"
-                    className="h-[80vh] w-full rounded-2xl border border-border-subtle bg-white"
+                    className="h-full w-full border-0 bg-white"
                 />
             );
         case "markdown":
             if (raw.content == null) return <TooLargeDownload raw={raw} />;
             return (
-                <div className="note-prose">
-                    <Markdown>{raw.content}</Markdown>
+                <div className="h-full w-full overflow-y-auto">
+                    <div className="note-prose mx-auto w-full px-5 py-6 sm:px-10 sm:py-8">
+                        <Markdown>{raw.content}</Markdown>
+                    </div>
                 </div>
             );
         case "text":
             if (raw.content == null) return <TooLargeDownload raw={raw} />;
             return (
-                <pre className="whitespace-pre-wrap break-words font-sans text-[14px] leading-[1.75] text-foreground">
-                    {raw.content}
-                </pre>
+                <div className="h-full w-full overflow-y-auto">
+                    <pre className="mx-auto w-full whitespace-pre-wrap break-words px-5 py-6 font-sans text-[14px] leading-[1.75] text-foreground sm:px-10 sm:py-8">
+                        {raw.content}
+                    </pre>
+                </div>
             );
         default:
+            // Word documents render natively (docx-preview, auto-loaded) — no
+            // "暂不支持在线查看" banner, no extra click.
+            if (isDocxDocument(raw.fileName, raw.mimeType)) {
+                return (
+                    <div className="h-full w-full">
+                        <FileDocumentPreview
+                            uploadUuid={uuid}
+                            fileName={raw.fileName}
+                            mimeType={raw.mimeType}
+                            fill
+                        />
+                    </div>
+                );
+            }
             return <UnsupportedState raw={raw} />;
     }
 }
 
 function TooLargeDownload({ raw }: { raw: CloudRawFileResponse }) {
     return (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
+        <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center">
             <span className="grid h-14 w-14 place-items-center rounded-2xl bg-border-subtle text-secondary">
                 <FileText className="h-6 w-6" />
             </span>
@@ -381,7 +535,7 @@ function TooLargeDownload({ raw }: { raw: CloudRawFileResponse }) {
 
 function UnsupportedState({ raw }: { raw: CloudRawFileResponse }) {
     return (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
+        <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center">
             <span className="grid h-14 w-14 place-items-center rounded-2xl bg-border-subtle text-secondary">
                 <FileText className="h-6 w-6" />
             </span>

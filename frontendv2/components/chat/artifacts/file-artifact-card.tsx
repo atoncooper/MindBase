@@ -1,9 +1,11 @@
 "use client";
 
-// File artifact card for the chat transcript: one rounded row with a
-// colour-coded file-type tile, a name + action/description line (+N / −N diff
-// stats for rewrites), an optional image thumbnail and a dropdown of file
-// actions (open / download / copy name / copy link).
+// File artifact card for the chat transcript: a compact generated-output row
+// with a colour-coded file-type tile, the file name + size, a quiet
+// action/description line and an action row (download / open in cloud drive /
+// copy link). No page screenshots: office documents get their own structured
+// paper preview card; only image files keep a small hover thumbnail of the image
+// file itself.
 //
 // Dispatched by <ArtifactCard> in chat-message.tsx for `kind: "file"` payloads
 // and for legacy flat file artifacts mapped through legacyFileArtifactData().
@@ -11,30 +13,23 @@
 // component, so `data` is safe to render as-is.
 
 import Link from "next/link";
-import { useCallback, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Check,
-  ChevronDown,
   Copy,
   Download,
-  ExternalLink,
   File,
   FileArchive,
   FileCode2,
   FileImage,
   FileSpreadsheet,
   FileText,
+  FolderOpen,
+  Presentation,
 } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { formatBytes } from "@/lib/api/cloud";
 import {
-  fileArtifactHref,
   type FileArtifactAction,
   type FileArtifactData,
 } from "@/lib/artifacts/file-spec";
@@ -46,9 +41,13 @@ const ACTION_LABELS: Record<FileArtifactAction, string> = {
   uploaded: "已上传",
 };
 
-type CopyTarget = "name" | "link";
-
 const ICON_CLASS = "h-5 w-5";
+
+const ACTION_BUTTON_CLASS =
+  "inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-secondary transition-colors";
+const ACTION_DOWNLOAD_CLASS = ACTION_BUTTON_CLASS + " hover:bg-[#EFF6FF] hover:text-[#1D4ED8]";
+const ACTION_DRIVE_CLASS = ACTION_BUTTON_CLASS + " hover:bg-[#ECFDF5] hover:text-[#047857]";
+const ACTION_COPY_CLASS = ACTION_BUTTON_CLASS + " hover:bg-[#F5F3FF] hover:text-[#6D28D9]";
 
 type FileVisual = { tileClass: string; icon?: ReactNode; badge?: string };
 
@@ -58,40 +57,61 @@ function extensionOf(name: string): string {
   return name.slice(dot + 1).toLowerCase();
 }
 
-// Solid brand tile with a white glyph (Python / Word / Excel / PDF / archive /
-// Markdown). Code and unknown files fall back to the app accent so a file from
-// the agent always reads as "a file" even without a brand colour.
+// Light pastel tile + coloured glyph: generated files should feel bright in the
+// transcript, so brand colours tint the icon on a soft background instead of
+// dark solid blocks with white icons.
 function fileVisual(name: string, mime?: string): FileVisual {
   if (mime?.startsWith("image/")) {
-    return { tileClass: "bg-accent", icon: <FileImage className={ICON_CLASS} aria-hidden="true" /> };
+    return {
+      tileClass: "bg-[#F3E8FF] text-[#7C3AED]",
+      icon: <FileImage className={ICON_CLASS} aria-hidden="true" />,
+    };
   }
   switch (extensionOf(name)) {
     case "py":
     case "pyw":
-      // Text badge keeps the Python tile readable at 40px (PSF blue).
-      return { tileClass: "bg-[#3776AB]", badge: "PY" };
+      return { tileClass: "bg-[#EAF2FB] text-[#3776AB]", badge: "PY" };
     case "doc":
     case "docx":
-      return { tileClass: "bg-[#2B579A]", icon: <FileText className={ICON_CLASS} aria-hidden="true" /> };
+      return {
+        tileClass: "bg-[#EAF1FB] text-[#2B579A]",
+        icon: <FileText className={ICON_CLASS} aria-hidden="true" />,
+      };
     case "xls":
     case "xlsx":
     case "csv":
       return {
-        tileClass: "bg-[#217346]",
+        tileClass: "bg-[#E9F6EE] text-[#1E7B45]",
         icon: <FileSpreadsheet className={ICON_CLASS} aria-hidden="true" />,
       };
+    case "ppt":
+    case "pptx":
+    case "key":
+      return {
+        tileClass: "bg-[#FEF0E7] text-[#C43E1C]",
+        icon: <Presentation className={ICON_CLASS} aria-hidden="true" />,
+      };
     case "pdf":
-      return { tileClass: "bg-[#D93025]", icon: <FileText className={ICON_CLASS} aria-hidden="true" /> };
+      return {
+        tileClass: "bg-[#FDECEA] text-[#D93025]",
+        icon: <FileText className={ICON_CLASS} aria-hidden="true" />,
+      };
     case "zip":
     case "rar":
     case "7z":
     case "tar":
     case "gz":
-      return { tileClass: "bg-[#616161]", icon: <FileArchive className={ICON_CLASS} aria-hidden="true" /> };
+      return {
+        tileClass: "bg-[#FFF7E6] text-[#B45309]",
+        icon: <FileArchive className={ICON_CLASS} aria-hidden="true" />,
+      };
     case "md":
     case "markdown":
     case "mdx":
-      return { tileClass: "bg-[#6B7280]", icon: <FileText className={ICON_CLASS} aria-hidden="true" /> };
+      return {
+        tileClass: "bg-[#EFF6FF] text-[#2563EB]",
+        icon: <FileText className={ICON_CLASS} aria-hidden="true" />,
+      };
     case "js":
     case "jsx":
     case "ts":
@@ -99,92 +119,104 @@ function fileVisual(name: string, mime?: string): FileVisual {
     case "mjs":
     case "cjs":
     case "json":
-      return { tileClass: "bg-accent", icon: <FileCode2 className={ICON_CLASS} aria-hidden="true" /> };
+      return {
+        tileClass: "bg-[#EEF2FF] text-[#4F46E5]",
+        icon: <FileCode2 className={ICON_CLASS} aria-hidden="true" />,
+      };
     default:
-      return { tileClass: "bg-accent", icon: <File className={ICON_CLASS} aria-hidden="true" /> };
+      return {
+        tileClass: "bg-[#F0F9FF] text-[#0284C7]",
+        icon: <File className={ICON_CLASS} aria-hidden="true" />,
+      };
   }
 }
 
 export function FileArtifactCard({ data }: { data: FileArtifactData }) {
-  const [copied, setCopied] = useState<CopyTarget | null>(null);
+  const [copied, setCopied] = useState(false);
   const visual = fileVisual(data.name, data.mime);
-  const href = fileArtifactHref(data);
-  // Only an absolute URL opens away from the app; a cloud-drive path is an
-  // in-app route opened with <Link>.
-  const opensExternally = !!data.url && href === data.url;
+  const driveHref = data.uploadUuid
+    ? `/cloud-drive/${encodeURIComponent(data.uploadUuid)}`
+    : undefined;
+  // Image artifacts preview the image file itself on hover; this is the user's
+  // image, not a rendered page screenshot of a generated document.
   const isImage = !!data.url && !!data.mime?.startsWith("image/");
   const actionLabel = data.action ? ACTION_LABELS[data.action] : "文件";
   const added = data.change?.added ?? 0;
   const removed = data.change?.removed ?? 0;
+  const size = typeof data.sizeBytes === "number" ? formatBytes(data.sizeBytes) : undefined;
+  const hasActions = !!(data.url || driveHref);
 
-  // Copy is async but Radix closes the menu on select; keep the menu open for
-  // copy actions so the item can briefly turn into "已复制".
-  const copy = useCallback(async (value: string, target: CopyTarget) => {
+  const copyLink = async () => {
+    if (!driveHref) return;
     try {
-      await navigator.clipboard.writeText(value);
-      setCopied(target);
-      window.setTimeout(() => {
-        setCopied((current) => (current === target ? null : current));
-      }, 1600);
+      // Always share the frontend page (cloud-drive detail), never the raw
+      // MinIO proxy URL that backs downloads.
+      await navigator.clipboard.writeText(new URL(driveHref, window.location.origin).toString());
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
     } catch {
       // Clipboard unavailable (insecure context / permission denied): stay quiet.
     }
-  }, []);
+  };
 
   return (
     <div className="min-w-0 sm:col-span-2">
       <div
         role="group"
         aria-label={`文件：${data.name}`}
-        className="flex items-center gap-3 rounded-xl border border-border-subtle bg-surface px-3 py-2.5 transition-colors hover:border-border"
+        className="overflow-hidden rounded-xl border border-[#E6EAF2] bg-gradient-to-br from-white via-white to-[#F7FAFF] shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all hover:border-[#CBD5E1] hover:shadow-[0_3px_10px_rgba(15,23,42,0.06)]"
       >
-        <span
-          className={`grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-lg text-white ${visual.tileClass}`}
-          aria-hidden="true"
-        >
-          {visual.badge ? (
-            <span className="text-[11px] font-semibold tracking-wide">{visual.badge}</span>
-          ) : (
-            visual.icon
-          )}
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-medium text-foreground" title={data.name}>
-            {data.name}
-          </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-tertiary">
-            <span className="min-w-0 truncate">
-              {actionLabel}
-              {data.description ? ` · ${data.description}` : ""}
-            </span>
-            {added > 0 && (
-              <span
-                className="shrink-0 font-mono tabular-nums text-success"
-                title={`新增 ${added} 行`}
-              >
-                +{added}
-              </span>
+        <div className="flex items-center gap-3 px-3 py-2.5">
+          <span
+            className={`grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl ${visual.tileClass}`}
+            aria-hidden="true"
+          >
+            {visual.badge ? (
+              <span className="text-[11px] font-semibold tracking-wide">{visual.badge}</span>
+            ) : (
+              visual.icon
             )}
-            {removed > 0 && (
-              <span
-                className="shrink-0 font-mono tabular-nums text-danger"
-                title={`删除 ${removed} 行`}
-              >
-                −{removed}
-              </span>
-            )}
-          </div>
-        </div>
+          </span>
 
-        <div className="flex shrink-0 items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-baseline gap-2">
+              <span className="min-w-0 truncate text-[13px] font-medium text-foreground" title={data.name}>
+                {data.name}
+              </span>
+              {size && (
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-tertiary">{size}</span>
+              )}
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-tertiary">
+              <span className="shrink-0">{actionLabel}</span>
+              {data.description && (
+                <>
+                  <span className="shrink-0" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="min-w-0 truncate">{data.description}</span>
+                </>
+              )}
+              {added > 0 && (
+                <span className="shrink-0 font-mono tabular-nums text-success" title={`新增 ${added} 行`}>
+                  +{added}
+                </span>
+              )}
+              {removed > 0 && (
+                <span className="shrink-0 font-mono tabular-nums text-danger" title={`删除 ${removed} 行`}>
+                  −{removed}
+                </span>
+              )}
+            </div>
+          </div>
+
           {isImage && data.url && (
             <HoverCard openDelay={120} closeDelay={80}>
               <HoverCardTrigger asChild>
                 <button
                   type="button"
                   aria-label={`预览图片：${data.name}`}
-                  className="h-9 w-9 overflow-hidden rounded-md border border-border-subtle bg-border-subtle transition-opacity hover:opacity-90"
+                  className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-border-subtle bg-border-subtle transition-opacity hover:opacity-90"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={data.url} alt="" className="h-full w-full object-cover" loading="lazy" />
@@ -200,87 +232,43 @@ export function FileArtifactCard({ data }: { data: FileArtifactData }) {
               </HoverCardContent>
             </HoverCard>
           )}
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={`文件操作：${data.name}`}
-                className="grid h-7 w-7 place-items-center rounded-md text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
-              >
-                <ChevronDown className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              {href ? (
-                <DropdownMenuItem asChild>
-                  <Link
-                    href={href}
-                    target={opensExternally ? "_blank" : undefined}
-                    rel={opensExternally ? "noopener noreferrer" : undefined}
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                    打开
-                  </Link>
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem disabled>
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  打开
-                </DropdownMenuItem>
-              )}
-
-              {data.url ? (
-                <DropdownMenuItem asChild>
-                  <a href={data.url} download={data.name} target="_blank" rel="noopener noreferrer">
-                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                    下载
-                  </a>
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem disabled>
-                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                  下载
-                </DropdownMenuItem>
-              )}
-
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                onSelect={(event) => {
-                  event.preventDefault();
-                  void copy(data.name, "name");
-                }}
-              >
-                {copied === "name" ? (
-                  <Check className="h-3.5 w-3.5 text-success" aria-hidden="true" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                {copied === "name" ? "已复制" : "复制文件名"}
-              </DropdownMenuItem>
-
-              <DropdownMenuItem
-                disabled={!href}
-                onSelect={(event) => {
-                  event.preventDefault();
-                  if (href) void copy(href, "link");
-                }}
-              >
-                {copied === "link" ? (
-                  <Check className="h-3.5 w-3.5 text-success" aria-hidden="true" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                {copied === "link" ? "已复制" : "复制链接"}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
         </div>
 
-        <span className="sr-only" aria-live="polite">
-          {copied === "name" ? "文件名已复制" : copied === "link" ? "链接已复制" : ""}
-        </span>
+        {hasActions && (
+          <div className="flex flex-wrap items-center gap-1 border-t border-border-subtle px-2 py-1.5">
+            {data.url && (
+              <a
+                href={data.url}
+                download={data.name}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={ACTION_DOWNLOAD_CLASS}
+              >
+                <Download className="h-3.5 w-3.5 text-[#2563EB]" aria-hidden="true" />
+                下载
+              </a>
+            )}
+            {driveHref && (
+              <Link href={driveHref} className={ACTION_DRIVE_CLASS}>
+                <FolderOpen className="h-3.5 w-3.5 text-[#059669]" aria-hidden="true" />
+                云盘打开
+              </Link>
+            )}
+            {driveHref && (
+              <button type="button" onClick={() => void copyLink()} className={ACTION_COPY_CLASS}>
+                {copied ? (
+                  <Check className="h-3.5 w-3.5 text-success" aria-hidden="true" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5 text-[#7C3AED]" aria-hidden="true" />
+                )}
+                {copied ? "已复制" : "复制链接"}
+              </button>
+            )}
+            <span className="sr-only" aria-live="polite">
+              {copied ? "链接已复制" : ""}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

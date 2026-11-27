@@ -1,5 +1,19 @@
 package dto
 
+// InternalFolderItem is one row of the M2M folder listing
+// (GET /internal/cloud/folders). parent_id is null for a root-level folder.
+type InternalFolderItem struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	ParentID *int64 `json:"parent_id"`
+}
+
+// InternalFolderListResponse is the GET /internal/cloud/folders payload. One
+// level of the tree per call: the caller passes parent_id to descend.
+type InternalFolderListResponse struct {
+	Items []InternalFolderItem `json:"items"`
+}
+
 // ReconcileResponse is the internal GET /internal/cloud/reconcile payload
 // (per-user ledger vs object-storage drift report).
 type ReconcileResponse struct {

@@ -504,3 +504,15 @@ describe("run_code: 展示层", () => {
     expect(output).toContain("未经实际运行验证");
   });
 });
+
+describe("HttpCodeExecution: 沙箱未启动", () => {
+  it("网关 503 → 明确提示启动 sandbox profile", async () => {
+    const fetchImpl: SandboxFetch = async () => new Response("503 Service Temporarily Unavailable", { status: 503 });
+    const exec = makeExec({ fetchImpl });
+    const result = await exec.run({ language: "python", code: "print(1)", uid: "7" });
+    expect(result.sandboxAvailable).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("503");
+    expect(result.error).toContain("--profile sandbox");
+  });
+});

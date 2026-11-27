@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Pencil,
   ArrowRight,
+  Sparkles,
 } from "lucide-react";
 import { isTypedArtifact, type ChatArtifact, type ChatInteraction, type ChatPlan, type ChatSource } from "@/lib/chat-stream";
 import type { ReasoningStep } from "./types";
@@ -232,7 +233,7 @@ function StructuredArtifactCard({
   detail?: string;
 }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-border-subtle bg-surface px-3 py-2">
+    <div className="flex items-center gap-2.5 rounded-xl border border-[#E6EAF2] bg-gradient-to-br from-white to-[#F5F8FF] px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
       <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent-soft text-[11px] font-medium text-accent">
         {badge}
       </span>
@@ -244,9 +245,15 @@ function StructuredArtifactCard({
   );
 }
 
-/** Internal structured payloads that ArtifactCard deliberately hides from the transcript. */
+/**
+ * Structured payloads that ArtifactCard deliberately hides from the transcript:
+ * internal academic_* blobs, plus Word documents. Documents are previewed
+ * natively in the cloud-drive detail page only; the transcript keeps just the
+ * downloadable file card, so historical office-document artifacts stay hidden.
+ */
 function isHiddenArtifact(artifact: ChatArtifact): boolean {
-  return isTypedArtifact(artifact) && typeof artifact.kind === "string" && artifact.kind.startsWith("academic_");
+  if (!isTypedArtifact(artifact) || typeof artifact.kind !== "string") return false;
+  return artifact.kind.startsWith("academic_") || artifact.kind === "office-document";
 }
 
 function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
@@ -270,6 +277,13 @@ function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
   if (kind === "file") {
     if (isFileArtifactData(data)) return <FileArtifactCard data={data} />;
     // Malformed payload: fall through to the file-ish / JSON fallbacks below.
+  }
+  if (kind === "office-document") {
+    // Word documents are previewed natively on the cloud-drive detail page only
+    // (OfficeDocumentCard is still used there as the structured fallback).
+    // The transcript intentionally shows no document preview: the download card
+    // is what users need, and this keeps historical messages clean.
+    return null;
   }
   if (kind === "quiz") {
     const count = arrayLen(data, "questions");
@@ -319,8 +333,11 @@ function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
   }
   // Unknown structured kind → collapsed JSON detail (no raw HTML rendering).
   return (
-    <details className="rounded-xl border border-border-subtle bg-surface px-3 py-2 sm:col-span-2">
-      <summary className="cursor-pointer truncate text-[13px] text-foreground">产物 · {kind}</summary>
+    <details className="rounded-xl border border-[#E6EAF2] bg-gradient-to-br from-white to-[#F8FAFF] px-3 py-2 sm:col-span-2">
+      <summary className="cursor-pointer truncate text-[13px] text-foreground">
+        <span className="mr-1.5 rounded-full bg-[#EEF2FF] px-1.5 py-0.5 text-[10px] font-semibold text-[#4F46E5]">产物</span>
+        {kind}
+      </summary>
       <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] text-secondary">
         {jsonPreview(data)}
       </pre>
@@ -370,9 +387,10 @@ function ChatMessage({
   // Normalize null/undefined -> [] so .length and .map are always safe.
   const safeSources = useMemo(() => (Array.isArray(sources) ? sources : []), [sources]);
   const safeArtifacts = useMemo(() => (Array.isArray(artifacts) ? artifacts : []), [artifacts]);
-  // The artifact SSE frame may carry internal tool payloads (academic_* blobs)
-  // that ArtifactCard intentionally renders as null. Header/count must follow
-  // what is actually visible, otherwise an empty "生成产物" block is shown.
+  // The artifact SSE frame may carry payloads (academic_* blobs, office
+  // documents) that ArtifactCard intentionally renders as null. Header/count
+  // must follow what is actually visible, otherwise an empty "生成产物" block
+  // is shown.
   const visibleArtifacts = useMemo(
     () => safeArtifacts.filter((artifact) => !isHiddenArtifact(artifact)),
     [safeArtifacts]
@@ -614,7 +632,10 @@ function ChatMessage({
             empty "生成产物" block behind. */}
         {visibleArtifacts.length > 0 && (
           <div className="mt-3">
-            <div className="mb-1.5 text-[12px] font-medium text-secondary">生成产物</div>
+            <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-[#EEF2FF] px-2.5 py-0.5 text-[11px] font-semibold text-[#4F46E5]">
+              <Sparkles className="h-3 w-3" aria-hidden="true" />
+              生成产物 · {visibleArtifacts.length}
+            </div>
             <div className="grid gap-2 sm:grid-cols-2">
               {visibleArtifacts.map((art, i) => (
                 <ArtifactCard key={i} artifact={art} />

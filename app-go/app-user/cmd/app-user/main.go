@@ -180,6 +180,19 @@ func main() {
 	}
 	authSvc := authservice.NewAuthService(gdb, cfgAuth, cipher, snow, tokenSvc, rbacSvc, authzCache, credentialProvider.Invalidate)
 
+	// Registration provisions the per-user default drive folder ("agent/") via
+	// app-cloud's M2M face (folder rows are cloud-owned). Best-effort: an
+	// unconfigured client or an app-cloud outage only logs, never fails a signup.
+	folderClient := avatarcloud.NewFolderClient(
+		cfgSettings.AppCloud.BaseURL,
+		cfgSettings.AppCloud.APIKey,
+		time.Duration(cfgSettings.AppCloud.TimeoutMs)*time.Millisecond,
+	)
+	if !folderClient.Enabled() {
+		slog.Warn("[FOLDER] app-cloud folder client disabled (base_url/api_key missing)")
+	}
+	authSvc.SetDriveFolderEnsurer(folderClient)
+
 	captchaSvc := authservice.NewCaptchaService(cfgAuth, sharedRedis)
 	throttle := authservice.NewLoginThrottle(sharedRedis)
 	ipGuard := authservice.NewFixedWindowLimiter(sharedRedis, "mind-base:rl:auth:")

@@ -46,7 +46,10 @@ func registerInternalCloudAI(e *gin.Engine, d Deps) {
 	internal.GET("/kg/documents", KGDocumentsHandler(d.Mongo))
 	internal.GET("/kg/document", KGDocumentHandler(d.Mongo))
 	internal.POST("/folders", internalCreateFolder(d))
+	internal.GET("/folders", InternalListFolders(folderLister(d)))
 	internal.POST("/files", internalUploadFile(d))
+	// Overwrite an existing file content in place (same upload_uuid).
+	internal.PUT("/files/:upload_uuid", internalReplaceFile(d))
 	internal.GET("/files", internalListFiles(d))
 	internal.GET("/files/:upload_uuid", internalDownloadFile(d))
 	internal.DELETE("/files/:upload_uuid", internalDeleteFile(d))

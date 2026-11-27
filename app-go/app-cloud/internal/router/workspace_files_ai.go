@@ -172,6 +172,78 @@ func internalDeleteFile(d Deps) gin.HandlerFunc {
 	}
 }
 
+// internalReplaceFile overwrites an existing file content in place while
+// keeping its upload_uuid. office_export uses this to iterate on ONE document
+// (revision of the same file) instead of piling up timestamped copies: chat
+// cards, drive links and share refs keep pointing at the same file.
+func internalReplaceFile(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid := middleware.UIDFrom(c)
+		uploadUUID := strings.TrimSpace(c.Param("upload_uuid"))
+		if uploadUUID == "" {
+			apiErr(c, http.StatusBadRequest, "缺少 upload_uuid")
+			return
+		}
+		row, err := d.Files.GetByUUID(d.DB, uploadUUID, uid)
+		if err != nil {
+			apiErr(c, http.StatusInternalServerError, "文件元数据读取失败")
+			return
+		}
+		if row == nil {
+			apiErr(c, http.StatusNotFound, "文件不存在")
+			return
+		}
+		if d.Minio == nil {
+			apiErr(c, http.StatusServiceUnavailable, "对象存储不可用")
+			return
+		}
+		mimeType := strings.TrimSpace(c.Query("mime_type"))
+		if mimeType == "" {
+			mimeType = row.MimeType
+		}
+		name := strings.TrimSpace(c.Query("name"))
+		if name == "" {
+			name = row.OriginalName
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxInternalFileBytes+1)
+		data, readErr := io.ReadAll(c.Request.Body)
+		if readErr != nil || len(data) == 0 {
+			apiErr(c, http.StatusBadRequest, "空文件或文件过大")
+			return
+		}
+		if len(data) > maxInternalFileBytes {
+			apiErr(c, http.StatusBadRequest, "文件超过 256MB 限制")
+			return
+		}
+		if err := d.Minio.PutObject(c.Request.Context(), row.ObjectKey, data, mimeType); err != nil {
+			apiErr(c, http.StatusServiceUnavailable, "对象存储写入失败")
+			return
+		}
+		sum := sha256.Sum256(data)
+		hash := fmt.Sprintf("%x", sum[:])
+		if err := d.Files.UpdateMeta(d.DB, uploadUUID, uid, map[string]any{
+			"file_size":          int64(len(data)),
+			"mime_type":          mimeType,
+			"original_name":      name,
+			"content_hash":       hash,
+			"etag":               nil,
+			"vector_status":      nil,
+			"vector_chunk_count": 0,
+		}); err != nil {
+			apiErr(c, http.StatusInternalServerError, "文件元数据更新失败")
+			return
+		}
+		invalidateFolderCache(d, c)
+		c.JSON(http.StatusOK, gin.H{
+			"upload_uuid": uploadUUID,
+			"name":        name,
+			"size":        len(data),
+			"mime_type":   mimeType,
+			"sha256":      hash,
+			"revision":    true,
+		})
+	}
+}
 func extForMime(mime string) string {
 	mime = strings.ToLower(strings.TrimSpace(mime))
 	exts := map[string]string{

@@ -35,7 +35,8 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
 # @next/swc 二进制不在锁文件里，`next build` 会现场从 registry 下载约 60MB，
 # 直连 npmjs 极易被掐断导致构建崩溃（download-swc 会读取 npm registry 配置，
 # 所以这里一处设置同时管住 npm ci 和 swc 下载）。
-RUN npm config set registry https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm config set registry "$NPM_REGISTRY"
 COPY package.json package-lock.json ./
 RUN npm ci
 

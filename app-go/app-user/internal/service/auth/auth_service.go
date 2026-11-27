@@ -116,6 +116,22 @@ type ProfilePatch struct {
 	Email *string
 }
 
+// DriveFolderEnsurer provisions one folder in a user's cloud drive. It is
+// implemented by infra/cloud.FolderClient; nil disables provisioning (offline
+// tests, or an app-cloud M2M face without a configured api_key).
+type DriveFolderEnsurer interface {
+	EnsureFolder(ctx context.Context, uid int64, name string) error
+}
+
+const (
+	// defaultDriveFolderName is the folder every new account starts with. app-ts
+	// and the frontend address it by name, so registration is its only writer.
+	defaultDriveFolderName = "agent"
+	// driveFolderProvisionTimeout caps the inline registration-time provisioning.
+	// The drive folder is a best-effort side effect, not part of account creation.
+	driveFolderProvisionTimeout = 3 * time.Second
+)
+
 // AuthService — user lifecycle: OAuth ensure/bind, self registration,
 // password login, profile, passwords, contact binding. Port of the Python
 // UserService.
@@ -132,6 +148,10 @@ type AuthService struct {
 	passwords *repo.PasswordHistoryRepo
 	events    *repo.SecurityEventRepo
 	authz     *cache.AuthzCache
+
+	// driveFolders provisions the per-user default drive folder through
+	// app-cloud; nil disables provisioning.
+	driveFolders DriveFolderEnsurer
 
 	// invalidateCreds drops the auth-owned in-process Bili credential cache
 	// after a bind / SESSDATA refresh (nil in tests/offline).
@@ -181,6 +201,30 @@ func NewAuthService(db *gorm.DB, cfg *config.AuthConfig, cipher *security.Cipher
 // DB exposes the shared gorm handle to sibling services (verification flow
 // reuses the same pool/transaction semantics).
 func (s *AuthService) DB() *gorm.DB { return s.db }
+
+// SetDriveFolderEnsurer wires the app-cloud folder client from main. main()
+// builds it from the settings config, which is loaded independently of the auth
+// domain, so this is a setter rather than a constructor argument.
+func (s *AuthService) SetDriveFolderEnsurer(e DriveFolderEnsurer) { s.driveFolders = e }
+
+// EnsureDefaultDriveFolder is the single post-registration hook: email
+// registration, phone first-login and OAuth first-login all call it right after
+// the users row is committed. It is deliberately best-effort — an app-cloud
+// outage must never fail a signup — so the error is logged and dropped, and the
+// call is bounded by driveFolderProvisionTimeout. Exported so the black-box
+// suite can exercise the contract without a database; the registration paths
+// are its only production callers.
+func (s *AuthService) EnsureDefaultDriveFolder(uid int64) {
+	if s.driveFolders == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), driveFolderProvisionTimeout)
+	defer cancel()
+	if err := s.driveFolders.EnsureFolder(ctx, uid, defaultDriveFolderName); err != nil {
+		slog.Warn("[USER] default drive folder provisioning failed (non-fatal)",
+			"uid", uid, "folder", defaultDriveFolderName, "err", err)
+	}
+}
 
 // EmailExists reports whether an active (non-deleted) user owns the email.
 func (s *AuthService) EmailExists(email string) (bool, error) {
@@ -279,6 +323,7 @@ func (s *AuthService) EnsureUserFromOAuth(provider, providerUID string, data *Pr
 		if err := s.grantDefaultRole(uid); err != nil {
 			return 0, "", err
 		}
+		s.EnsureDefaultDriveFolder(uid)
 		slog.Info("[USER] created user", "uid", uid, "provider", provider)
 	}
 
@@ -406,6 +451,7 @@ func (s *AuthService) RegisterWithEmail(email, password string, deviceID, ip, us
 	if err := s.grantDefaultRole(uid); err != nil {
 		return 0, "", err
 	}
+	s.EnsureDefaultDriveFolder(uid)
 	token, err := s.tokens.Issue(context.Background(), uid, deviceID, ip, userAgent)
 	if err != nil {
 		return 0, "", err
@@ -441,6 +487,7 @@ func (s *AuthService) LoginOrRegisterByPhone(phone string, deviceID, ip, userAge
 	if err := s.grantDefaultRole(uid); err != nil {
 		return 0, "", false, err
 	}
+	s.EnsureDefaultDriveFolder(uid)
 	token, err := s.tokens.Issue(context.Background(), uid, deviceID, ip, userAgent)
 	if err != nil {
 		return 0, "", false, err

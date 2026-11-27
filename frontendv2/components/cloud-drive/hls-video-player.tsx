@@ -20,11 +20,13 @@ interface Props {
     posterUrl?: string;
     expiresIn?: number;
     onFallback: (reason: string) => void;
+    /** Fill the parent's full width/height (full-screen cloud-drive viewer). */
+    fill?: boolean;
 }
 
 type PlayerState = "loading" | "ready" | "error";
 
-export function HlsVideoPlayer({ uuid, playlistUrl, posterUrl, expiresIn = 3600, onFallback }: Props) {
+export function HlsVideoPlayer({ uuid, playlistUrl, posterUrl, expiresIn = 3600, onFallback, fill = false }: Props) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const hlsRef = useRef<Hls | null>(null);
@@ -137,14 +139,22 @@ export function HlsVideoPlayer({ uuid, playlistUrl, posterUrl, expiresIn = 3600,
     return (
         <div
             ref={containerRef}
-            className="group relative mx-auto w-full max-w-full overflow-hidden rounded-2xl bg-black shadow-[0_20px_60px_-24px_rgba(0,0,0,0.55)] ring-1 ring-black/10"
+            className={`group relative w-full overflow-hidden bg-black ${
+                fill
+                    ? "h-full"
+                    : "mx-auto max-w-full rounded-2xl shadow-[0_20px_60px_-24px_rgba(0,0,0,0.55)] ring-1 ring-black/10"
+            }`}
         >
             <video
                 ref={videoRef}
                 playsInline
                 preload="metadata"
                 poster={posterUrl}
-                className="mx-auto block max-h-[75dvh] w-full bg-black object-contain"
+                className={
+                    fill
+                        ? "block h-full w-full bg-black object-contain"
+                        : "mx-auto block max-h-[75dvh] w-full bg-black object-contain"
+                }
                 onCanPlay={() => setState("ready")}
                 onPlaying={() => setState("ready")}
                 onWaiting={() => setState("loading")}

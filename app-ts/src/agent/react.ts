@@ -345,14 +345,27 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
             const startedAt = toolStarts.get(toolCallId);
             yield {
               type: "step",
-              step: {
-                step: stepNo,
-                action: String(p.toolName ?? ""),
-                status: "done",
-                durationMs: startedAt ? Date.now() - startedAt : undefined,
-                // ai v5 stream part field is `output` (string for local tools)
-                resultPreview: compactResult(p.output),
-              },
+              step: (() => {
+                const action = String(p.toolName ?? "");
+                // Sandbox/code execution output stays inside the sandbox; the
+                // transcript only shows that the tool ran, never stdout/stderr.
+                const hideResultPreview =
+                  action.startsWith("sandbox_") ||
+                  action === "run_code" ||
+                  action === "run_skill_code";
+                return {
+                  step: stepNo,
+                  action,
+                  status: "done",
+                  durationMs: startedAt ? Date.now() - startedAt : undefined,
+                  ...(hideResultPreview
+                    ? {}
+                    : {
+                        // ai v5 stream part field is `output` (string for local tools)
+                        resultPreview: compactResult(p.output),
+                      }),
+                };
+              })(),
             };
             // plan tool (registered on the main agent only): the snapshot was set on
             // the collector during execution → push it right after this step's done

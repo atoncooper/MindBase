@@ -502,6 +502,16 @@ export class HttpCodeExecution implements CodeExecutionPort, CodeFilePort, CodeO
             executionId,
           );
         case "http":
+          // 503 from the gateway is the classic "sandbox profile not started":
+          // the upstream (app-sandbox / opensandbox-server) has no healthy endpoint.
+          if (error.status === 503) {
+            return this.unavailable(
+              `代码沙箱服务暂不可用（HTTP 503）：app-sandbox 控制面未启动或网关上游不可达。` +
+                `请在服务器执行 docker compose --profile sandbox up -d（或 --profile full），` +
+                `并确认 app-sandbox 与 opensandbox-server 健康后再试${suffix}`,
+              executionId,
+            );
+          }
           return this.unavailable(
             `代码沙箱返回错误（HTTP ${error.status ?? "?"}）：${error.message}${suffix}`,
             executionId,
