@@ -1,18 +1,8 @@
 # DOCX 视觉回归（npm run eval:office，LibreOffice 基线）
 #
-# 为什么用容器：渲染结果依赖 LibreOffice 版本与字体。golden 必须与 CI 使用
-# 完全相同的引擎（docker/office-eval.Dockerfile = Debian bookworm + LO 7.4 +
-# poppler 22 + Noto CJK），否则 Word/LibreOffice、不同发行版之间会产生无意义 diff。
-#
-# 本地/CI 生成或更新基线：
-#   docker build -f docker/office-eval.Dockerfile -t office-eval .
-#   docker run --rm -v "$PWD:/repo" -v office-eval-node:/repo/app-ts/node_modules \
-#     -w /repo/app-ts office-eval sh -c 'npm ci && npm run samples:office && \
-#     node node_modules/tsx/dist/cli.mjs scripts/office-visual-regression.ts \
-#     --dir qa-output --golden test/golden/office/lo --update'
-#
-# Windows/Word 基线放在 test/golden/office/word/（用 Word 导出 PDF + poppler 生成），
-# 仅用于本机核验，不参与 CI。
+# golden 必须与 CI 使用完全相同的渲染引擎（Debian bookworm + LibreOffice 7.4 +
+# poppler + Noto CJK），否则 Word/LibreOffice、不同发行版之间会产生无意义 diff。
+# 镜像直接在 workflow 里构建（不依赖仓库里的 Dockerfile）。
 #
 # 失败语义：0=一致，1=差异/golden 缺失，2=环境不可用（不伪造通过）
 name: Office Visual Regression
@@ -27,7 +17,6 @@ on:
       - "app-ts/scripts/office-samples.ts"
       - "app-ts/test/golden/**"
       - "app-ts/test/fixtures/**"
-      - "docker/office-eval.Dockerfile"
       - ".github/workflows/office-eval.yml"
   pull_request:
     paths:
@@ -37,7 +26,6 @@ on:
       - "app-ts/scripts/office-samples.ts"
       - "app-ts/test/golden/**"
       - "app-ts/test/fixtures/**"
-      - "docker/office-eval.Dockerfile"
       - ".github/workflows/office-eval.yml"
 
 permissions:
@@ -56,8 +44,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build office-eval image
-        run: docker build -f docker/office-eval.Dockerfile -t office-eval .
+      - name: Build office-eval image (Debian + LibreOffice + poppler + CJK)
+        run: |
+          printf '%s\n' \
+            'FROM node:22-bookworm-slim' \
+            'ENV DEBIAN_FRONTEND=noninteractive' \
+            'RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui poppler-utils fonts-noto-cjk fonts-liberation && rm -rf /var/lib/apt/lists/*' \
+            | docker build -t office-eval -f - .
 
       - name: Generate fixtures and compare against LibreOffice goldens
         id: eval
@@ -75,11 +68,11 @@ jobs:
         shell: bash
         run: |
           if grep -q "无法进行视觉回归" app-ts/office-eval-report.txt 2>/dev/null; then
-            echo "::error::渲染环境不可用（LibreOffice/poppler），视觉回归没有真正执行。检查 docker/office-eval.Dockerfile 与 soffice/pdftotext PATH。"
+            echo "::error::渲染环境不可用（LibreOffice/poppler），视觉回归没有真正执行。检查 workflow 内联镜像与 soffice/pdftotext PATH。"
           elif ! ls app-ts/test/golden/office/lo/*.json >/dev/null 2>&1; then
-            echo "::error::缺少 LibreOffice golden 基线（app-ts/test/golden/office/lo/*.json）。用 docker/office-eval.Dockerfile 生成：npm run samples:office && node .../office-visual-regression.ts --dir qa-output --golden test/golden/office/lo --update，并提交。"
+            echo "::error::缺少 LibreOffice golden 基线（app-ts/test/golden/office/lo/*.json）。用同一镜像执行 --update 生成并提交。"
           else
-            echo "::error::视觉回归与 golden 不一致，见 artifact office-eval-report。确认版式变更有意后，用同一容器执行 --update 更新 test/golden/office/lo 并提交。"
+            echo "::error::视觉回归与 golden 不一致，见 artifact office-eval-report。确认版式变更有意后，用同一镜像执行 --update 更新 test/golden/office/lo 并提交。"
           fi
           exit 1
 
