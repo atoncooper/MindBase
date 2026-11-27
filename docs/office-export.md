@@ -151,8 +151,8 @@ Word 版式系统（模板 + 模块，2026-11）：
 - Office 转 PDF：由 Gotenberg 侧车完成（docker compose --profile office up -d gotenberg，
   compose 默认 OFFICERENDER__BACKEND=http 与 http://gotenberg:3000），业务镜像无需重建。
 - PDF 转 PNG：@hyzyla/pdfium（PDFium WASM，MIT，零系统依赖），内置 PNG 编码，不需要 pdftoppm/poppler。
-- 视觉回归 / golden：只用独立评测镜像 docker/office-eval.Dockerfile
-  （Debian + LibreOffice 7.4 + poppler + Noto CJK），与业务镜像无关。
+- 视觉回归 / golden：CI 的 office-eval workflow 内联构建评测镜像
+  （Debian bookworm + LibreOffice 7.4 + poppler + Noto CJK），仓库不保留 Dockerfile，与业务镜像无关。
 - 部署后自检：docker compose exec app-ts node -e "fetch('http://gotenberg:3000/health')"（Gotenberg 起时）。
 
 ## 八、验证
@@ -180,7 +180,7 @@ Word 版式系统（模板 + 模块，2026-11）：
 - **app-ts 镜像只含 Node 运行时**：不装 LibreOffice/poppler，也不需要 apt（健康检查用 node fetch），构建快、镜像小。
 - 需要“看版面”（office_visual_check、渲染 QA）时两种方式：
   1. **Gotenberg 侧车**：docker compose --profile office up -d gotenberg；compose 默认 OFFICERENDER__BACKEND=http + OFFICERENDER__HTTP__URL=http://gotenberg:3000，无需重建 app-ts。
-  2. **评测/CI 镜像**：docker/office-eval.Dockerfile（Debian + LibreOffice 7.4 + poppler + Noto CJK），用于 eval:office 与 golden 生成。
+  2. **评测/CI 环境**：office-eval workflow 内联构建（Debian + LibreOffice 7.4 + poppler + Noto CJK），用于 eval:office 与 golden 生成；仓库不保留 Dockerfile。
 - 未配置渲染时 office_visual_check 明确降级（不影响生成）；结构/内容质检始终可用。
 - 旧参数 APP_TS_WITH_OFFICE_RENDERER / app-ts/docker/office-base.Dockerfile 已移除。
 
@@ -262,14 +262,14 @@ Word 版式系统（模板 + 模块，2026-11）：
 
 ### 视觉回归 golden 基线已生成（2026-11）
 
-- 新增 `docker/office-eval.Dockerfile`：Debian bookworm + LibreOffice 7.4(nogui) + poppler 22 + Noto CJK，
-  与 CI 完全一致；goldens 在该镜像内生成，避免 Word/LibreOffice、不同发行版之间产生无意义 diff。
+- CI 在 `office-eval` workflow 内联构建评测镜像：Debian bookworm + LibreOffice 7.4(nogui) + poppler 22 + Noto CJK，
+  与 golden 生成环境完全一致；仓库不再保留 `docker/` 目录。
 - 两套基线：
   - `app-ts/test/golden/office/lo/*.json`：LibreOffice 基线，**CI 使用**（同镜像生成，4/4 复现通过）；
   - `app-ts/test/golden/office/word/*.json`：Windows Word 导出 PDF 的基线，仅本机核验用，不参与 CI。
 - 样例图片资源已迁到 `app-ts/test/fixtures/office/assets/`，CI 无需依赖本地 qa-output 资产。
 - `eval:office` 新增 `--pdf-dir <dir>` 离线模式：直接解析已有 PDF（例如 Word 导出的 PDF），无需 LibreOffice；
   本机用它生成了 Word 基线，容器内用 LO 渲染生成了 lo 基线。
-- CI workflow 改为：构建 `docker/office-eval.Dockerfile` → 容器内 `npm ci` + `npm run samples:office` + eval（`--golden test/golden/office/lo`）→ 失败给出 golden 缺失/差异/环境缺失三类中文提示并上传报告。
+- CI workflow：内联构建评测镜像 → 容器内 `npm ci` + `npm run samples:office` + eval（`--golden test/golden/office/lo`）→ 失败给出 golden 缺失/差异/环境缺失三类中文提示并上传报告。
 - 本地真机门禁（用户要求下执行）：Word COM 打开 4 份样例并导出 PDF，页数 4/4/10/4；
   LO 容器内 4/4 快照生成并通过复跑比对。
