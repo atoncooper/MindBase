@@ -191,9 +191,22 @@ import { BiliEventBridge } from "../bootstrap/redis-events.js";
 import { AppTaskClient } from "../clients/app-task-client.js";
 import { AppUserAuthClient } from "../clients/app-user-auth-client.js";
 import { AppCloudClient } from "../clients/app-cloud-client.js";
+import { OfficeExportService } from "../services/office/index.js";
+import { CloudFolderService } from "../services/cloud-folders.js";
+import { NodeCommandRunner } from "../services/office-render/process.js";
+import { createOfficeRenderer } from "../services/office-render/renderer.js";
+import { DisabledVisionReview, GatewayVisionReview, type VisionReviewPort } from "../services/office-render/vision.js";
+import { OfficeDocumentService } from "../services/office-review.js";
 import { DocxInspectService } from "../services/docx-inspect.js";
 import { TempWorkspaceManager } from "../context/temp-workspace.js";
 import { createDocxInspectTool } from "../tools/docx/inspect.js";
+import { readFileSync } from "node:fs";
+
+import { createOfficeExportTool } from "../tools/office/export.js";
+import { createOfficeListTemplatesTool } from "../tools/office/templates.js";
+import { loadTemplateOverrides } from "../services/office/template-overrides.js";
+import type { DocTemplateRegistry } from "../services/office/templates.js";
+import { createOfficeInspectTool, createOfficeVisualCheckTool } from "../tools/office/review.js";
 import { MemoryTaskQuizDocStore } from "../repository/memory/task-quiz-docs.js";
 import { MongoTaskQuizDocStore } from "../repository/mongo/task-quiz-docs.js";
 import { TaskQuizGenerationService } from "../services/task-quiz-generation.js";
@@ -430,6 +443,70 @@ export async function bootstrap() {
   registry.register(createCloudSemanticSearchTool(appCloud));
   registry.register(createCloudFileReadTool(appCloud));
   registry.register(createCloudSimilarFilesTool(appCloud));
+  // General Office export (docx/xlsx/pptx): packages are authored in
+  // services/office/* and stored in the user's cloud drive (the only component
+  // holding MinIO credentials). Registered unconditionally — a deployment
+  // without app-cloud answers with an explicit "not configured" notice instead
+  // of silently dropping the capability from the agent roster.
+  // Office rendering backend (soffice -> PDF -> PNG). Built once, before the
+  // export tool: the export preview and the visual review share one renderer,
+  // and it degrades to an unavailable port when the image lacks LibreOffice.
+  const officeRenderer = await createOfficeRenderer({
+    runner: new NodeCommandRunner(),
+    enabled: config.officeRender.enabled,
+    backend: config.officeRender.backend,
+    httpUrl: config.officeRender.http.url,
+    httpEndpoint: config.officeRender.http.endpoint,
+    httpTimeoutMs: config.officeRender.http.timeoutMs,
+    sofficePath: config.officeRender.sofficePath,
+    pdftoppmPath: config.officeRender.pdftoppmPath,
+    timeoutMs: config.officeRender.timeoutMs,
+    dpi: config.officeRender.dpi,
+    maxPages: config.officeRender.maxPages,
+    maxSourceBytes: config.officeExport.maxBytes,
+  });
+
+  // Every generated file lands in the user's agent/ folder (created at
+  // registration; find-or-create here covers pre-existing users and races).
+  const cloudFolders = new CloudFolderService({
+    cloud: appCloud,
+    rootFolder: config.officeExport.rootFolder,
+    cacheTtlMs: config.officeExport.folderCacheTtlMs,
+  });
+  // Optional tenant/brand template overrides (JSON); a broken file never blocks boot.
+  let templateRegistry: DocTemplateRegistry | undefined;
+  const templatesFile = (config.officeExport.templatesFile ?? "").trim();
+  if (templatesFile !== "") {
+    try {
+      const loaded = loadTemplateOverrides(readFileSync(templatesFile, "utf8"));
+      templateRegistry = loaded.registry;
+      for (const warning of loaded.warnings) log.warn("[BOOT] office templates: %s", warning);
+      for (const error of loaded.errors) log.warn("[BOOT] office templates: %s", error);
+      log.info(
+        "[BOOT] office templates loaded from %s (applied=%s)",
+        templatesFile,
+        loaded.appliedTemplateIds.join(",") || "none",
+      );
+    } catch (err) {
+      log.warn(
+        "[BOOT] office templates file ignored (%s): %s",
+        templatesFile,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  const officeExport = new OfficeExportService({
+    cloud: appCloud,
+    folders: cloudFolders,
+    maxBytes: config.officeExport.maxBytes,
+    timeZone: config.timezone.name,
+    ...(templateRegistry ? { templates: templateRegistry } : {}),
+  });
+  registry.register(createOfficeExportTool({ service: officeExport, templates: appCloud, quota }));
+  registry.register(
+    createOfficeListTemplatesTool(templateRegistry ? { registry: templateRegistry } : {}),
+  );
+  log.info("[BOOT] office_export / office_list_templates tools registered (docx/xlsx/pptx -> cloud drive)");
   if (appCloud.configured) {
     log.info(
       `[BOOT] cloud tools registered: cloud_doc_summary / cloud_file_read / cloud_semantic_search / cloud_similar_files (app-cloud ${config.appCloud.baseUrl})`,
@@ -1225,6 +1302,36 @@ export async function bootstrap() {
     ? new GatewayVisionOcr(config.ocr.model, capabilities)
     : new DisabledOcr();
   log.info(`[BOOT] ocr: ${config.ocr.enabled ? `enabled model=${config.ocr.model}` : "disabled"}`);
+  // Office reading pipeline: structure inspection for docx/xlsx/pptx plus visual
+  // review (soffice -> PDF -> PNG -> vision model). Both degrade with an explicit
+  // message when the image carries no LibreOffice or no vision model is set.
+  const officeVisionModel =
+    config.officeRender.visionModel.trim() !== "" ? config.officeRender.visionModel.trim() : config.ocr.model.trim();
+  const officeVision: VisionReviewPort =
+    config.officeRender.enabled && officeVisionModel !== ""
+      ? new GatewayVisionReview({ model: officeVisionModel, timeoutMs: config.ocr.timeoutMs })
+      : new DisabledVisionReview("未配置视觉模型（OFFICERENDER__VISION_MODEL 与 OCR__MODEL 均为空）");
+  const officeDocuments = new OfficeDocumentService({
+    cloud: appCloud,
+    sessionDocs,
+    sessionFiles: chatImages,
+    renderer: officeRenderer,
+    vision: officeVision,
+    limits: {
+      maxSourceBytes: config.officeExport.maxBytes,
+      defaultPages: config.officeRender.defaultPages,
+      maxPages: config.officeRender.maxPages,
+      maxImages: config.officeRender.maxImages,
+      renderTimeoutMs: config.officeRender.timeoutMs,
+      dpi: config.officeRender.dpi,
+      visionTimeoutMs: config.ocr.timeoutMs,
+    },
+  });
+  registry.register(createOfficeInspectTool(officeDocuments));
+  registry.register(createOfficeVisualCheckTool(officeDocuments));
+  log.info(
+    `[BOOT] office_inspect / office_visual_check registered (renderer=${officeRenderer.available ? "ready" : "unavailable"}, vision=${officeVision.enabled ? officeVisionModel : "disabled"})`,
+  );
   const admission = getAdmissionQueue();
   log.info(
     admission
@@ -1380,6 +1487,7 @@ export async function bootstrap() {
   const researchMetrics = new ResearchMetrics();
   const app = await buildServer({
     chat, harness, rag, sessionDocs, capabilities, chatModels, ocr, kg: kgService,
+    officeDocuments,
     chatStores: { sessions, messages },
     chatImages,
     quota,

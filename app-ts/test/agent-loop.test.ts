@@ -267,4 +267,57 @@ describe("agent loop: step frame observability", () => {
       expect(done.step.resultPreview!.length).toBeLessThanOrEqual(400);
     }
   });
+  it("never exposes sandbox execution output in step frames", async () => {
+    const sandboxTool = defineTool({
+      name: "sandbox_bash",
+      description: "sandbox",
+      inputSchema: z.object({ command: z.string() }),
+      execute: async () => "SECRET-STDOUT",
+    });
+    const model = new MockLanguageModelV2({
+      doStream: (() => {
+        let call = 0;
+        return async () => {
+          const current = call++;
+          const chunks: LanguageModelV2StreamPart[] =
+            current === 0
+              ? [
+                  { type: "stream-start", warnings: [] },
+                  { type: "response-metadata", ...base },
+                  { type: "tool-call", toolCallId: "c3", toolName: "sandbox_bash", input: JSON.stringify({ command: "cat secret" }) },
+                  { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+                ]
+              : [
+                  { type: "stream-start", warnings: [] },
+                  { type: "response-metadata", ...base },
+                  { type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+                ];
+          return { stream: simulateReadableStream({ initialDelayInMs: 10, chunks }) };
+        };
+      })(),
+    });
+    const runtime = {
+      buildSdkTools: () => ({ sandbox_bash: sandboxTool }),
+    } as unknown as AgentRuntime;
+    const agent = createReactAgent({
+      name: "main",
+      description: "main",
+      runtime,
+      toolNames: ["sandbox_bash"],
+      purpose: "chat",
+      buildSystemPrompt: async () => "sys",
+      model,
+    });
+    const frames: SseFrame[] = [];
+    for await (const frame of agent.run({ query: "问", scope: {}, history: [] })) {
+      frames.push(frame);
+    }
+    const done = frames.find((f) => f.type === "step" && f.step.status === "done");
+    expect(done).toBeDefined();
+    if (done?.type === "step" && done.step.status === "done") {
+      expect(done.step.resultPreview).toBeUndefined();
+    }
+    expect(JSON.stringify(frames)).not.toContain("SECRET-STDOUT");
+  });
+
 });

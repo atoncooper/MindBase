@@ -138,6 +138,12 @@ const ARGS_MAX_CHARS = 240;
 const RESULT_MAX_LINES = 3;
 const RESULT_MAX_CHARS = 160;
 
+/** Sandbox/code execution output must never reach the transcript UI. */
+function hidesResultPreview(action?: string): boolean {
+  if (!action) return false;
+  return action.startsWith("sandbox_") || action === "run_code" || action === "run_skill_code";
+}
+
 /** Pretty-print compact JSON args; non-JSON previews render verbatim. */
 function prettyArgs(raw?: string): string | null {
   if (typeof raw !== "string") return null;
@@ -274,8 +280,11 @@ export const ToolStepCard = memo(function ToolStepCard({
   const argsText = useMemo(() => prettyArgs(step.args), [step.args]);
   const argsLong = !!argsText && isLongArgs(argsText);
   const resultText = useMemo(
-    () => (typeof step.resultPreview === "string" ? step.resultPreview.trim() : ""),
-    [step.resultPreview]
+    () =>
+      hidesResultPreview(step.action) || typeof step.resultPreview !== "string"
+        ? ""
+        : step.resultPreview.trim(),
+    [step.action, step.resultPreview]
   );
   const resultLong = isLongResult(resultText);
   const sources = useMemo(

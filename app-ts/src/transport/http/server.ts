@@ -41,6 +41,8 @@ import { registerNotificationRoutes } from "././routes/notifications.js";
 import { registerAutopilotRoutes } from "././routes/autopilot.js";
 import { registerResearchRoutes } from "././routes/research.js";
 import { registerSandboxRoutes } from "././routes/sandbox.js";
+import { registerOfficeDocumentRoutes } from "././routes/office-document.js";
+import type { OfficeDocumentService } from "../../services/office-review.js";
 import { registerAiTaskRoutes } from "././routes/ai-tasks.js";
 import { registerUserMcpRoutes } from "././routes/user-mcp.js";
 import type { UserMcpBridge } from "../../mcp/user-connections.js";
@@ -116,6 +118,8 @@ export interface BuildServerOptions {
   recon?: UsageReconciliationJob | null;
   /** folder_ids → bvids via app-kg; absent = chat folder scope unresolvable (fail-open unscoped) */
   resolveFolderScope?: (uid: string, folderIds: number[]) => Promise<string[]>;
+  /** Office document service (structured Word preview); absent = /chat/office/document returns 503 */
+  officeDocuments?: OfficeDocumentService;
   /** board AI completion (POST /chat/board/complete); absent = route not registered */
   boardCompletion?: BoardCompletionService;
   /** session summary (POST/GET /chat/sessions/:id/summary); absent = routes not registered */
@@ -351,6 +355,10 @@ export async function buildServer(opts: BuildServerOptions) {
         metrics: opts.researchMetrics,
       });
   }
+  // Office document preview for the cloud UI: registered whenever the service was
+  // assembled (the service itself reports a clean degradation when rendering is
+  // unavailable), independent of the sandbox panel.
+  registerOfficeDocumentRoutes(app, { ...(opts.officeDocuments ? { documents: opts.officeDocuments } : {}) });
   if (opts.sandbox) {
     registerSandboxRoutes(app, opts.sandbox);
   }

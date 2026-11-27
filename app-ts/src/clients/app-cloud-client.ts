@@ -211,6 +211,37 @@ export class AppCloudClient extends InternalServiceClient {
     }
   }
 
+  /**
+   * List the caller's cloud-drive folders at one level (M2M face).
+   *
+   * Exists for the agent export/render paths: generated Office files must land in
+   * the user's "agent/" folder, which has to be found (or created) before upload.
+   * parentId omitted = the drive root.
+   */
+  async listFolders(uid: string, parentId?: number): Promise<Array<{ id: number; name: string; parent_id?: number }>> {
+    const params = new URLSearchParams({ uid });
+    if (parentId !== undefined) params.set("parent_id", String(parentId));
+    const res = await this.request("GET", `/internal/cloud/folders?${params.toString()}`, undefined, uid);
+    const raw = await this.json<{ items?: unknown }>(res, "云盘文件夹列表读取失败");
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    const out: Array<{ id: number; name: string; parent_id?: number }> = [];
+    for (const item of items) {
+      if (item === null || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const id = Number(row.id ?? row.ID);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const name = typeof row.name === "string" ? row.name : typeof row.Name === "string" ? row.Name : "";
+      const parentRaw = row.parent_id ?? row.ParentID;
+      const parent = Number(parentRaw);
+      out.push({
+        id,
+        name,
+        ...(Number.isFinite(parent) && parent > 0 ? { parent_id: parent } : {}),
+      });
+    }
+    return out;
+  }
+
   /** Upload raw bytes into a research workspace folder (M2M; app-cloud owns MinIO). */
   async uploadFile(
     uid: string,
@@ -237,6 +268,37 @@ export class AppCloudClient extends InternalServiceClient {
     return {
       upload_uuid: uploadUuid,
       name: typeof raw.name === "string" ? raw.name : name,
+      size: Number(raw.size ?? data.byteLength),
+      ...(typeof raw.sha256 === "string" ? { sha256: raw.sha256 } : {}),
+    };
+  }
+
+  /**
+   * Overwrite an existing file content while keeping its upload_uuid (document
+   * revision: one drive file, many iterations). Requires app-cloud with
+   * PUT /internal/cloud/files/:upload_uuid.
+   */
+  async replaceFile(
+    uid: string,
+    uploadUuid: string,
+    data: Uint8Array,
+    mimeType = "application/octet-stream",
+    name?: string,
+  ): Promise<{ upload_uuid: string; name: string; size: number; sha256?: string }> {
+    const params = new URLSearchParams({ uid, mime_type: mimeType });
+    if (name) params.set("name", name);
+    const res = await fetch(this.baseUrl + "/internal/cloud/files/" + encodeURIComponent(uploadUuid) + "?" + params.toString(), {
+      method: "PUT",
+      headers: this.headers(uid, { "Content-Type": mimeType }),
+      body: data,
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const raw = await this.json<Record<string, unknown>>(res, "云盘文件更新失败");
+    const id = typeof raw.upload_uuid === "string" ? raw.upload_uuid : "";
+    if (!id) throw new AppCloudError("云盘文件更新失败：响应缺少 upload_uuid");
+    return {
+      upload_uuid: id,
+      name: typeof raw.name === "string" ? raw.name : uploadUuid,
       size: Number(raw.size ?? data.byteLength),
       ...(typeof raw.sha256 === "string" ? { sha256: raw.sha256 } : {}),
     };

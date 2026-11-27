@@ -29,7 +29,8 @@ export type QuotaKind =
   | "academic_analysis"
   | "academic_validation"
   | "academic_export"
-  | "academic_experiment";
+  | "academic_experiment"
+  | "office_export";
 
 export type QuotaVerdict = "allow" | "quota_exceeded" | "cost_guard";
 
@@ -326,6 +327,7 @@ const TRACKED_KINDS: QuotaKind[] = [
   "academic_validation",
   "academic_export",
   "academic_experiment",
+  "office_export",
 ];
 
 interface TierPlan {

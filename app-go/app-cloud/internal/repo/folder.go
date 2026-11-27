@@ -21,6 +21,21 @@ func (r *FolderRepo) ListByUID(db *gorm.DB, uid int64) ([]model.CloudFolder, err
 	return rows, err
 }
 
+// ListByParent returns the active folders directly under parentID (nil = root),
+// ordered by name. Only one level is read: the M2M listing contract is
+// per-directory so callers can walk the tree without buffering all folders.
+func (r *FolderRepo) ListByParent(db *gorm.DB, uid int64, parentID *int64) ([]model.CloudFolder, error) {
+	var rows []model.CloudFolder
+	q := db.Where("uid = ? AND deleted_at IS NULL", uid)
+	if parentID == nil {
+		q = q.Where("parent_id IS NULL")
+	} else {
+		q = q.Where("parent_id = ?", *parentID)
+	}
+	err := q.Order("name, id").Find(&rows).Error
+	return rows, err
+}
+
 // GetByID returns one active folder (owner-checked).
 func (r *FolderRepo) GetByID(db *gorm.DB, id int64, uid int64) (*model.CloudFolder, error) {
 	var f model.CloudFolder

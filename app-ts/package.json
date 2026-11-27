@@ -14,7 +14,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "reingest:video-kb": "tsx scripts/reingest-video-kb.ts",
-    "typecheck": "tsc --noEmit"
+    "qa:office": "tsx scripts/office-qa.ts",
+    "typecheck": "tsc --noEmit",
+    "samples:office": "tsx scripts/office-samples.ts",
+    "audit:office": "tsx scripts/office-structure-audit.ts",
+    "eval:office": "tsx scripts/office-visual-regression.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.113",
@@ -23,6 +27,7 @@
     "@fastify/multipart": "^10.1.2",
     "@grpc/grpc-js": "^1.14.5",
     "@grpc/proto-loader": "^0.8.1",
+    "@hyzyla/pdfium": "^3.0.0",
     "@mikro-orm/core": "^7.2.6",
     "@mikro-orm/mongodb": "^7.2.6",
     "@modelcontextprotocol/sdk": "^1.32.0",

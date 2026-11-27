@@ -41,6 +41,7 @@ const KIND_LABELS: Record<string, string> = {
   academic_validation: "学术校验",
   academic_export: "导出/投稿包",
   academic_experiment: "后台实验",
+  office_export: "Word/Excel/PPT 导出",
 };
 
 const WINDOW_META: Record<QuotaWindow, { label: string; hint: string }> = {

@@ -3,6 +3,7 @@
  */
 import { request, getAuthHeaders, snakeToCamel } from "./client";
 import { API_PREFIX } from "./prefix";
+import type { OfficeDocumentData } from "@/lib/artifacts/office-document-spec";
 
 export interface CloudFolderTreeItem {
     id: number;
@@ -164,6 +165,21 @@ export interface CloudDocumentPreviewResponse {
     hasMore: boolean;
     nextOffset: number | null;
 }
+
+// ── Office 文档预览（app-ts /chat/office/document）──
+
+/**
+ * 云盘 Office 文档的结构化预览结果（与聊天 artifact kind="office-document"
+ * 的 data 同构）：
+ * - available=true  → data 可直接交给 OfficeDocumentCard 渲染（纸张式正文，
+ *   不再是页面截图）；
+ * - available=false → 解析 / 渲染不可用等「可展示提示」的降级态，展示 detail
+ *   文案即可，不当作错误。
+ * 文件不存在或无权（404）与服务不可用（503）由 request() 抛错，调用方按状态码分支。
+ */
+export type CloudOfficeDocumentResponse =
+    | { available: true; data: OfficeDocumentData }
+    | { available: false; detail: string };
 
 export type CloudViewMode =
     | "video"
@@ -548,6 +564,20 @@ export const cloudApi = {
             { headers: getAuthHeaders() },
         );
         return snakeToCamel<CloudDocumentPreviewResponse>(raw);
+    },
+
+    // ── Office 文档预览（云盘 docx → 结构化文档块）──
+    /**
+     * 读取该云盘 docx 的结构化文档内容（纸张式正文预览，不生成页面截图）。
+     * 成功返回 available 判别联合；404/503 按 client 既有约定抛错（含 status）。
+     */
+    getOfficeDocument: async (uploadUuid: string) => {
+        const params = new URLSearchParams({ upload_uuid: uploadUuid });
+        const raw = await request<CloudOfficeDocumentResponse>(
+            `/chat/office/document?${params.toString()}`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<CloudOfficeDocumentResponse>(raw);
     },
 
     // ── Original file (raw) ──

@@ -456,6 +456,47 @@ rateLimit:
   windowMs: 60000
   max: 20
 
+officeExport:
+  # 可选：外置模板覆盖 JSON（模板/品牌色/Logo），空 = 只使用内置 8 套模板
+  templatesFile: ""
+  # 通用 Office 导出（docx/xlsx/pptx → 云盘）。产物统一落在用户云盘根下的
+  # 「agent」文件夹（注册时创建；缺失时首次导出自动补建），可用 folderPath 指定
+  # 其下子目录，或用 folderId 直接指定已有云盘文件夹。
+  rootFolder: agent
+  # 文件夹 id → 名称的缓存时长（毫秒；避免每次导出都列一次云盘目录）。
+  folderCacheTtlMs: 600000
+  # 单个成品上限（字节）；超限直接拒绝并提示拆分，避免一次性塞爆云盘。
+  maxBytes: 25165824
+
+officeRender:
+  # 渲染后端：
+  #  - http：远程转换服务（默认部署用 Gotenberg 侧车，compose 已注入 env）；PDF->PNG 由 npm PDFium 完成，无系统依赖；
+  #  - soffice：本机/自定义镜像内有 LibreOffice 时使用。
+  backend: soffice
+  http:
+    # Gotenberg 地址，例如 http://gotenberg:3000（docker compose --profile office up -d gotenberg）
+    url: ""
+    endpoint: /forms/libreoffice/convert
+    timeoutMs: 120000
+  # Office 版面渲染（PDF → 逐页 PNG），供「视觉方案」复核生成/上传的 docx/xlsx/pptx。
+  # app-ts 业务镜像不含 LibreOffice：默认用 Gotenberg 侧车（docker compose --profile office up -d gotenberg）；
+  # 本地/CI 评测用 docker/office-eval.Dockerfile。未配置 → 工具明确降级为结构文本。
+  enabled: true
+  # 仅 backend=soffice 使用（空 = PATH）；http 后端的 PDF->PNG 用 npm PDFium。
+  sofficePath: ""
+  # 仅 backend=soffice 使用；http 后端不需要 poppler。
+  pdftoppmPath: ""
+  # 单次渲染（含 soffice 转换）总超时。
+  timeoutMs: 120000
+  # 一次最多渲染多少页 / 默认渲染多少页。
+  maxPages: 16
+  defaultPages: 6
+  # PNG 分辨率（DPI）。
+  dpi: 110
+  # 视觉复核：一次最多送几张图给视觉模型；空 model = 复用 OCR 的视觉模型。
+  maxImages: 6
+  visionModel: ""
+
 quota:
   # ── 统一 AI 额度（token 口径，不是条数）────────────────────────────────
   # 产品参照 Codex / Claude Code / Kimi / 豆包：
@@ -540,6 +581,7 @@ quota:
     academic_validation: 6000
     academic_export: 2000
     academic_experiment: 30000
+    office_export: 1500
     coding_plan: 0
     task_quiz_active: 0
   # 平台代付之外的模型（Coding Plan）；列表中的模型同样按 external 处理（零额度/零成本），
