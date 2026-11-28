@@ -67,6 +67,19 @@ GET /chat/models
 - `GET /chat/models` 失败时选择器隐藏，聊天继续按服务端默认模型发送，不阻塞。
 - 模型选择随普通发送、排队消息实际发送、regenerate、edit 重问、交互回答统一生效。
 
+### 4.1 推理强度（reasoning effort）
+
+- 输入栏模型弹层底部是**连续滑杆 0–100**（不再只有 min/mid/high/max 四档）：
+  0 = 最轻（绿色）→ 黄绿 → 琥珀 → 珊瑚 → 100 = 最强（紫色），可自由拖动/键盘微调，
+  取值与标签写入 `localStorage`（`mindbase_reasoning_effort`；旧的 `min|mid|high|max`
+  在读取时自动迁移为 0/33/66/100）。
+- 请求字段 `reasoning_effort` 为 **0–100 的数字**；后端 `normalizeReasoningEffort`
+  仍兼容旧的 `min|mid|high|max` 与数字字符串。app-ts 再按单调区间映射到网关支持的
+  `reasoning_effort` 枚举（`<30 minimal` / `<55 low` / `<80 medium` / `≥80 high`），
+  因此滑块是连续的，实际生效粒度受上游模型能力限制；不支持该字段的模型会忽略。
+- 相关实现：`frontendv2/components/chat/effort-slider.tsx`、
+  `app-ts/src/agent/reasoning-effort.ts`（单测 `app-ts/test/reasoning-effort.test.ts`）。
+
 ## 5. 新增/调整模型
 
 1. 在 AI 网关控制台确认模型已配置路由（供应商 key 只在网关，不进 app-ts）。

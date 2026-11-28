@@ -42,7 +42,7 @@ import { describeMimeType } from "./helpers";
 import { toSameOriginUrl } from "./media-url";
 import { CloudVideoPlayer } from "./video-player";
 import { HlsVideoPlayer } from "./hls-video-player";
-import { HlsFailureCard, HlsPackagingCard } from "./hls-packaging-card";
+import { HlsStatusChip } from "./hls-packaging-card";
 import { useHlsPlayback } from "./use-hls-playback";
 
 const AI_DRAWER_ID = "file-ai-drawer";
@@ -270,7 +270,6 @@ export function FileViewer() {
                         hls={hls.info}
                         onHlsFallback={hls.playRaw}
                         onUrlChange={(url) => setRaw((prev) => (prev ? { ...prev, url } : prev))}
-                        onPlayRaw={hls.playRaw}
                         onRetryHls={() => void hls.retry()}
                         hlsRetrying={hls.retrying}
                         hlsError={hls.error}
@@ -345,13 +344,27 @@ export function FileViewer() {
     );
 }
 
-function RawContent({
+/**
+ * Video playback stage: the original MP4 starts immediately; HLS is a
+ * progressive upgrade.
+ *
+ * Root cause of the old "absurdly slow" behaviour: the viewer blocked on HLS
+ * packaging (minutes of ffmpeg for a long video) and, worse, videos uploaded
+ * before HLS / whose MinIO webhook never fired had no status at all and showed
+ * a spinner forever. Now:
+ *  - raw MP4 plays right away (progressive + seekable);
+ *  - a passive chip reports packaging without blocking;
+ *  - a ready HLS rendition auto-upgrades ONLY while playback has not started
+ *    meaningfully (<3s), otherwise the chip offers a manual switch that resumes
+ *    at the current position;
+ *  - a failed/unsupported HLS package never degrades raw playback.
+ */
+function VideoStage({
     raw,
     uuid,
     hls,
     onUrlChange,
     onHlsFallback,
-    onPlayRaw,
     onRetryHls,
     hlsRetrying,
     hlsError,
@@ -361,63 +374,109 @@ function RawContent({
     hls: CloudHlsResponse | null;
     onUrlChange: (url: string) => void;
     onHlsFallback: () => void;
-    onPlayRaw: () => void;
+    onRetryHls: () => void;
+    hlsRetrying: boolean;
+    hlsError: string | null;
+}) {
+    const hlsReady = Boolean(hls?.ready && hls.playlistUrl);
+    const [mode, setMode] = useState<"raw" | "hls">(() => (hlsReady ? "hls" : "raw"));
+    // Playback position of the raw player, used to resume after a switch.
+    const positionRef = useRef(0);
+    const autoUpgradeTried = useRef(false);
+
+    // Auto-upgrade only before playback has meaningfully started: a package
+    // that becomes ready mid-watch must not yank the video away.
+    useEffect(() => {
+        if (!hlsReady || mode === "hls" || autoUpgradeTried.current) return;
+        if (positionRef.current >= 3) return;
+        autoUpgradeTried.current = true;
+        setMode("hls");
+    }, [hlsReady, mode]);
+
+    const switchToHls = useCallback(() => {
+        autoUpgradeTried.current = true;
+        setMode("hls");
+    }, []);
+
+    if (hlsReady && mode === "hls" && hls?.playlistUrl) {
+        return (
+            <HlsVideoPlayer
+                uuid={uuid}
+                playlistUrl={hls.playlistUrl}
+                posterUrl={hls.posterUrl}
+                expiresIn={hls.expiresIn}
+                startAt={positionRef.current}
+                onFallback={() => {
+                    // HLS failed: fall back to the raw MP4 for the rest of the
+                    // session (the hook stops polling too).
+                    onHlsFallback();
+                    setMode("raw");
+                }}
+                fill
+            />
+        );
+    }
+
+    return (
+        <div className="relative h-full w-full">
+            <CloudVideoPlayer
+                uuid={uuid}
+                initialUrl={raw.url}
+                expiresIn={raw.expiresIn}
+                startAt={positionRef.current}
+                onUrlChange={onUrlChange}
+                onProgress={(currentTime) => {
+                    if (currentTime > 0) positionRef.current = currentTime;
+                }}
+                fill
+            />
+            {/* Passive overlay: never blocks the video, never covers controls. */}
+            <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[min(92vw,26rem)]">
+                <HlsStatusChip
+                    status={hls?.status}
+                    progress={hls?.progress}
+                    ready={hlsReady && mode === "raw"}
+                    retrying={hlsRetrying}
+                    error={hlsError}
+                    onRetry={onRetryHls}
+                    onSwitchToHls={switchToHls}
+                />
+            </div>
+        </div>
+    );
+}
+
+function RawContent({
+    raw,
+    uuid,
+    hls,
+    onUrlChange,
+    onHlsFallback,
+    onRetryHls,
+    hlsRetrying,
+    hlsError,
+}: {
+    raw: CloudRawFileResponse;
+    uuid: string;
+    hls: CloudHlsResponse | null;
+    onUrlChange: (url: string) => void;
+    onHlsFallback: () => void;
     onRetryHls: () => void;
     hlsRetrying: boolean;
     hlsError: string | null;
 }) {
     switch (raw.viewMode) {
         case "video":
-            if (hls?.ready && hls.playlistUrl) {
-                return (
-                    <HlsVideoPlayer
-                        uuid={uuid}
-                        playlistUrl={hls.playlistUrl}
-                        posterUrl={hls.posterUrl}
-                        expiresIn={hls.expiresIn}
-                        onFallback={onHlsFallback}
-                        fill
-                    />
-                );
-            }
-            if (hls && (hls.status === "queued" || hls.status === "processing")) {
-                return (
-                    <div className="flex h-full w-full items-center justify-center px-4">
-                        <div className="w-full max-w-xl">
-                            <HlsPackagingCard
-                                progress={hls.progress}
-                                attempts={hls.attempts}
-                                onPlayRaw={onPlayRaw}
-                            />
-                        </div>
-                    </div>
-                );
-            }
-            if (hls?.status === "failed") {
-                // A failed package is surfaced (with retry) instead of silently
-                // downgrading to the MP4 fallback.
-                return (
-                    <div className="flex h-full w-full items-center justify-center px-4">
-                        <div className="w-full max-w-xl">
-                            <HlsFailureCard
-                                message={hlsError}
-                                attempts={hls.attempts}
-                                retryable={hls.retryable !== false}
-                                retrying={hlsRetrying}
-                                onRetry={onRetryHls}
-                                onPlayRaw={onPlayRaw}
-                            />
-                        </div>
-                    </div>
-                );
-            }
             return (
-                <CloudVideoPlayer
+                <VideoStage
+                    raw={raw}
                     uuid={uuid}
-                    initialUrl={raw.url}
-                    expiresIn={raw.expiresIn}
+                    hls={hls}
                     onUrlChange={onUrlChange}
-                    fill
+                    onHlsFallback={onHlsFallback}
+                    onRetryHls={onRetryHls}
+                    hlsRetrying={hlsRetrying}
+                    hlsError={hlsError}
                 />
             );
         case "audio":

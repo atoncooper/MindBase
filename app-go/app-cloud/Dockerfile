@@ -4,9 +4,12 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
-# Use China mirror for Go modules (goproxy.cn) with direct fallback.
+# Module proxy is a build argument so restricted networks can override it
+# (same convention as app-admin/Dockerfile):
+#   docker compose build --build-arg GOPROXY=https://goproxy.io,direct app-cloud
 # GOSUMDB off: sum.golang.org is often unreachable behind GFW.
-ENV GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=off
 
 # Cache deps first

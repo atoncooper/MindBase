@@ -17,6 +17,7 @@ import { resolveTier } from "../utils/membership.js";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
 import { estimateTokens, isExternalModel, priceFor, type QuotaGate, type QuotaService } from "./quota.js";
+import { createStreamIdleWatchdog } from "./stream-idle.js";
 import { costMicroYuan, type UsageLedgerRepository } from "../repository/usage-ledger.js";
 import { today } from "../utils/datetime.js";
 import { historyLimitFor, noteTurnLevel } from "../utils/degrade.js";
@@ -69,8 +70,8 @@ export interface AskStreamRequest {
    * rendered into the system prompt as a controlled section.
    */
   academicProjectId?: string;
-  /** Composer reasoning effort (min|mid|high|max); forwarded to the provider. */
-  reasoningEffort?: "min" | "mid" | "high" | "max";
+  /** Composer reasoning effort (continuous 0–100); forwarded to the provider. */
+  reasoningEffort?: number;
   /** Regenerate: the previous turn's user msg id (excluded from model history). */
   regenerateFromMsgId?: string;
   /** Aborted when the SSE client disconnects: cancels generation + in-flight tools
@@ -322,6 +323,10 @@ export class ChatService {
     // record usage, but consume no platform token quota.
     let externalBilling = false;
     let deadlineHit = false;
+    // Idle-stream abort: no frames for config.agent.streamIdleTimeoutMs with no
+    // tool in flight (a stalled gateway must surface an error, not spin forever).
+    let idleTimeoutHit = false;
+    let idleWatchdog: ReturnType<typeof createStreamIdleWatchdog> | null = null;
     const turnTimer = setTimeout(() => {
       deadlineHit = true;
       turnAbort.abort();
@@ -363,6 +368,20 @@ export class ChatService {
         }
       }
 
+      // Watchdog covers the generation phase (after model resolution): every
+      // frame resets it, tool execution (step start→done) is exempt.
+      idleWatchdog = createStreamIdleWatchdog({
+        timeoutMs: config.agent.streamIdleTimeoutMs,
+        onIdle: () => {
+          if (turnAbort.signal.aborted) return;
+          idleTimeoutHit = true;
+          log.warn(
+            `[CHAT] stream idle timeout session=${sessionId} uid=${req.uid ?? "-"} model=${turnModelId ?? config.llm.model} idle_ms=${config.agent.streamIdleTimeoutMs} — aborting stalled turn`,
+          );
+          turnAbort.abort();
+        },
+      });
+
       for await (const frame of this.harness.dispatchStream({
         sessionId: session.id,
         query: req.query,
@@ -380,10 +399,11 @@ export class ChatService {
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(extraSystem ? { extraSystem } : {}),
         ...(academicProjectId ? { academicProjectId } : {}),
-        ...(req.reasoningEffort ? { reasoningEffort: req.reasoningEffort } : {}),
+        ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
         signal: turnAbort.signal,
       })) {
         if (turnAbort.signal.aborted) break;
+        idleWatchdog?.note(frame);
         if (frame.type === "chunk") {
           fullContent += frame.content;
           await this.messages.appendChunk(assistantMsg.id, frame.content);
@@ -404,6 +424,8 @@ export class ChatService {
         }
         yield frame;
       }
+      idleWatchdog?.dispose();
+      idleWatchdog = null;
       const aborted = turnAbort.signal.aborted;
       if (!aborted && !hadError && req.regenerateFromMsgId) {
         // Success: finally drop the replaced turn (and any later turns), keeping
@@ -420,7 +442,8 @@ export class ChatService {
       // A user stop with partial output / a partial failed answer is kept.
       const isRegenerate = Boolean(req.regenerateFromMsgId);
       const dropFailedTurn =
-        (hadError || (aborted && deadlineHit)) && (isRegenerate || !fullContent.trim());
+        (hadError || (aborted && (deadlineHit || idleTimeoutHit))) &&
+        (isRegenerate || !fullContent.trim());
       if (dropFailedTurn) {
         try {
           await this.messages.truncateFrom(session.id, userMsg.id);
@@ -434,11 +457,22 @@ export class ChatService {
         usage,
         status: aborted || hadError ? "failed" : "done",
         ...(aborted
-          ? { error: deadlineHit ? "本轮处理超时，已中止" : "连接已断开，生成已取消" }
+          ? {
+              error: idleTimeoutHit
+                ? "长时间无输出，已中止"
+                : deadlineHit
+                  ? "本轮处理超时，已中止"
+                  : "连接已断开，生成已取消",
+            }
           : {}),
       });
       if (aborted) {
-        if (deadlineHit) {
+        if (idleTimeoutHit) {
+          yield {
+            type: "error",
+            message: `长时间无输出（超过 ${Math.round(config.agent.streamIdleTimeoutMs / 1000)} 秒），已中止本轮生成。请重试。`,
+          };
+        } else if (deadlineHit) {
           yield { type: "error", message: "本轮处理超时，已中止。请重试，或把任务拆小后分步提问。" };
         }
         // disconnect: the consumer is gone; deadline: the error frame above is the answer
@@ -480,18 +514,30 @@ export class ChatService {
       }
       // consume-on-success — normalized token windows + day cost + ledger row.
       // Failed/retried turns never consume (they short-circuit above via hadError).
-      // Coding Plan turns are external: count their turns in the resolver, not tokens here.
-      if (this.quota && !hadError && !external) {
-        await this.quota.completeChatTurn(req.uid, req.clientKey, billableUsage, billedModel).catch((err: unknown) => {
-          log.warn("[CHAT] quota consume failed (ignored): " + (err instanceof Error ? err.message : err));
-        });
+      // Platform turns charge the shared token windows; Coding Plan (external) turns
+      // are paid by the user's own plan, so they only feed the dedicated external
+      // counters (same actual-or-estimated usage) and never move platform quota/cost.
+      if (this.quota && !hadError) {
+        if (external) {
+          await this.quota
+            .recordExternalTurn(req.uid, req.clientKey, billableUsage, billedModel, "coding_plan")
+            .catch((err: unknown) => {
+              log.warn("[CHAT] external token accounting failed (ignored): " + (err instanceof Error ? err.message : err));
+            });
+        } else {
+          await this.quota.completeChatTurn(req.uid, req.clientKey, billableUsage, billedModel).catch((err: unknown) => {
+            log.warn("[CHAT] quota consume failed (ignored): " + (err instanceof Error ? err.message : err));
+          });
+        }
       }
       if (this.ledger && !hadError) {
         void this.ledger
           .recordTurn({
             day: today(),
             uid: req.uid ?? "0",
-            purpose: "chat",
+            // External (Coding Plan) rows stay in the ledger with cost 0; a distinct
+            // purpose keeps user-paid tokens out of platform chat burn-down analytics.
+            purpose: external ? "chat_coding_plan" : "chat",
             model: billedModel,
             inputTokens: billableUsage.inputTokens ?? 0,
             outputTokens: billableUsage.outputTokens ?? 0,
@@ -526,6 +572,8 @@ export class ChatService {
       yield { type: "done" };
     } finally {
       clearTimeout(turnTimer);
+      idleWatchdog?.dispose();
+      idleWatchdog = null;
       if (req.signal) req.signal.removeEventListener("abort", onClientAbort);
       // Disconnect path: the consumer closed the generator, so the code after
       // the loop never ran. Close the message (partial content is kept) instead
@@ -533,7 +581,11 @@ export class ChatService {
       if (!finalized) {
         await finalizeAssistantTurn({
           status: "failed",
-          error: deadlineHit ? "本轮处理超时，已中止" : "连接已断开，生成已取消",
+          error: idleTimeoutHit
+            ? "长时间无输出，已中止"
+            : deadlineHit
+              ? "本轮处理超时，已中止"
+              : "连接已断开，生成已取消",
         });
       }
       // `ticket` is non-null only once granted (admitTurn cleans up its own

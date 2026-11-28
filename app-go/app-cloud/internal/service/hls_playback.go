@@ -31,12 +31,35 @@ func (s *HLSService) Playback(ctx context.Context, uid int64, uploadUUID, bind s
 
 	status, err := s.getStatus(ctx, uploadUUID)
 	if err != nil {
-		return HLSPlayback{Ready: false, Status: hlsStateProcessing}, "", nil
+		// Redis hiccup: answer truthfully (unknown) instead of pretending the
+		// file is being packaged — the client keeps playing the original MP4.
+		return HLSPlayback{Ready: false, Status: hlsStateUnknown}, "", nil
+	}
+	lazy := LazyEnqueueInput{
+		Status: status.Status, Retryable: status.Retryable,
+		Attempts: status.Attempts, UpdatedAt: status.UpdatedAt,
+	}
+	if LazyEnqueueDecision(lazy, s.cfg.HLS.LazyEnqueueOnView(), s.maxAttempts(), time.Now().Unix()) {
+		// Older uploads (HLS added after they were uploaded), a MinIO webhook
+		// that never fired, or a status lost to TTL would otherwise report
+		// "processing" forever and the viewer would wait on a spinner. Enqueue
+		// once (SETNX-deduped per upload) and answer "queued" so the viewer can
+		// play the raw MP4 immediately and upgrade later.
+		s.enqueue(ctx, uid, uploadUUID, false)
+		if refreshed, rerr := s.getStatus(ctx, uploadUUID); rerr == nil && refreshed.Status != "" {
+			status = refreshed
+		} else {
+			// Queue write raced with the read (or the worker already started):
+			// "queued" is the truthful answer either way.
+			status = hlsStatus{Status: hlsStateQueued, Progress: hlsProgressQueued}
+		}
 	}
 	if status.Status != hlsStateReady || status.Prefix == "" {
 		st := status.Status
 		if st == "" {
-			st = hlsStateProcessing
+			// No job and lazy enqueue is off: report the real state, not a fake
+			// "processing" that makes the UI spin forever.
+			st = hlsStateNotStarted
 		}
 		progress := status.Progress
 		if progress == 0 && st == hlsStateProcessing {
@@ -50,6 +73,9 @@ func (s *HLSService) Playback(ctx context.Context, uid int64, uploadUUID, bind s
 			Retryable: status.Retryable,
 		}, "", nil
 	}
+	// Sliding status lifetime: an actively watched file keeps its ready
+	// descriptor, so it is never needlessly re-packaged after hlsStatusTTL.
+	s.touchStatusTTL(ctx, uploadUUID)
 
 	if len(bind) < 8 || len(bind) > 128 {
 		// Missing/oversized client binding: mint a fresh one so the caller can
@@ -107,6 +133,45 @@ func (s *HLSService) Playback(ctx context.Context, uid int64, uploadUUID, bind s
 		PosterURL:   poster,
 		ExpiresIn:   ttl,
 	}, token, nil
+}
+
+// hlsFailedRetryCooldown keeps a broken source from being re-transcoded on
+// every view: a terminal failed status is only auto-retried once the previous
+// attempt is older than this window (and only while attempts remain).
+const hlsFailedRetryCooldown = 10 * time.Minute
+
+// LazyEnqueueInput is the status subset the lazy-enqueue decision needs.
+// Exported together with LazyEnqueueDecision for the black-box test suite.
+type LazyEnqueueInput struct {
+	Status    string
+	Retryable bool
+	Attempts  int
+	UpdatedAt int64
+}
+
+// LazyEnqueueDecision reports whether GET /hls should enqueue packaging for a
+// status that is not ready yet:
+//   - no status at all -> yes (never enqueued: old upload, missed webhook,
+//     expired status) unless lazy enqueue is disabled;
+//   - failed + retryable + attempts left -> yes, after a cooldown so a broken
+//     file cannot trigger a transcode storm;
+//   - queued/processing/unsupported/ready -> no (a job already exists or the
+//     source is not packageable; a ready descriptor is reused).
+func LazyEnqueueDecision(in LazyEnqueueInput, enabled bool, maxAttempts int, now int64) bool {
+	if !enabled {
+		return false
+	}
+	switch in.Status {
+	case "":
+		return true
+	case hlsStateFailed:
+		if !in.Retryable || in.Attempts >= maxAttempts {
+			return false
+		}
+		return now-in.UpdatedAt >= int64(hlsFailedRetryCooldown/time.Second)
+	default:
+		return false
+	}
 }
 
 // NewBindValue returns a fresh opaque session-binding value for the hls_ctx

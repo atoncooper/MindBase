@@ -108,12 +108,16 @@ type PayMembershipEventPage struct {
 	PageSize int                      `json:"pageSize"`
 }
 
-// PayProductItem is one SKU row (read-only catalog).
+// PayProductItem is one SKU row of the authoritative pay_product catalog.
+// id is the CRUD handle (PUT/DELETE /api/pay/products/:id); code is immutable
+// after creation because pay_order keeps the sku_code snapshot.
 type PayProductItem struct {
+	ID           int64  `json:"id"`
 	Code         string `json:"code"`
 	Title        string `json:"title"`
 	DurationDays int    `json:"durationDays"`
 	PriceCents   int64  `json:"priceCents"`
+	Tier         string `json:"tier"`
 	Status       string `json:"status"`
 	Sort         int    `json:"sort"`
 	CreatedAt    string `json:"createdAt"`
@@ -123,6 +127,33 @@ type PayProductItem struct {
 // PayProductList is the GET /api/pay/products body.
 type PayProductList struct {
 	Items []PayProductItem `json:"items"`
+}
+
+// PayProductWriteRequest is the POST /api/pay/products body (also the PUT
+// /api/pay/products/:id body: PUT is a full replacement except that code must
+// equal the existing code). priceCents is integer cents, never floats.
+type PayProductWriteRequest struct {
+	Code         string `json:"code"`
+	Title        string `json:"title"`
+	DurationDays int    `json:"durationDays"`
+	PriceCents   int64  `json:"priceCents"`
+	Tier         string `json:"tier"`
+	Status       string `json:"status"`
+	Sort         int    `json:"sort"`
+}
+
+// PayProductDetail is the POST / PUT success body.
+type PayProductDetail struct {
+	Product PayProductItem `json:"product"`
+}
+
+// PayProductDeleteResult is the DELETE success body. Result is "deleted" for a
+// hard delete (no pay_order references the SKU) or "disabled" when the row was
+// kept as history and marked DISABLED instead (orders reference it, or it is
+// the last active SKU).
+type PayProductDeleteResult struct {
+	Result  string          `json:"result"`
+	Product *PayProductItem `json:"product,omitempty"`
 }
 
 // PayGrantResult is the POST /api/pay/grants success body.

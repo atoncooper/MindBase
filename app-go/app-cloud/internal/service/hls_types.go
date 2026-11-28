@@ -22,7 +22,12 @@ const (
 	hlsPlaylistKey   = "index.m3u8"
 	hlsMasterKey     = "master.m3u8"
 
-	hlsStatusTTL   = 7 * 24 * time.Hour
+	// Status TTL is both the cache lifetime and the "already packaged" memory.
+	// 30 days (refreshed on every successful playback descriptor mint) keeps a
+	// watched file from being re-packaged just because it sat idle for a week;
+	// once it does expire, GET /hls lazily re-enqueues instead of faking a
+	// perpetual "processing" state. Output objects live in MinIO regardless.
+	hlsStatusTTL   = 30 * 24 * time.Hour
 	hlsJobKeyTTL   = 24 * time.Hour
 	hlsGoneTTL     = 24 * time.Hour
 	hlsAttemptsTTL = 24 * time.Hour
@@ -34,6 +39,13 @@ const (
 	hlsStateReady       = "ready"
 	hlsStateFailed      = "failed"
 	hlsStateUnsupported = "unsupported"
+	// hlsStateNotStarted is a truthful "there is no packaging job" answer:
+	// the video was never enqueued and lazy enqueue is disabled. It is NOT a
+	// transient state, so clients should keep playing the original MP4.
+	hlsStateNotStarted = "not_started"
+	// hlsStateUnknown means packaging state could not be read (Redis failure).
+	// Reported instead of pretending the file is being packaged.
+	hlsStateUnknown = "unknown"
 
 	// Coarse progress percentages (status transitions; no per-frame ffmpeg
 	// progress parsing on purpose — the stage is what the viewer needs).

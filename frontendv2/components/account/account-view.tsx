@@ -290,7 +290,13 @@ export function AccountView() {
             case "quota":
                 return <QuotaSection quota={quotaSummary} />;
             case "coding-plan":
-                return <CodingPlanCard membership={membership} onToast={flash} />;
+                return (
+                    <CodingPlanCard
+                        membership={membership}
+                        quota={quotaSummary}
+                        onToast={flash}
+                    />
+                );
             default:
                 return null;
         }

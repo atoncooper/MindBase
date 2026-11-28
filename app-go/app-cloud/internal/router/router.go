@@ -72,6 +72,7 @@ func New(d Deps) *gin.Engine {
 	e.Use(middleware.Metrics())
 
 	registerCloud(e, d)
+	registerBatchRoutes(e, d)
 	registerWorkspaces(e, d)
 	registerInternalCloudAI(e, d)
 	registerMinioEvents(e, d)

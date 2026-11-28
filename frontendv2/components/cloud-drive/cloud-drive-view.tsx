@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { FolderSidebar } from "./folder-sidebar";
 import {
     FileToolbar,
+    type ToolbarSelection,
     type ViewMode,
     type SortField,
     type SortOrder,
@@ -38,13 +39,15 @@ import { FileGrid } from "./file-grid";
 import { FileInspector } from "./file-inspector";
 import { RefInspector } from "./ref-inspector";
 import { ResearchFilesDialog } from "./research-files-dialog";
-import { ShareDialog } from "./share-dialog";
+import { ShareDialog, type ShareFileTarget } from "./share-dialog";
 import { formatBytes, type CloudQuotaResponse, type CloudTrashItem } from "@/lib/api/cloud";
 import { UploadDropzone, UploadProgressPill } from "./upload-dropzone";
 import { FileListSkeleton, NoFiles } from "./empty-states";
 import { emitAppToast } from "@/lib/app-toast";
 
 const PAGE_SIZE = 50;
+// 与后端 service.MaxBatchItems 对齐：单次批量操作上限（超限后端 422，这里提前提示）。
+const MAX_BULK_ITEMS = 200;
 
 export function CloudDriveView() {
     const router = useRouter(); // 引用预览跳转 /cloud-drive/refs/[id]
@@ -69,6 +72,10 @@ export function CloudDriveView() {
 
     // ── Selection / detail ──
     const [selectedUuid, setSelectedUuid] = useState<string | null>(null);
+    // 多选：uploadUuid 集合（列表 / 网格 / 回收站共用；行点击仍打开预览）
+    const [selectedUuids, setSelectedUuids] = useState<Set<string>>(new Set());
+    // shift 连选的锚点（最近一次点击/勾选的文件）
+    const lastSelectedUuidRef = useRef<string | null>(null);
 
     // ── app-cloud 新能力：配额 / 搜索 / 回收站 / 分享 ──
     const [quota, setQuota] = useState<CloudQuotaResponse | null>(null);
@@ -101,6 +108,8 @@ export function CloudDriveView() {
     const [deleteRefTarget, setDeleteRefTarget] = useState<RefItem | null>(null);
     // 文件夹分享目标（folder-sidebar 入口；null = 文件分享模式）
     const [folderShareTarget, setFolderShareTarget] = useState<CloudFolderTreeItem | null>(null);
+    // 多选分享目标快照：打开弹窗时锁定文件列表，避免随后选择变化导致弹窗内容漂移
+    const [shareFiles, setShareFiles] = useState<ShareFileTarget[]>([]);
 
     // ── Preferences (persisted) ──
     const [view, setView] = useState<ViewMode>(() => readPref("cloud-drive:view", "list") as ViewMode);
@@ -126,6 +135,10 @@ export function CloudDriveView() {
     // ── Dialogs ──
     const [deleteFolderTarget, setDeleteFolderTarget] = useState<CloudFolderTreeItem | null>(null);
     const [deleteFileUuid, setDeleteFileUuid] = useState<string | null>(null);
+    // 批量确认弹窗（多选删除 / 回收站批量恢复 / 批量彻底删除）
+    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+    const [bulkRestoreOpen, setBulkRestoreOpen] = useState(false);
+    const [bulkPurgeOpen, setBulkPurgeOpen] = useState(false);
     const [busyAction, setBusyAction] = useState(false);
     // 手机端文件夹抽屉（md 以上为常驻侧栏，此状态不生效）
     const [foldersOpen, setFoldersOpen] = useState(false);
@@ -165,6 +178,11 @@ export function CloudDriveView() {
                 setVideos((prev) => (append ? [...prev, ...res.videos] : res.videos));
                 setPage(res.page);
                 setHasMore(res.hasMore);
+                // 整页刷新（换文件夹/排序/上传/删除后）清空多选，避免残留已不可见的 uuid。
+                if (!append) {
+                    setSelectedUuids(new Set());
+                    lastSelectedUuidRef.current = null;
+                }
                 // Seed the processing-poll set from any in-flight items.
                 const inflight = res.videos
                     .filter((v) => v.vectorStatus === "processing" || v.asrStatus === "processing")
@@ -322,6 +340,8 @@ export function CloudDriveView() {
         setSelectedFolderId(id);
         setSelectedUuid(null);
         setSelectedRefId(null);
+        setSelectedUuids(new Set());
+        lastSelectedUuidRef.current = null;
     }, []);
 
     const handleSelectFile = useCallback((uuid: string) => {
@@ -464,6 +484,12 @@ export function CloudDriveView() {
                 setDetail(null);
             }
             setVideos((prev) => prev.filter((v) => v.uploadUuid !== uuid));
+            setSelectedUuids((prev) => {
+                if (!prev.has(uuid)) return prev;
+                const next = new Set(prev);
+                next.delete(uuid);
+                return next;
+            });
             await refreshFolders();
             void cloudApi.listTrash().then((res) => setTrashCount(res.total)).catch(() => {});
         } catch {
@@ -611,10 +637,18 @@ export function CloudDriveView() {
         });
         setSearchQ("");
         setSearchResults(null);
+        setSelectedUuids(new Set());
+        lastSelectedUuidRef.current = null;
     }, [refreshTrash]);
 
     const handleRestore = useCallback(async (uuid: string) => {
         await cloudApi.restoreTrash(uuid);
+        setSelectedUuids((prev) => {
+            if (!prev.has(uuid)) return prev;
+            const next = new Set(prev);
+            next.delete(uuid);
+            return next;
+        });
         await refreshTrash();
         await refreshVideos(selectedFolderId, 1, false);
         await refreshFolders();
@@ -622,6 +656,12 @@ export function CloudDriveView() {
 
     const handlePurge = useCallback(async (uuid: string) => {
         await cloudApi.purgeTrashItem(uuid);
+        setSelectedUuids((prev) => {
+            if (!prev.has(uuid)) return prev;
+            const next = new Set(prev);
+            next.delete(uuid);
+            return next;
+        });
         await refreshTrash();
     }, [refreshTrash]);
 
@@ -643,6 +683,256 @@ export function CloudDriveView() {
         selectedFolderId == null
             ? "全部文件"
             : findFolderName(folders, selectedFolderId) ?? "文件夹";
+
+    // ── 多选：可见顺序 / 全选 / 连选 / 批量动作（列表、网格、回收站共用）──
+    // 文件名解析：分享弹窗需要每个选中文件的显示名（列表 / 搜索 / 回收站 / 详情）。
+    const fileNameFor = useCallback(
+        (uuid: string): string => {
+            const inList =
+                videos.find((v) => v.uploadUuid === uuid) ??
+                effectiveSearchResults?.find((v) => v.uploadUuid === uuid);
+            if (inList) return inList.title || inList.originalName;
+            const inTrash = trashItems.find((t) => t.uploadUuid === uuid);
+            if (inTrash) return inTrash.originalName;
+            if (detail?.uploadUuid === uuid) return detail.title || detail.originalName;
+            return "文件";
+        },
+        [videos, effectiveSearchResults, trashItems, detail]
+    );
+
+    // 当前可见项的有序 uuid 列表 = shift 连选的范围依据（回收站 / 搜索 / 普通列表）。
+    const visibleUuids = useMemo(() => {
+        if (trashOpen) return trashItems.map((t) => t.uploadUuid);
+        if (semanticActive) return [];
+        if (effectiveSearchResults != null) return effectiveSearchResults.map((v) => v.uploadUuid);
+        return videos.map((v) => v.uploadUuid);
+    }, [trashOpen, trashItems, semanticActive, effectiveSearchResults, videos]);
+
+    const allSelected =
+        visibleUuids.length > 0 && visibleUuids.every((uuid) => selectedUuids.has(uuid));
+
+    const clearSelection = useCallback(() => {
+        setSelectedUuids(new Set());
+        lastSelectedUuidRef.current = null;
+    }, []);
+
+    const toggleSelect = useCallback((uuid: string) => {
+        setSelectedUuids((prev) => {
+            const next = new Set(prev);
+            if (next.has(uuid)) next.delete(uuid);
+            else next.add(uuid);
+            return next;
+        });
+        lastSelectedUuidRef.current = uuid;
+    }, []);
+
+    // ctrl/cmd = 切换单项；shift = 从锚点到当前项连选（范围取当前可见有序列表）。
+    const handleMultiSelect = useCallback(
+        (uuid: string, mods: { meta?: boolean; shift?: boolean }) => {
+            if (mods.shift && lastSelectedUuidRef.current) {
+                const anchorIndex = visibleUuids.indexOf(lastSelectedUuidRef.current);
+                const targetIndex = visibleUuids.indexOf(uuid);
+                if (anchorIndex >= 0 && targetIndex >= 0) {
+                    const lo = Math.min(anchorIndex, targetIndex);
+                    const hi = Math.max(anchorIndex, targetIndex);
+                    setSelectedUuids((prev) => {
+                        const next = new Set(prev);
+                        for (let i = lo; i <= hi; i += 1) {
+                            const item = visibleUuids[i];
+                            if (item) next.add(item);
+                        }
+                        return next;
+                    });
+                    return;
+                }
+            }
+            toggleSelect(uuid);
+        },
+        [visibleUuids, toggleSelect]
+    );
+
+    const toggleSelectAll = useCallback(() => {
+        setSelectedUuids(() => (allSelected ? new Set<string>() : new Set(visibleUuids)));
+    }, [allSelected, visibleUuids]);
+
+    // 选择随「列表身份」清空：换文件夹 / 排序 / 搜索模式或关键词 / 回收站切换。
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSelectedUuids(new Set());
+        lastSelectedUuidRef.current = null;
+    }, [selectedFolderId, sort, order, searchMode, trimmedSearchQ, trashOpen]);
+
+    // 批量操作结果提示：全部成功 / 部分失败 / 全部失败（带首个失败原因）。
+    const toastBatchResult = useCallback(
+        (
+            action: string,
+            res: { succeeded: number; failed: number; results: { ok: boolean; detail?: string }[] }
+        ) => {
+            if (res.failed === 0) {
+                emitAppToast("success", action + "成功 " + res.succeeded + " 项");
+                return;
+            }
+            if (res.succeeded === 0) {
+                const first = res.results.find((item) => item.detail)?.detail ?? "请稍后重试";
+                emitAppToast("error", action + "失败：" + first);
+                return;
+            }
+            emitAppToast(
+                "warning",
+                action + "完成：成功 " + res.succeeded + " 项，失败 " + res.failed + " 项"
+            );
+        },
+        []
+    );
+
+    // 批量动作前置守卫：超过后端上限时直接提示分批，避免 422。
+    const tooManySelected = useCallback((uuids: string[]): boolean => {
+        if (uuids.length <= MAX_BULK_ITEMS) return false;
+        emitAppToast(
+            "warning",
+            "单次最多操作 " + MAX_BULK_ITEMS + " 个文件，请分批处理（当前已选 " + uuids.length + " 项）"
+        );
+        return true;
+    }, []);
+
+    const handleBulkDelete = useCallback(async () => {
+        const uuids = Array.from(selectedUuids);
+        if (uuids.length === 0) return;
+        if (tooManySelected(uuids)) return;
+        setBusyAction(true);
+        try {
+            const res = await cloudApi.batchDeleteVideos(uuids);
+            const deleted = new Set(
+                res.results.filter((item) => item.ok).map((item) => item.uploadUuid)
+            );
+            setVideos((prev) => prev.filter((v) => !deleted.has(v.uploadUuid)));
+            setSearchResults((prev) =>
+                prev ? prev.filter((v) => !deleted.has(v.uploadUuid)) : prev
+            );
+            if (selectedUuid && deleted.has(selectedUuid)) {
+                setSelectedUuid(null);
+                setDetail(null);
+            }
+            clearSelection();
+            setBulkDeleteOpen(false);
+            toastBatchResult("删除", res);
+            await refreshFolders();
+            void cloudApi
+                .listTrash()
+                .then((trash) => setTrashCount(trash.total))
+                .catch(() => {});
+        } catch (e) {
+            emitAppToast(
+                "error",
+                e instanceof Error ? "删除失败：" + e.message : "删除失败，请重试"
+            );
+        } finally {
+            setBusyAction(false);
+        }
+    }, [
+        selectedUuids,
+        selectedUuid,
+        clearSelection,
+        toastBatchResult,
+        refreshFolders,
+        tooManySelected,
+    ]);
+
+    const handleBulkRestore = useCallback(async () => {
+        const uuids = Array.from(selectedUuids);
+        if (uuids.length === 0) return;
+        if (tooManySelected(uuids)) return;
+        setBusyAction(true);
+        try {
+            const res = await cloudApi.batchRestoreTrash(uuids);
+            clearSelection();
+            setBulkRestoreOpen(false);
+            toastBatchResult("恢复", res);
+            await refreshTrash();
+            await refreshVideos(selectedFolderId, 1, false);
+            await refreshFolders();
+        } catch (e) {
+            emitAppToast(
+                "error",
+                e instanceof Error ? "恢复失败：" + e.message : "恢复失败，请重试"
+            );
+        } finally {
+            setBusyAction(false);
+        }
+    }, [
+        selectedUuids,
+        clearSelection,
+        toastBatchResult,
+        refreshTrash,
+        refreshVideos,
+        selectedFolderId,
+        refreshFolders,
+        tooManySelected,
+    ]);
+
+    const handleBulkPurge = useCallback(async () => {
+        const uuids = Array.from(selectedUuids);
+        if (uuids.length === 0) return;
+        if (tooManySelected(uuids)) return;
+        setBusyAction(true);
+        try {
+            const res = await cloudApi.batchPurgeTrash(uuids);
+            clearSelection();
+            setBulkPurgeOpen(false);
+            toastBatchResult("彻底删除", res);
+            await refreshTrash();
+        } catch (e) {
+            emitAppToast(
+                "error",
+                e instanceof Error ? "彻底删除失败：" + e.message : "彻底删除失败，请重试"
+            );
+        } finally {
+            setBusyAction(false);
+        }
+    }, [selectedUuids, clearSelection, toastBatchResult, refreshTrash, tooManySelected]);
+
+    // 分享按钮：多选优先（快照当前选择）；仅单选时回落到详情面板选中的文件。
+    const handleShareClick = useCallback(() => {
+        if (trashOpen) return;
+        if (selectedUuids.size > 0) {
+            const files = Array.from(selectedUuids).map((uuid) => ({
+                uploadUuid: uuid,
+                name: fileNameFor(uuid),
+            }));
+            setShareFiles(files);
+            setFolderShareTarget(null);
+            setShareOpen(true);
+            return;
+        }
+        if (!selectedUuid) return;
+        setShareFiles([{ uploadUuid: selectedUuid, name: fileNameFor(selectedUuid) }]);
+        setFolderShareTarget(null);
+        setShareOpen(true);
+    }, [trashOpen, selectedUuids, selectedUuid, fileNameFor]);
+
+    const toolbarSelection = useMemo<ToolbarSelection | undefined>(() => {
+        if (semanticActive || visibleUuids.length === 0) return undefined;
+        return {
+            count: selectedUuids.size,
+            selectableCount: visibleUuids.length,
+            allSelected,
+            trashMode: trashOpen,
+            busy: busyAction,
+            onToggleAll: toggleSelectAll,
+            onClear: clearSelection,
+            onDelete: () => (trashOpen ? setBulkPurgeOpen(true) : setBulkDeleteOpen(true)),
+            onRestore: trashOpen ? () => setBulkRestoreOpen(true) : undefined,
+        };
+    }, [
+        semanticActive,
+        visibleUuids.length,
+        selectedUuids,
+        allSelected,
+        trashOpen,
+        busyAction,
+        toggleSelectAll,
+        clearSelection,
+    ]);
 
     const closeInspector = useCallback(() => {
         setSelectedUuid(null);
@@ -713,6 +1003,7 @@ export function CloudDriveView() {
                     onRenameFolder={handleRenameFolder}
                     onDeleteFolder={setDeleteFolderTarget}
                     onShareFolder={(folder) => {
+                        setShareFiles([]);
                         setFolderShareTarget(folder);
                         setShareOpen(true);
                     }}
@@ -735,7 +1026,7 @@ export function CloudDriveView() {
             <main className="flex min-w-0 flex-1 flex-col bg-background">
                 <UploadDropzone onFiles={(files) => void handleFiles(files)}>
                     <FileToolbar
-                        title={currentFolderName}
+                        title={trashOpen ? "回收站" : currentFolderName}
                         onOpenFolders={() => setFoldersOpen(true)}
                         view={view}
                         onViewChange={setView}
@@ -761,8 +1052,11 @@ export function CloudDriveView() {
                         semanticOnlyFolder={semanticOnlyFolder}
                         onSemanticOnlyFolderChange={setSemanticOnlyFolder}
                         semanticFolderDisabled={selectedFolderId == null}
-                        canShare={selectedUuid != null}
-                        onShareClick={() => setShareOpen(true)}
+                        canShare={
+                            !trashOpen && (selectedUuids.size > 0 || selectedUuid != null)
+                        }
+                        onShareClick={handleShareClick}
+                        selection={toolbarSelection}
                     />
                     <div className="flex-1 overflow-y-auto">
                         {trashOpen ? (
@@ -774,7 +1068,16 @@ export function CloudDriveView() {
                                 <ul className="divide-y divide-border-subtle px-5">
                                     {trashItems.map((t) => (
                                         <li key={t.uploadUuid} className="flex items-center justify-between py-2.5">
-                                            <div className="min-w-0">
+                                            <label className="mr-2 flex shrink-0 cursor-pointer items-center">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedUuids.has(t.uploadUuid)}
+                                                    onChange={() => toggleSelect(t.uploadUuid)}
+                                                    aria-label={`选择 ${t.originalName}`}
+                                                    className="h-3.5 w-3.5 cursor-pointer rounded border-border-subtle accent-[var(--color-accent)]"
+                                                />
+                                            </label>
+                                            <div className="min-w-0 flex-1">
                                                 <p className="truncate text-[13px] text-foreground">{t.originalName}</p>
                                                 <p className="text-[11px] text-tertiary">
                                                     {formatBytes(t.fileSize)}
@@ -822,6 +1125,9 @@ export function CloudDriveView() {
                                     videos={effectiveSearchResults}
                                     selectedUuid={selectedUuid}
                                     onSelect={handleSelectFile}
+                                    selectedUuids={selectedUuids}
+                                    onToggleSelect={toggleSelect}
+                                    onMultiSelect={handleMultiSelect}
                                     onRenameFile={(uuid, name) => {
                                         setRenameError(null);
                                         setRenameTarget({ uuid, name });
@@ -840,6 +1146,9 @@ export function CloudDriveView() {
                                 videos={videos}
                                 selectedUuid={selectedUuid}
                                 onSelect={handleSelectFile}
+                                selectedUuids={selectedUuids}
+                                onToggleSelect={toggleSelect}
+                                onMultiSelect={handleMultiSelect}
                                 onRenameFile={(uuid, name) => {
                                     setRenameError(null);
                                     setRenameTarget({ uuid, name });
@@ -857,6 +1166,9 @@ export function CloudDriveView() {
                                 videos={videos}
                                 selectedUuid={selectedUuid}
                                 onSelect={handleSelectFile}
+                                selectedUuids={selectedUuids}
+                                onToggleSelect={toggleSelect}
+                                onMultiSelect={handleMultiSelect}
                                 onRenameFile={(uuid, name) => {
                                     setRenameError(null);
                                     setRenameTarget({ uuid, name });
@@ -1011,6 +1323,41 @@ export function CloudDriveView() {
                 onCancel={() => (busyAction ? undefined : setDeleteFileUuid(null))}
             />
 
+            {/* 批量删除确认（多选 → 移入回收站） */}
+            <ConfirmDialog
+                open={bulkDeleteOpen}
+                title="删除选中的文件？"
+                message={`已选 ${selectedUuids.size} 个文件将移入回收站，30 天后自动彻底删除；期间可随时恢复。`}
+                confirmLabel="移入回收站"
+                danger
+                busy={busyAction}
+                onConfirm={() => void handleBulkDelete()}
+                onCancel={() => (busyAction ? undefined : setBulkDeleteOpen(false))}
+            />
+
+            {/* 批量恢复确认（回收站） */}
+            <ConfirmDialog
+                open={bulkRestoreOpen}
+                title="恢复选中的文件？"
+                message={`已选 ${selectedUuids.size} 个文件将恢复到各自原文件夹。`}
+                confirmLabel="恢复"
+                busy={busyAction}
+                onConfirm={() => void handleBulkRestore()}
+                onCancel={() => (busyAction ? undefined : setBulkRestoreOpen(false))}
+            />
+
+            {/* 批量彻底删除确认（回收站，不可恢复） */}
+            <ConfirmDialog
+                open={bulkPurgeOpen}
+                title="彻底删除选中的文件？"
+                message={`已选 ${selectedUuids.size} 个文件将被永久删除（含云端文件与检索数据），此操作不可撤销。`}
+                confirmLabel="彻底删除"
+                danger
+                busy={busyAction}
+                onConfirm={() => void handleBulkPurge()}
+                onCancel={() => (busyAction ? undefined : setBulkPurgeOpen(false))}
+            />
+
             {/* Delete ref confirm（引用删除只动引用，不影响原文件/原文件夹） */}
             <ConfirmDialog
                 open={deleteRefTarget !== null}
@@ -1027,24 +1374,24 @@ export function CloudDriveView() {
                 onCancel={() => (busyAction ? undefined : setDeleteRefTarget(null))}
             />
 
-            {/* Share dialog（文件 / 文件夹两种 target） */}
+            {/* Share dialog（文件夹 / 单文件 / 多选批量分享三种 target） */}
             <ShareDialog
                 open={shareOpen}
                 target={
                     folderShareTarget
-                        ? { type: "folder", folderId: folderShareTarget.id }
-                        : selectedUuid
-                          ? { type: "file", uploadUuid: selectedUuid }
+                        ? {
+                              type: "folder",
+                              folderId: folderShareTarget.id,
+                              name: folderShareTarget.name,
+                          }
+                        : shareFiles.length > 0
+                          ? { type: "file", files: shareFiles }
                           : null
-                }
-                fileName={
-                    folderShareTarget
-                        ? folderShareTarget.name
-                        : (detail?.originalName ?? "文件")
                 }
                 onClose={() => {
                     setShareOpen(false);
                     setFolderShareTarget(null);
+                    setShareFiles([]);
                 }}
             />
 

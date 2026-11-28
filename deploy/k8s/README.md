@@ -186,7 +186,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | 数据持久化 | named volumes | PVC（mysql 10Gi×3、mongo 10Gi、redis 5Gi、etcd 5Gi、minio 20Gi、milvus 20Gi、neo4j 10Gi、higress 5Gi）；服务日志与 nginx 缓存为 emptyDir |
 | 环境变量分层 | `env_file: .env` + compose `${VAR:-default}` | envFrom 两层（见 §1c）；`$(VAR)` 派生改 in-list 模式 |
 
-| 沙箱运行时 | compose `--profile sandbox` + 可选 fake runtime | OpenSandbox Helm（40-sandbox）；`app-sandbox` 强制 `runtime.type=opensandbox` + warm pool `pool-python` |
+| 沙箱运行时 | compose 默认启动（app-sandbox + sandbox-tls + opensandbox-server）+ 可选 fake runtime | OpenSandbox Helm（40-sandbox）；`app-sandbox` 强制 `runtime.type=opensandbox` + warm pool `pool-python` |
 | 探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
 redis-cli ping / etcdctl endpoint health / minio health/live / backend /health）；
 无 HTTP 健康端点的 TLS 服务（app-pay）用 tcpSocket 探活；app-content 单端口 8004（HTTPS）的 startup/readiness/liveness 都用 httpGet + `scheme: HTTPS` 探同一个 `/health`（kubelet 探针不校验证书）；

@@ -32,6 +32,12 @@ interface FileListProps {
     onDeleteRef?: (id: number) => void;
     /** 行内重命名（文件，不含引用） */
     onRenameFile?: (uuid: string, name: string) => void;
+    /** 多选：已选 uploadUuid 集合（缺省 = 不渲染复选框） */
+    selectedUuids?: ReadonlySet<string>;
+    /** 复选框切换（不打开预览） */
+    onToggleSelect?: (uuid: string) => void;
+    /** ctrl/cmd 或 shift 点击：交给上层做切换 / 连选（不打开预览） */
+    onMultiSelect?: (uuid: string, mods: { meta?: boolean; shift?: boolean }) => void;
 }
 
 export function FileList({
@@ -46,12 +52,16 @@ export function FileList({
     onSelectRef,
     onDeleteRef,
     onRenameFile,
+    selectedUuids,
+    onToggleSelect,
+    onMultiSelect,
 }: FileListProps) {
     return (
         <div className="p-3">
             <ul className="space-y-0.5">
                 {videos.map((v) => {
                     const active = selectedUuid === v.uploadUuid;
+                    const selected = selectedUuids?.has(v.uploadUuid) ?? false;
                     return (
                         <li key={v.uploadUuid} className="relative">
                             {active && (
@@ -60,7 +70,18 @@ export function FileList({
                             <div
                                 role="button"
                                 tabIndex={0}
-                                onClick={() => onSelect(v.uploadUuid)}
+                                onClick={(e) => {
+                                    // ctrl/cmd = 切换选中，shift = 连选；其余照旧打开预览。
+                                    if ((e.metaKey || e.ctrlKey || e.shiftKey) && onMultiSelect) {
+                                        e.preventDefault();
+                                        onMultiSelect(v.uploadUuid, {
+                                            meta: e.metaKey || e.ctrlKey,
+                                            shift: e.shiftKey,
+                                        });
+                                        return;
+                                    }
+                                    onSelect(v.uploadUuid);
+                                }}
                                 onKeyDown={(e) => {
                                     if (e.key === "Enter" || e.key === " ") {
                                         e.preventDefault();
@@ -71,9 +92,22 @@ export function FileList({
                                     "group flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition-colors",
                                     active
                                         ? "bg-accent-soft"
-                                        : "hover:bg-border-subtle/70"
+                                        : selected
+                                          ? "bg-accent-soft/60"
+                                          : "hover:bg-border-subtle/70"
                                 )}
                             >
+                                {onToggleSelect && (
+                                    <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onKeyDown={(e) => e.stopPropagation()}
+                                        onChange={() => onToggleSelect(v.uploadUuid)}
+                                        aria-label={`选择 ${v.title || v.originalName}`}
+                                        className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-border-subtle accent-[var(--color-accent)]"
+                                    />
+                                )}
                                 <FileIconTile mimeType={v.mimeType} size="sm" />
                                 <div className="min-w-0 flex-1">
                                     <p

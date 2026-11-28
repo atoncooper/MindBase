@@ -23,6 +23,10 @@ interface Props {
     /** Presigned URL lifetime from GET /cloud/video/:uuid/raw. */
     expiresIn?: number;
     onUrlChange?: (url: string) => void;
+    /** Called with the playback position (seconds) while playing. */
+    onProgress?: (currentTime: number) => void;
+    /** Initial playback position (seconds); default 0. */
+    startAt?: number;
     /** Fill the parent's full width/height (full-screen cloud-drive viewer). */
     fill?: boolean;
 }
@@ -37,7 +41,15 @@ interface ResumeState {
 
 type PlayerState = "loading" | "ready" | "error";
 
-export function CloudVideoPlayer({ uuid, initialUrl, expiresIn = 3600, onUrlChange, fill = false }: Props) {
+export function CloudVideoPlayer({
+    uuid,
+    initialUrl,
+    expiresIn = 3600,
+    onUrlChange,
+    onProgress,
+    startAt = 0,
+    fill = false,
+}: Props) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [src, setSrc] = useState(initialUrl);
@@ -128,8 +140,21 @@ export function CloudVideoPlayer({ uuid, initialUrl, expiresIn = 3600, onUrlChan
 
     const handleLoadedMetadata = useCallback(() => {
         const video = videoRef.current;
+        if (!video) return;
+        // First mount: honour the requested start position (switch back from
+        // HLS keeps the user where they were).
+        if (startAt > 0 && !resumeRef.current && video.currentTime < startAt - 0.5) {
+            try {
+                video.currentTime = Math.min(startAt, Math.max(0, (video.duration || startAt) - 0.05));
+            } catch {
+                /* ignore seek failure; playback still starts at 0 */
+            }
+        }
         const resume = resumeRef.current;
-        if (!video || !resume) return;
+        if (!resume) {
+            setState("ready");
+            return;
+        }
         try {
             const duration = Number.isFinite(video.duration) ? video.duration : resume.time;
             video.currentTime = Math.min(Math.max(0, resume.time), Math.max(0, duration - 0.05));
@@ -146,7 +171,7 @@ export function CloudVideoPlayer({ uuid, initialUrl, expiresIn = 3600, onUrlChan
         }
         resumeRef.current = null;
         setState("ready");
-    }, []);
+    }, [startAt]);
 
     const retryNow = useCallback(() => {
         retries.current = 0;
@@ -176,6 +201,7 @@ export function CloudVideoPlayer({ uuid, initialUrl, expiresIn = 3600, onUrlChan
                         : "mx-auto block max-h-[75dvh] w-full bg-black object-contain"
                 }
                 onLoadedMetadata={handleLoadedMetadata}
+                onTimeUpdate={(event) => onProgress?.(event.currentTarget.currentTime)}
                 onCanPlay={() => setState("ready")}
                 onPlaying={() => setState("ready")}
                 onWaiting={() => setState("loading")}

@@ -19,6 +19,8 @@ interface Props {
     /** Same-origin poster rendered during packaging (optional). */
     posterUrl?: string;
     expiresIn?: number;
+    /** Initial playback position (seconds), for switching from the raw video. */
+    startAt?: number;
     onFallback: (reason: string) => void;
     /** Fill the parent's full width/height (full-screen cloud-drive viewer). */
     fill?: boolean;
@@ -26,11 +28,20 @@ interface Props {
 
 type PlayerState = "loading" | "ready" | "error";
 
-export function HlsVideoPlayer({ uuid, playlistUrl, posterUrl, expiresIn = 3600, onFallback, fill = false }: Props) {
+export function HlsVideoPlayer({
+    uuid,
+    playlistUrl,
+    posterUrl,
+    expiresIn = 3600,
+    startAt = 0,
+    onFallback,
+    fill = false,
+}: Props) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const hlsRef = useRef<Hls | null>(null);
     const retriesRef = useRef(0);
+    const startAppliedRef = useRef(false);
     const [state, setState] = useState<PlayerState>("loading");
     const [message, setMessage] = useState("");
 
@@ -124,6 +135,20 @@ export function HlsVideoPlayer({ uuid, playlistUrl, posterUrl, expiresIn = 3600,
         };
     }, [onFallback, playlistUrl, refreshToken]);
 
+    // Resume where the raw player was when the user switched to HLS (only on
+    // the first metadata load; later token refreshes must not move the cursor).
+    const applyStartAt = useCallback(() => {
+        const video = videoRef.current;
+        if (!video || startAppliedRef.current) return;
+        startAppliedRef.current = true;
+        if (startAt <= 0) return;
+        try {
+            video.currentTime = Math.min(startAt, Math.max(0, (video.duration || startAt) - 0.05));
+        } catch {
+            /* ignore seek failure; HLS playback still starts at 0 */
+        }
+    }, [startAt]);
+
     const retryNow = useCallback(() => {
         const video = videoRef.current;
         if (!video) return;
@@ -155,6 +180,7 @@ export function HlsVideoPlayer({ uuid, playlistUrl, posterUrl, expiresIn = 3600,
                         ? "block h-full w-full bg-black object-contain"
                         : "mx-auto block max-h-[75dvh] w-full bg-black object-contain"
                 }
+                onLoadedMetadata={applyStartAt}
                 onCanPlay={() => setState("ready")}
                 onPlaying={() => setState("ready")}
                 onWaiting={() => setState("loading")}

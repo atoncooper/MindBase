@@ -514,6 +514,24 @@ function QuotaCard({
                         </div>
                     </>
                 )}
+                {quota?.codingPlan &&
+                    (quota.codingPlan.dayTokens > 0 ||
+                        quota.codingPlan.monthTokens > 0) && (
+                        <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-border-subtle pt-3">
+                            <div className="min-w-0">
+                                <span className="block text-[12px] text-secondary">
+                                    Coding Plan 已用 token（今日 / 本月）
+                                </span>
+                                <span className="mt-0.5 block text-[11px] text-tertiary">
+                                    由你自己的套餐支付，不计入平台 Credits。
+                                </span>
+                            </div>
+                            <span className="text-[13px] font-medium tabular-nums text-foreground">
+                                {formatTokens(quota.codingPlan.dayTokens)} /{" "}
+                                {formatTokens(quota.codingPlan.monthTokens)}
+                            </span>
+                        </div>
+                    )}
             </div>
         </AccountCard>
     );

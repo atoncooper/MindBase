@@ -62,7 +62,17 @@
 - 属主可**随时查看明文**（列表接口解密返回）；legacy 哈希行不可逆，前端提供**重设提取码**（`PATCH /cloud/shares/{id}/code`，链接/token 不变只换码）。
 - 可选下载上限 `max_downloads`（弹窗可填），超限后 access 直接 404。
 
-### 审核（云盘分享，先分享后审核）
+### 多选分享 / 批量删除（云盘，2026-11）
+
+- 云盘文件列表 / 网格支持多选后批量分享：弹窗配置一次（提取码 / 有效期 / 下载上限 + 两个合规确认），
+  前端对每个选中文件**顺序**调用单文件分享端点，**每个文件一条独立分享链接**（`cloud_shares.file_id`
+  仍是单文件，无多文件分享行、无 schema 变更）。
+- 弹窗逐文件展示创建结果：可复制单个链接 / 复制全部 / 对失败项单独重试；合规确认闸门与单文件分享一致
+  （后端 `legalAck` + `contentReviewAck` 强制 422）。
+- 回收站同样支持多选恢复 / 多选彻底删除（`POST /cloud/trash/batch-restore` / `POST /cloud/trash/batch-purge`）；
+  新批量端点详见 [app-cloud.md](app-cloud.md)「批量多选」一节。
+
+#### 审核（云盘分享，先分享后审核）
 
 - 分享创建后默认 `active`（进管理台待审核列表）；管理员在 **app-admin** 后台放行 / 封杀 / 解封。
 - **封杀 = 公开访问统一 404**（app-cloud `ResolveShare` 把 `banned` 与 `is_revoked` 同等处理），已保存的「引用」也立即失效；`is_revoked` 只属主可改，两者语义独立。

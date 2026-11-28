@@ -28,7 +28,7 @@ SANDBOX_BASE_URL=http://apisix:9080/internal/sandbox
 SANDBOX_API_KEY=$APISIX_CONSUMER_KEY
 SANDBOX_ADMIN_TOKEN=<admin panel token>
 
-docker compose --profile sandbox up -d
+docker compose up -d app-sandbox sandbox-tls opensandbox-server
 ```
 
 root compose 的 `opensandbox-server` 与 `app-sandbox` 同属 `sandbox` profile：

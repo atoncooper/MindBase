@@ -60,6 +60,21 @@ if not raw then
         red:close()
         return ngx.exit(503)
     end
+    -- 兼容双库：app-cloud 把 token 写在 REDIS__URL 指向的库（当前部署 db0），
+    -- 而边缘 HLS_REDIS_DB 历史上配置为 db1。这样刚签发的 token 会一律
+    -- unknown/expired，HLS 永远 403 并回退到限速原画（实测命中）。优先读配置
+    -- 库，未命中再读 db0；把 token 隔离到 db1 的部署仍然可用，只多一次 GET。
+    if (not raw or raw == ngx.null) and db ~= 0 then
+        local dbOk2 = red:select(0)
+        if dbOk2 then
+            raw, getErr = red:get("cloud:hls:token:" .. cookie)
+            if getErr then
+                ngx.log(ngx.ERR, "[HLS] redis get failed on fallback db: ", getErr)
+                red:close()
+                return ngx.exit(503)
+            end
+        end
+    end
     red:set_keepalive(10000, 100)
 end
 

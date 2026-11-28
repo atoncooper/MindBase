@@ -1,14 +1,14 @@
 # app-admin — 统一管理后台（分享审核 + 支付运营 + 沙箱 + 账户 + 审计）
 
 > 管理后台由 `app-admin`（Nginx 静态 UI，`:3001`，仅回环）+ `app-admin-api`（Go + Gin，`:8016`，仅回环）组成；UI 经同源 `/api` 代理到 API，不经过主站公网 Nginx/APISIX。
-> **2026-11-03 起支付域合并**：原独立服务 `app-pay-admin`（Go + SSR WebUI，:8003，profile `pay-admin`）已退役，支付运营能力（订单/会员/权益事件/SKU 查询、会员补偿开通、退款复核）并入本服务；统一账户（`admin_user`）、统一会话（`admin_session`）、统一角色（`admin`/`viewer`）、统一审计（`admin_audit` + 资金 JSONL）。
-> 业务域 = 云盘分享**先分享后审核**（plan/1.0.16）+ 支付域**只读运营查询 + 两类资金写**（会员补偿开通、退款复核审批）+ 沙箱控制层管理面 + 控制台账户管理。
+> **2026-11-03 起支付域合并**：原独立服务 `app-pay-admin`（Go + SSR WebUI，:8003，profile `pay-admin`）已退役，支付运营能力（订单/会员/权益事件/SKU 管理、会员补偿开通、退款复核）并入本服务；统一账户（`admin_user`）、统一会话（`admin_session`）、统一角色（`admin`/`viewer`）、统一审计（`admin_audit` + 资金 JSONL）。
+> 业务域 = 云盘分享**先分享后审核**（plan/1.0.16）+ 支付域**只读运营查询 + 两类资金写 + SKU 目录 CRUD**（会员补偿开通、退款复核审批、商品目录为权威表可直接增删改）+ 沙箱控制层管理面 + 控制台账户管理。
 > 内容能力 = **受控预览**（Issue #154）：admin 角色可依法预览分享内文件（用户创建分享时已单独确认告知）；**无下载、绝不直连 MinIO**。
 
 ## 定位与红线
 
 - **数据访问（主库）**：直连共享 bilirag MySQL（`RDBMS__URL` 同 app-user/app-cloud）。读 `users` / `user_profile` / `rbac_user_role` / `rbac_role` / `cloud_shares` / `cloud_files` / `cloud_folders`；**写** = `cloud_shares` 的 `moderation_status/moderation_reason/moderation_time/moderation_by`（与 `admin_audit` 同事务）。
-- **数据访问（支付库）**：第二 GORM 连接直连 `app_pay`（`app-pay-mysql` 实例）。只读 `pay_order` / `pay_membership` / `pay_membership_event` / `pay_callback_log` / `pay_product` / `pay_refund_approval`；**唯一资金写** = 会员补偿开通（直写 `pay_membership` + `pay_membership_event`，同事务）；退款复核**不直写**，经 app-pay internal 端点执行。`pay_*` schema 归 Java（app-pay/Flyway）所有，**本服务绝不 AutoMigrate**（守护测试锁定：只建三张自有表，DDL 禁列包含 `pay_*`）。
+- **数据访问（支付库）**：第二 GORM 连接直连 `app_pay`（`app-pay-mysql` 实例）。只读 `pay_order` / `pay_membership` / `pay_membership_event` / `pay_callback_log` / `pay_refund_approval`；**唯一资金写** = 会员补偿开通（直写 `pay_membership` + `pay_membership_event`，同事务）；退款复核**不直写**，经 app-pay internal 端点执行。**`pay_product` 为权威 SKU 目录，本服务是唯一写入口**（admin CRUD，见「SKU 商品目录」）；`pay_*` schema 仍归 Java（app-pay/Flyway）所有，**本服务绝不 AutoMigrate**（守护测试锁定：只建三张自有表，DDL 禁列包含 `pay_*`）。
 - **支付模块关闭条件**（任一）：未配置 `pay_rdbms.url`，或 PayDB 初始化失败 → 所有 `/api/pay/**` 返回 503 `{"detail":"支付管理未配置"}`；分享审核/用户/沙箱/账户/审计不受影响。
 - **受控内容预览（Issue #154，审核员可查看）**：仅 admin 角色；app-admin 校验分享存在 + 文件在分享范围（文件分享 = 目标文件；文件夹分享 = 子树存活成员）并落 `admin_audit`（action=`preview_content`），再调 app-cloud `GET /internal/cloud/admin-review/shares/{id}/files/{fid}/preview`（Bearer 共享令牌 `APP_CLOUD_ADMIN_REVIEW_TOKEN`，两边同值）。**审核员可查看任意已存在的分享**（含 banned / 已撤销 / 已过期 / 历史未确认告知的分享）；app-cloud 只校验分享存在与文件归属范围，不校验公开可访问性。预览返回：pdf / 图片 / 音视频 → 短时效内联 URL（`/minio-proxy/...`，admin UI 内置 Nginx 同源代理到 MinIO，PDF 以 `X-Frame-Options: SAMEORIGIN` 允许同源 iframe 展示）；docx / xlsx / pptx / html / markdown / txt 等 → 后端提取的纯文本（`viewMode:"text"`，不生成对象 URL、不渲染 HTML，防存储型 XSS）；暂不支持类型 / 无文本 / 过大文件返回 422/413 并带原因。viewer 角色一律 403。
 - **app-cloud 关系**：admin API **直接查/写 MySQL**，请求不转发给 app-cloud。Compose 启动 app-cloud 是为了让其 schema owner migration 创建/补齐 `cloud_shares` 审核列；这些列已迁移后，admin 的日常查询不依赖 app-cloud 业务 API。全新库首次启动时仍需 app-cloud 完成迁移。
@@ -29,7 +29,7 @@
 | `/pay/orders`、`/pay/orders/:orderNo` | 支付订单列表（订单号/UID/交易号/状态/渠道/创建时间范围）与详情（Descriptions + 回调流水 Table） |
 | `/pay/memberships`、`/pay/memberships/:uid/events` | 会员（UID 查询 + 全量分页；行操作「权益流水」→ 单人事件流） |
 | `/pay/events` | 全局权益事件流（uid/type 筛选，ADMIN_GRANT 审计用） |
-| `/pay/products` | SKU 商品（只读；改价走 app-pay 运营改库流程） |
+| `/pay/products` | SKU 商品目录（权威表）：列表 + admin 新建/编辑/上下架/删除（有订单引用自动转为下架）；viewer 只读；状态 Tag 对齐真实 `ACTIVE`/`DISABLED`，含档位列 |
 | `/pay/grants` | 补偿开通（admin）：表单 + 结果 Alert + 最近 ADMIN_GRANT 列表 |
 | `/pay/refunds` | 退款复核（admin）：status 筛选 + approve/reject 弹窗；未配置时显示「未配置」提示 |
 | `/accounts` | 控制台账户（admin）：列表 / 新建 / 重置密码 / 删除；非 admin 显示 403 Alert 且不发请求 |
@@ -51,7 +51,7 @@
 | 可信代理 | `APPADMIN__SECURITY__TRUSTED_PROXIES`（IP/CIDR 列表）内的 TCP peer 才采信 `X-Forwarded-For/X-Forwarded-Proto`；真实客户端 IP 用于限流、审计与会话绑定。空 = 永不信任转发头 |
 | 登录限流 | IP 级 10 次失败/分钟 + 账户级 10 次失败/15 分钟（均可配），超限 429 + `Retry-After`；失败写 `login_failed` 审计，新设备/新 IP 写 `login_new_device`/`login_new_ip` |
 | IP 访问控制 | 可选精确 IP/CIDR 白名单（`APPADMIN__SECURITY__IP_ALLOWLIST`，**按 TCP peer 判断**，不采信 XFF）；空列表时仍依赖 loopback / 防火墙 / VPN / ClusterIP；`/health` 为探针豁免 |
-| 浏览器来源 | CORS 仅允许同源或显式配置的精确 Origin；不允许 `*` / `null`；预检只接受 GET/POST/DELETE 与 Content-Type / Authorization / X-Request-Id / **X-Device-Id**；浏览器非安全方法必须带允许的 Origin（CSRF 防护） |
+| 浏览器来源 | CORS 仅允许同源或显式配置的精确 Origin；不允许 `*` / `null`；预检只接受 GET/POST/PUT/DELETE 与 Content-Type / Authorization / X-Request-Id / **X-Device-Id**；浏览器非安全方法必须带允许的 Origin（CSRF 防护） |
 | 加固 | nosniff / `X-Frame-Options: DENY` / CSP `frame-ancestors 'none'` / CORP `same-origin` / COOP `same-origin` / `/api/*` no-store |
 
 IP 白名单检查应用实际看到的 TCP 对端地址，**不读取 `X-Forwarded-For`**；登录限流、会话 IP 绑定和审计则使用可信代理链路解析出的真实客户端 IP。Compose 默认把 UI 容器所在 Docker 网段（`172.16.0.0/12`）设为可信代理；两机/swarm/k8s 分别使用 overlay/pod 网段。**若改成直连 API（不经 UI Nginx）或代理网段不同，必须同步调整 `APPADMIN__SECURITY__TRUSTED_PROXIES`**，否则 API 只能看到代理地址、IP 绑定退化为代理地址。不要把管理员电脑 IP 写成 API allowlist（应用看到的是代理/隧道地址）。
@@ -78,7 +78,7 @@ IP 白名单检查应用实际看到的 TCP 对端地址，**不读取 `X-Forwar
 | POST | `/api/shares/:id/approve` | admin | → `approved` + audit |
 | GET | `/api/shares/:id/files/:file_id/preview` | admin | 受控内容预览（短时效内联授权；非分享范围/已删除 404；未配置 500；每次审计 `preview_content`） |
 | POST | `/api/logout` | 登录 | 登出当前会话 |
-| GET | `/api/audit?action=&admin=&page=&pageSize=` | viewer+ | 审计倒序（含登录失败/新设备/新 IP/会话不匹配、`pay_grant` / `pay_refund_approve` / `pay_refund_reject` / `account_*` / 沙箱写动作） |
+| GET | `/api/audit?action=&admin=&page=&pageSize=` | viewer+ | 审计倒序（含登录失败/新设备/新 IP/会话不匹配、`pay_grant` / `pay_refund_approve` / `pay_refund_reject` / `pay_product_*` / `account_*` / 沙箱写动作） |
 
 ### 支付运营（`/api/pay/**`；支付模块关闭时整组 503）
 
@@ -90,7 +90,10 @@ IP 白名单检查应用实际看到的 TCP 对端地址，**不读取 `X-Forwar
 | GET | `/api/pay/memberships?uid=` / `?page=&pageSize=` | viewer+ | 带 uid → 单个会员（无记录 `null`）；不带 uid → 分页列表（`active` 懒过期 = expireAt>now） |
 | GET | `/api/pay/memberships/:uid/events?page=&pageSize=` | viewer+ | 单人权益事件流 |
 | GET | `/api/pay/events?uid=&type=&page=&pageSize=` | viewer+ | 全局权益事件流（ADMIN_GRANT 审计用） |
-| GET | `/api/pay/products` | viewer+ | SKU 目录（只读；sort ASC,id ASC） |
+| GET | `/api/pay/products` | viewer+ | SKU 目录（sort ASC,id ASC；含 `id`/`tier`/`status`） |
+| POST | `/api/pay/products` | admin | 新建 SKU（编码唯一 → 409；校验见「SKU 商品目录」） |
+| PUT | `/api/pay/products/:id` | admin | 全量更新 SKU（`code` 不可改；最后一个在售商品不可下架 → 409） |
+| DELETE | `/api/pay/products/:id` | admin | 无 `pay_order` 引用才物理删除，否则自动转为 `DISABLED`（`{"result":"deleted"|"disabled"}`）；最后一个在售商品 → 409 |
 | POST | `/api/pay/grants` | admin | 会员补偿开通（见下节「资金写红线」） |
 | GET | `/api/pay/refunds?status=PENDING\|APPROVED\|REJECTED\|ALL&page=&pageSize=` | admin | 退款复核列表（直读 `pay_refund_approval`，id DESC）；未配置整组 404 `refund review not configured` |
 | POST | `/api/pay/refunds/:orderNo/approve` | admin | 经 app-pay internal 端点执行退款（`confirm=true`，operator=登录用户名）；上游失败 502 |
@@ -132,7 +135,26 @@ Go 侧**复刻** app-pay `MembershipService.extend` 语义：事务内 `SELECT .
 
 **operator 由服务端注入**（替代 curl 自报身份），maker != checker 由 app-pay 强制。成功后写 `admin_audit`（`pay_refund_approve` / `pay_refund_reject`）+ JSONL（`REFUND_CONFIRMED` / `REFUND_REJECTED`）；上游失败 502。timeout 默认 5s。
 
-**禁止**在本服务实现退款/关单/SKU 改价等其余资金写操作（需先在 app-pay 侧建端点保证审计一致）；**禁止**绕过 app-pay 直写 `pay_*` 表。
+**禁止**在本服务实现退款/关单等其余资金写操作（需先在 app-pay 侧建端点保证审计一致）；**禁止**绕过本服务直写 `pay_product`（SKU 目录统一走下方「SKU 商品目录」的 admin CRUD，价格变更同样落审计）。
+
+### SKU 商品目录（权威表 + 控制台 CRUD）
+
+`pay_product` 是会员 SKU 的**唯一权威表**：app-pay 只查询/下发（Flyway `V11__seed_product_catalog.sql` 幂等播种，见 docs/app-pay.md），运营改价/上下架不再改代码、不再手工改库，统一在 `/pay/products` 页操作。
+
+| 操作 | 端点 | 角色 | 说明 |
+|------|------|------|------|
+| 列表 | `GET /api/pay/products` | viewer+ | sort ASC,id ASC；返回 `id` / `tier` / `status`（真实 `ACTIVE`/`DISABLED`） |
+| 新建 | `POST /api/pay/products` | admin | 编码重复 → 409「商品编码已存在」 |
+| 编辑 | `PUT /api/pay/products/:id` | admin | 全量更新；`code` 创建后不可改（订单历史按编码快照）；`status` 缺省保留原值 |
+| 删除 | `DELETE /api/pay/products/:id` | admin | 无订单引用 → 物理删除（`result:"deleted"`）；有引用 → 自动下架（`result:"disabled"`） |
+
+**校验**（服务端权威，前端表单同规则）：`code` 大写字母/数字/下划线且 ≤50 且唯一；`title` trim 非空 ≤100 字；`durationDays` 1..3650；`priceCents` 整数分 > 0；`tier` ∈ {VIP,SVIP,PROMAX}；`status` ∈ {ACTIVE,DISABLED}；`sort` ≥ 0。错误体仍为 `{"detail": 中文消息}`（400 校验 / 404 不存在 / 409 冲突或在用）。
+
+**安全语义**：目录必须至少保留一个 `ACTIVE` SKU（下架/删除最后一个 → 409「不能移除最后一个在售商品」）；有 `pay_order.sku_code` 引用的编码永不物理删除，只置 `DISABLED`，保证历史订单可回溯。
+
+**审计**：每次写操作 = `admin_audit`（`pay_product_create` / `pay_product_update` / `pay_product_disable` / `pay_product_delete`，targetType=`pay_product`，detail 含 before/after 摘要 + 操作人）+ 资金 JSONL 一行（`PRODUCT_CREATED` / `PRODUCT_UPDATED` / `PRODUCT_DISABLED` / `PRODUCT_DELETED`，哈希链同 grant/refund）。`admin_audit` 与 `pay_product` 跨库，无法同事务：写库已提交，审计失败仅告警不返回失败。
+
+**生效时延**：app-pay `ProductService` 对在售目录使用 5s TTL 两级缓存（L1 + 可选 Redis L2），控制台改价/上下架在 TTL 内对商品页/下单生效；未命中缓存的新编码 `requireActive` 会回查 DB，立即可下单。**无需 app-pay 端点**。
 
 ## 登录安全（设备指纹 / IP / 跨域）
 
@@ -140,7 +162,7 @@ Go 侧**复刻** app-pay `MembershipService.extend` 语义：事务内 `SELECT .
 - **IP 绑定**：登录时记录真实客户端 IP，后续请求按 `subnet`（IPv4 /24、IPv6 /64）或 `exact` 校验；跨网段/换 IP 会失效并写 `session_ip_mismatch`。
 - **可信代理**：只有 `APPADMIN__SECURITY__TRUSTED_PROXIES` 内的 peer 才能通过 `X-Forwarded-For/X-Forwarded-Proto` 提供真实 IP；直连 API 的 `X-Forwarded-For` 一律忽略。Compose 默认信任 UI 容器网段，其他部署按实际网段配置。
 - **限流与审计**：IP 级 + 账户级双预算（默认 10 次/分钟/IP、10 次/15 分钟/账户）；失败写 `login_failed`，首次出现的新设备/新 IP 写 `login_new_device` / `login_new_ip`；会话设备/IP 校验失败写 `session_device_mismatch` / `session_ip_mismatch` 并删除会话。
-- **跨域**：CORS 只接受同源或 `APPADMIN__SECURITY__CORS__ALLOW_ORIGINS` 的精确 Origin（不允许 `*` / `null`）；预检仅放行 GET/POST/DELETE 与白名单请求头（含 `X-Device-Id`）；非安全方法必须带允许的 Origin（CSRF 纵深防御）。生产建议 UI 与 API 同源（Compose 已通过 UI Nginx 反代实现）。
+- **跨域**：CORS 只接受同源或 `APPADMIN__SECURITY__CORS__ALLOW_ORIGINS` 的精确 Origin（不允许 `*` / `null`）；预检仅放行 GET/POST/PUT/DELETE 与白名单请求头（含 `X-Device-Id`）；非安全方法必须带允许的 Origin（CSRF 纵深防御）。生产建议 UI 与 API 同源（Compose 已通过 UI Nginx 反代实现）。
 - **脚本/API 调用**：先 `POST /api/login`（带 `X-Device-Id`）拿 `admin_session` cookie，之后每次请求同时带 cookie 与相同 `X-Device-Id`；换机器/脚本需使用新的设备 ID 并重新登录。
 
 ```bash
@@ -288,6 +310,9 @@ cd app-go/app-admin && go test ./...   # 纯 httptest/内存（含 sqlite），�
 cd frontend-admin && pnpm build        # tsc --noEmit + vite build
 ```
 
-覆盖：配置覆盖优先级、迁移守护（只建三张自有表，禁建 pay_*）、登录/限流/会话、角色闸门、分页参数校验、审核 reason 必填、审计写入、CORS/安全头、内容预览审计与非分享范围 404 语义、支付查询过滤与 DTO（uid string / 金额分）、grant 语义三例（新建/活跃顺延/过期起算）+ 日额度熔断、退款复核代理与未配置 404、控制台账户规则（不能删自己/最后一个 admin）。
+测试面分两层：
+
+- **内联守护测试**（`internal/**`）：配置覆盖优先级、迁移守护（只建三张自有表，禁建 pay_*）、登录/限流/会话、角色闸门、分页参数校验、审核 reason 必填、审计写入、CORS/安全头、内容预览审计与非分享范围 404 语义、支付查询过滤与 DTO（uid string / 金额分）、grant 语义三例（新建/活跃顺延/过期起算）+ 日额度熔断、退款复核代理与未配置 404、控制台账户规则（不能删自己/最后一个 admin）。
+- **黑盒测试包 `tests/`**（独立 `package tests`，项目惯例对齐 app-cloud / app-kg）：经 httptest 打真实 Gin 路由 + 两个内存 SQLite（主库 admin_* / 支付库 pay_*），覆盖 SKU 目录 CRUD —— authz（viewer 403 / admin 放行 / 匿名 401）、字段校验、编码唯一冲突 409、编码不可改、删除/下架安全（无订单物理删除 / 有订单自动 DISABLED / 最后一个在售商品 409）、列表形状（id/tier/status/排序）、`admin_audit` before-after 与 `pay-audit.jsonl` 事件、支付模块未配置时的 503 gate。
 
 > 后端架构与红线见根 `AGENTS.md` §2.21（本地开发规范，不入 git）；原 `app-pay-admin` 设计文档（`plan/1.0.9-PayAdmin`）与 `docs/app-pay-admin.md` 已随服务退役删除。

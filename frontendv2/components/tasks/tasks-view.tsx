@@ -19,6 +19,7 @@ import {
 import { academicApi, aiTaskApi, type AcademicProjectSummary, type AiTask, type AiTaskCreateInput, type AiTaskKind, type AiTaskRun, type AiTaskSchedule } from "@/lib/api";
 import { emitAppToast } from "@/lib/app-toast";
 import { Markdown } from "@/components/markdown";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 
 const KIND_META: Record<AiTaskKind, { label: string; icon: typeof Newspaper; hint: string }> = {
@@ -77,6 +78,7 @@ export function TasksView() {
     const [busyId, setBusyId] = useState<string | null>(null);
     const [editor, setEditor] = useState<EditorState | null>(null);
     const [runsTask, setRunsTask] = useState<AiTask | null>(null);
+    const [deleteTarget, setDeleteTarget] = useState<AiTask | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -124,11 +126,18 @@ export function TasksView() {
         }
     }
 
-    async function handleDelete(task: AiTask) {
-        if (!window.confirm("删除这个定时任务？运行记录也会一起删除。")) return;
+    function handleDelete(task: AiTask) {
+        if (busyId) return;
+        setDeleteTarget(task);
+    }
+
+    async function performDelete() {
+        const task = deleteTarget;
+        if (!task) return;
         setBusyId(task.id);
         try {
             await aiTaskApi.remove(task.id);
+            setDeleteTarget(null);
             await refresh();
             emitAppToast("success", "任务已删除");
         } catch (err) {
@@ -338,6 +347,24 @@ export function TasksView() {
                     </div>
                 )}
             </div>
+
+            <ConfirmDialog
+                open={deleteTarget !== null}
+                title="删除这个定时任务？"
+                message={
+                    deleteTarget
+                        ? `「${deleteTarget.title}」及其运行记录将一并删除，此操作不可撤销。`
+                        : ""
+                }
+                confirmLabel="删除"
+                danger
+                busy={busyId !== null && busyId === deleteTarget?.id}
+                onConfirm={() => void performDelete()}
+                onCancel={() => {
+                    if (busyId !== null) return;
+                    setDeleteTarget(null);
+                }}
+            />
 
             {editor && (
                 <TaskEditor

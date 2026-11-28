@@ -3,25 +3,34 @@
 /**
  * HLS packaging/playback state for the cloud-drive viewer.
  *
- * The backend packages videos asynchronously. While a file is queued or being
- * packaged we poll GET /cloud/video/:uuid/hls with bounded backoff and expose
- * the state to the viewer; once ready, the same descriptor drives the player.
- * A failed package can be retried manually, and the user can always opt into
- * the original MP4 stream instead of waiting.
+ * HLS is a progressive enhancement, never a precondition for playback: the
+ * viewer starts the original MP4 immediately and this hook polls
+ * GET /cloud/video/:uuid/hls (which lazily enqueues packaging server-side while
+ * the video is watched) in the background. When a ready descriptor arrives the
+ * viewer may switch to HLS; queued/processing only drive a passive chip.
+ *
+ * The backend never reports "processing" for a video that was never enqueued:
+ * such a read is answered with "queued" (lazy enqueue) or "not_started", so a
+ * stuck spinner can no longer happen.
  */
 import { useCallback, useEffect, useState } from "react";
 import { cloudApi, type CloudHlsResponse } from "@/lib/api/cloud";
 
 export interface HlsPlaybackState {
-    /** Descriptor to render; null when the user chose the original MP4. */
+    /** Descriptor to render; null when the viewer is on the raw MP4. */
     info: CloudHlsResponse | null;
-    /** Latest descriptor regardless of the raw-video override. */
+    /** Latest descriptor regardless of the raw fallback override. */
     latest: CloudHlsResponse | null;
     retrying: boolean;
     error: string | null;
     retry: () => Promise<void>;
-    /** Stop polling and play the original MP4 instead. */
+    /** HLS playback failed: stay on the original MP4 from now on. */
     playRaw: () => void;
+}
+
+/** Non-terminal packaging states the viewer keeps polling for. */
+function isPending(status: string | undefined): boolean {
+    return status === "queued" || status === "processing";
 }
 
 export function useHlsPlayback(
@@ -40,12 +49,13 @@ export function useHlsPlayback(
         setLatest(initial);
     }, [initial]);
 
-    // Poll only while packaging is in flight. Back off up to 15s; terminal
-    // states (ready/failed/unsupported/disabled) stop the loop.
+    // Poll only while packaging is pending. Back off up to 15s; terminal
+    // states (ready/failed/unsupported/disabled/not_started/unknown) stop.
+    // A null descriptor (initial read failed) is retried a few times so a
+    // transient error does not hide an HLS upgrade forever.
     useEffect(() => {
-        if (!enabled || forceRaw || !latest) return;
-        const status = latest.status;
-        if (status !== "queued" && status !== "processing") return;
+        if (!enabled || forceRaw) return;
+        if (latest && !isPending(latest.status)) return;
         let cancelled = false;
         let timer: number | undefined;
         let attempt = 0;
@@ -54,15 +64,16 @@ export function useHlsPlayback(
                 const next = await cloudApi.getHls(uuid);
                 if (cancelled) return;
                 setLatest(next);
-                if (next.ready) return;
-                if (next.status !== "queued" && next.status !== "processing") return;
+                if (next.ready || !isPending(next.status)) return;
                 attempt += 1;
                 timer = window.setTimeout(poll, Math.min(15_000, 4_000 + attempt * 1_000));
             } catch {
+                attempt += 1;
+                if (attempt > 5) return;
                 timer = window.setTimeout(poll, 10_000);
             }
         };
-        timer = window.setTimeout(poll, 4_000);
+        timer = window.setTimeout(poll, latest ? 4_000 : 1_000);
         return () => {
             cancelled = true;
             if (timer) window.clearTimeout(timer);

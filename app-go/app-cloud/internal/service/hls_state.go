@@ -39,6 +39,16 @@ func (s *HLSService) getStatus(ctx context.Context, uploadUUID string) (hlsStatu
 	return status, err
 }
 
+// touchStatusTTL refreshes the sliding lifetime of a ready status so a file
+// that is actually watched is not re-packaged after the TTL. Best effort: a
+// failed EXPIRE must never break playback.
+func (s *HLSService) touchStatusTTL(ctx context.Context, uploadUUID string) {
+	if s.rdb == nil || uploadUUID == "" {
+		return
+	}
+	_ = s.rdb.Expire(ctx, hlsStatusPfx+uploadUUID, hlsStatusTTL).Err()
+}
+
 func (s *HLSService) isGone(ctx context.Context, uploadUUID string) bool {
 	n, err := s.rdb.Exists(ctx, hlsGonePfx+uploadUUID).Result()
 	return err == nil && n > 0

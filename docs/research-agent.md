@@ -103,7 +103,7 @@
 - **Agent 说需要审批**：到工作台「审批」Tab 批准实验；批准后重新让 agent 提交或恢复计划。
 - **导出被拒绝**：按返回的缺失清单（缺失引用 / 未核验 / 无效 [[run:id]] / 无证据结果章节）修改，或用户明确知情后让 agent 用 force 强制导出（会写审计事件）。
 - **DAG 计划卡在等待审批**：批准后点「计划」Tab 的「恢复执行」；仍未批准会再次暂停。
-- **沙箱不可用**：sandbox.enabled=false 时 run_code 诚实返回「未配置」，不会伪造结果；启用见 docker compose --profile sandbox。
+- **沙箱不可用**：沙箱三件套随默认 `docker compose up -d` 启动；sandbox.enabled=false 时 run_code 诚实返回「未配置」，不会伪造结果（详见 docs/code-execution.md）。
 - **Mongo 不可达**：学术数据降级到内存（重启丢失），日志有 [BOOT] academic store: memory fallback，生产必须修复。
 
 ## 七、相关文档

@@ -834,7 +834,7 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 
 **验证（M1）**：`app-go/app-sandbox` `go build/vet/test` 通过（56 pass + 1 skip：MySQL 用例需 `SANDBOX__TEST_DSN`）；测试统一位于 `app-go/app-sandbox/tests/`（black-box 包，不与源码同目录）；app-ts `tsc` 通过、全量 654 通过、启动日志 `run_code tool registered (store=stub)`。
 
-**Docker 部署（最小 OpenSandbox）**：`deploy/docker/opensandbox/docker-compose.yml` 只起一个 lifecycle server（Docker runtime + Docker socket + SQLite），或 root compose `--profile sandbox` 同时起 opensandbox-server/app-sandbox；详见 [deploy/docker/opensandbox/README.md](../deploy/docker/opensandbox/README.md)。
+**Docker 部署（最小 OpenSandbox）**：`deploy/docker/opensandbox/docker-compose.yml` 只起一个 lifecycle server（Docker runtime + Docker socket + SQLite）；root compose 默认 `docker compose up -d` 已同时启动 opensandbox-server/app-sandbox/sandbox-tls；详见 [deploy/docker/opensandbox/README.md](../deploy/docker/opensandbox/README.md)。
 
 **K8s 部署**：OpenSandbox 控制面/运行时的生产化安装包（dev/prod values、preflight、PDB、NetworkPolicy、ServiceMonitor、smoke Job、热池）+ `app-sandbox` 清单见 [deploy/k8s/40-sandbox](../deploy/k8s/40-sandbox/README.md) 与 [deploy/k8s/30-apps/app-sandbox.yaml](../deploy/k8s/30-apps/app-sandbox.yaml)。
 

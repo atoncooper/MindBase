@@ -5,7 +5,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { AuditItem } from "../api/types";
-import { formatTime } from "../components/format";
+import { formatCents, formatTime } from "../components/format";
 
 /** 操作 → 中文标签 / 颜色（未知 action 原样展示，不隐藏历史记录）。 */
 const ACTION_META: Record<string, { label: string; color: string }> = {
@@ -26,6 +26,11 @@ const ACTION_META: Record<string, { label: string; color: string }> = {
   pay_grant: { label: "补偿开通", color: "volcano" },
   pay_refund_approve: { label: "退款通过", color: "green" },
   pay_refund_reject: { label: "退款驳回", color: "red" },
+  // SKU 目录写操作（app-admin 直写 pay_product）
+  pay_product_create: { label: "新建商品", color: "cyan" },
+  pay_product_update: { label: "修改商品", color: "blue" },
+  pay_product_disable: { label: "下架商品", color: "orange" },
+  pay_product_delete: { label: "删除商品", color: "red" },
   account_create: { label: "新建账户", color: "cyan" },
   account_password_reset: { label: "重置账户密码", color: "gold" },
   account_delete: { label: "删除账户", color: "red" },
@@ -48,6 +53,10 @@ const ACTION_OPTIONS = [
   { value: "pay_grant", label: "补偿开通" },
   { value: "pay_refund_approve", label: "退款通过" },
   { value: "pay_refund_reject", label: "退款驳回" },
+  { value: "pay_product_create", label: "新建商品" },
+  { value: "pay_product_update", label: "修改商品" },
+  { value: "pay_product_disable", label: "下架商品" },
+  { value: "pay_product_delete", label: "删除商品" },
   { value: "account_create", label: "新建账户" },
   { value: "account_password_reset", label: "重置账户密码" },
   { value: "account_delete", label: "删除账户" },
@@ -59,6 +68,7 @@ const TARGET_TYPE_LABEL: Record<string, string> = {
   membership: "会员",
   admin_user: "账户",
   pay_refund: "退款单",
+  pay_product: "商品",
   session: "会话",
 };
 
@@ -92,6 +102,99 @@ function uaSummary(ua: string): string {
     : /Linux/i.test(ua) ? "Linux"
     : "";
   return os ? `${browser} · ${os}` : browser;
+}
+
+
+/** pay_product 审计 detail 的一条行快照（admin_audit: "before={..} after={..}"）。 */
+interface ProductAuditRow {
+  code: string;
+  title: string;
+  durationDays: string;
+  priceCents: string;
+  tier: string;
+  status: string;
+  sort: string;
+}
+
+/** 解析行快照；空行（create 的 before / delete 的 after）由调用方传 "-"。 */
+function parseProductSnapshot(text: string): ProductAuditRow | null {
+  if (!text || text === "-") return null;
+  const pick = (name: string): string => {
+    const re = new RegExp("(?:^|[,{])" + name + "=([^,}]*)");
+    return text.match(re)?.[1]?.trim() ?? "";
+  };
+  const row: ProductAuditRow = {
+    code: pick("code"),
+    title: pick("title"),
+    durationDays: pick("durationDays"),
+    priceCents: pick("priceCents"),
+    tier: pick("tier"),
+    status: pick("status"),
+    sort: pick("sort"),
+  };
+  return row.code ? row : null;
+}
+
+const PRODUCT_DIFF_FIELDS: Array<[keyof ProductAuditRow, string]> = [
+  ["title", "名称"],
+  ["durationDays", "天数"],
+  ["priceCents", "价格"],
+  ["tier", "档位"],
+  ["status", "状态"],
+  ["sort", "排序"],
+];
+
+function productStatusLabel(status: string): string {
+  if (status === "ACTIVE") return "在售";
+  if (status === "DISABLED") return "下架";
+  return status || "-";
+}
+
+function formatProductField(key: keyof ProductAuditRow, value: string): string {
+  if (key === "priceCents") {
+    const cents = Number(value);
+    return Number.isFinite(cents) ? formatCents(cents) : value || "-";
+  }
+  if (key === "status") return productStatusLabel(value);
+  if (key === "durationDays") return value ? value + " 天" : "-";
+  return value || "-";
+}
+
+/** SKU 写操作 → 审核员可读文案（新建/改价/上下架/删除）。 */
+function productAuditDetail(action: string, raw: string): string {
+  const match = raw.match(/before=\{([^{}]*)\}\s+after=\{([^{}]*)\}/);
+  if (!match) return raw || "-";
+  const before = parseProductSnapshot(match[1]);
+  const after = parseProductSnapshot(match[2]);
+  const row = after ?? before;
+  if (!row) return raw;
+  if (action === "pay_product_create" && after) {
+    return [
+      "新建商品 " + after.code,
+      after.title,
+      formatProductField("priceCents", after.priceCents),
+      formatProductField("durationDays", after.durationDays),
+      "档位 " + (after.tier || "-"),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (action === "pay_product_delete") {
+    return "删除商品 " + (before?.code ?? row.code);
+  }
+  if (action === "pay_product_disable") {
+    return "下架商品 " + (after?.code ?? row.code) + "（有历史订单引用，保留记录）";
+  }
+  if (before && after) {
+    const changes = PRODUCT_DIFF_FIELDS.filter(([key]) => before[key] !== after[key]).map(
+      ([key, label]) =>
+        label + " " + formatProductField(key, before[key]) + " → " + formatProductField(key, after[key]),
+    );
+    return changes.length
+      ? "修改商品 " + (after.code || before.code) + " · " + changes.join(" · ")
+      : "修改商品 " + (after.code || before.code) + "（无字段变化）";
+  }
+  return raw;
 }
 
 /** 把后端 audit.detail 的原始串按 action 解释成审核员一眼能读懂的信息。 */
@@ -173,6 +276,11 @@ function prettyDetail(item: AuditItem): string {
       return "重置账户密码" + (item.targetId ? " #" + item.targetId : "");
     case "account_delete":
       return "删除账户" + (item.targetId ? " #" + item.targetId : "");
+    case "pay_product_create":
+    case "pay_product_update":
+    case "pay_product_disable":
+    case "pay_product_delete":
+      return productAuditDetail(item.action, raw);
     default:
       return raw || "-";
   }

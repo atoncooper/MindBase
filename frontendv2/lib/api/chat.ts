@@ -130,8 +130,8 @@ export interface ChatRequestPayload {
     coding_plan_model?: string;
     // 重新生成：被替换的上一轮 user msg id（后端成功后才删除旧轮次）。
     regenerate_from_msg_id?: string;
-    // 推理强度（输入框滑动选择器）：min | mid | high | max
-    reasoning_effort?: "min" | "mid" | "high" | "max";
+    // 推理强度（输入框滑动选择器）：连续 0–100；旧版 min|mid|high|max 仍被后端兼容
+    reasoning_effort?: number | "min" | "mid" | "high" | "max";
     // 检索范围：uploadUuids 非空时后端只在这些云盘文件内检索/回答
     //（/chat?upload_uuid=<uuid> 进入文件级问答）。
     scope?: { uploadUuids?: string[] };

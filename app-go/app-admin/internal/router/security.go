@@ -262,7 +262,7 @@ func isUnsafeMethod(method string) bool {
 func validPreflight(c *gin.Context) bool {
 	requestedMethod := strings.ToUpper(strings.TrimSpace(c.GetHeader("Access-Control-Request-Method")))
 	switch requestedMethod {
-	case "GET", "POST", "DELETE": // DELETE: /api/console/users/:id
+	case "GET", "POST", "PUT", "DELETE": // PUT: /api/pay/products/:id; DELETE: /api/console/users/:id
 	default:
 		return false
 	}
@@ -279,7 +279,7 @@ func validPreflight(c *gin.Context) bool {
 func setCORSHeaders(c *gin.Context, origin string) {
 	c.Header("Access-Control-Allow-Origin", origin)
 	c.Header("Access-Control-Allow-Credentials", "true")
-	c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, X-Device-Id")
 	c.Header("Access-Control-Max-Age", "600")
 	c.Header("Vary", "Origin")

@@ -45,7 +45,7 @@ CREATED ──条件更新──► PAID ──交付(会员顺延,同事务)─
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/pay/products` | 在售 SKU |
+| GET | `/pay/products` | 在售 SKU（读权威表 `pay_product`；管理台 app-admin 维护） |
 | POST | `/pay/orders` | 创建订单 `{skuCode, channel, idempotencyKey?}`，返回支付参数（MOCK 确认端点或支付宝二维码） |
 | GET | `/pay/orders` | 最近订单（兼容旧调用，最多 50 条） |
 | GET | `/pay/orders/page?page=&pageSize=` | 分页订单记录（`items/page/pageSize/total/hasMore`），独立 `/orders` 页面使用 |
@@ -324,7 +324,16 @@ cd app-pay && mvn test    # 38 个测试类 / 245 个用例（244 执行 + 性�
   统计查询失败 fail-open（不阻塞资金写，留 WARN）。
 - **网络安全**：审计 JSONL 哈希链（chain/prev/hash，跨重启续链）对齐 app-pay（app-admin 侧落
   `logs/pay-audit.jsonl`）；管理台统一 cookie SameSite=Lax + HttpOnly（TLS 下 Secure）+ 安全响应头。
-- **明确不做**：退款/关单/SKU 改价的直接 DB 写（红线不变，退款只经 internal 端点）。
+- **明确不做**：退款/关单的直接 DB 写（红线不变，退款只经 internal 端点）；SKU 目录写入不在 app-pay 实现——统一由 app-admin 控制台写权威表（见下节）。
+
+## SKU 商品目录（权威表 + Flyway 播种，2026-11）
+
+`pay_product` 是会员 SKU 的**唯一权威表**。历史行为（`ProductService.DEFAULT_SKUS` 每次启动补齐缺失 code）已删除：种子改为 Flyway 一次性幂等迁移，运营改价/上下架走管理台，不再改代码发版。
+
+- **建表/定价**：`V1__baseline.sql` 建 `pay_product`，`V2` 加 `tier`，`V10__promax_tier_pricing.sql` 三档定价（VIP 48 / SVIP 148 / ProMax 248）。
+- **播种**：`V11__seed_product_catalog.sql` 用 `INSERT IGNORE` 播种 9 个默认 SKU —— 只插缺失编码；已存在的行（含运营改过的价格/状态/名称）**永不覆盖**，重跑/重新部署安全。新增 SKU 请走控制台，不要再往迁移里加。
+- **读取**：`ProductService` 只查询/下发；`GET /pay/products` 与下单校验走 5s TTL 两级缓存（L1 + 可选 Redis L2），`requireActive` 对未命中缓存的编码回查 DB（新编码立即可下单）。因此控制台的改价/上下架在 ≤5s 内生效（重启立即生效）。
+- **写入**：统一管理台 app-admin `/api/pay/products`（admin CRUD，直接写本表 + `admin_audit` + 资金审计 JSONL）。删除语义：有 `pay_order.sku_code` 引用的编码不物理删除、改置 `DISABLED`；目录至少保留一个 `ACTIVE` SKU。详见 [app-admin.md](app-admin.md)「SKU 商品目录」。
 
 ## 升级换购（同档 + 跨档补差价，2026-11）
 

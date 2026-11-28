@@ -6,7 +6,8 @@
 //     plain row mappings here: NEVER AutoMigrate / ALTER them, never add them
 //     to db.Migrate. The only writes app-admin performs are the controlled
 //     membership grant (pay_membership + pay_membership_event) documented in
-//     service.PayGrantService; everything else is read-only.
+//     service.PayGrantService and the SKU catalog CRUD (pay_product) documented
+//     in service.PayProductService; everything else is read-only.
 //   - money is int64 cents, nullable columns are pointers, DATETIME is read
 //     with loc=Local (Asia/Shanghai, matching app-pay's pinned JVM timezone).
 package model
@@ -85,14 +86,21 @@ type PayCallbackLog struct {
 
 func (PayCallbackLog) TableName() string { return "pay_callback_log" }
 
-// PayProduct maps pay_product (SKU catalog, read-only: price/status changes
-// remain an app-pay-side operational task).
+// PayProduct maps pay_product — the AUTHORITATIVE membership SKU catalog.
+//
+// app-admin owns the WRITE path (console create / update / disable / delete, see
+// service.PayProductService); app-pay owns the schema (Flyway: V1 table + V11
+// idempotent seed) and only reads it. app-pay caches the active catalog for 5s,
+// so a console edit becomes visible to order creation within that TTL. Price
+// is integer cents; the code is immutable after creation because pay_order rows
+// keep the sku_code snapshot.
 type PayProduct struct {
 	ID           int64     `gorm:"column:id;primaryKey;autoIncrement" json:"-"`
 	Code         string    `gorm:"column:code;type:varchar(50);not null;uniqueIndex:uk_pay_product_code"`
 	Title        string    `gorm:"column:title;type:varchar(100);not null"`
 	DurationDays int       `gorm:"column:duration_days;not null"`
 	PriceCents   int64     `gorm:"column:price_cents;not null"`
+	Tier         string    `gorm:"column:tier;type:varchar(20);not null;default:VIP"`
 	Status       string    `gorm:"column:status;type:varchar(20);not null"`
 	Sort         int       `gorm:"column:sort;not null;default:0"`
 	CreatedAt    time.Time `gorm:"column:created_at;not null"`

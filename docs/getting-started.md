@@ -199,20 +199,20 @@ docker compose ps
 
 | 命令 | 实际启动 |
 |------|----------|
-| `docker compose up -d` | **23 个服务 = 全栈**：frontend / openresty / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / app-content-mcp / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
-| `docker compose --profile full up -d` | **30 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
+| `docker compose up -d` | **28 个服务 = 全栈**：frontend / openresty / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / app-content-mcp / app-task(+独立 MySQL) / app-pay(+独立 MySQL) / **app-sandbox + sandbox-tls + opensandbox-server（沙箱默认启动）** |
+| `docker compose --profile full up -d` | **34 个服务**：全栈（含沙箱）+ higress + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
 | `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
-| `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
+| `docker compose --profile sandbox up -d` | 只有 8 个：app-sandbox + sandbox-tls + opensandbox-server + mysql/mongo/redis/minio + cert-gen（**默认 `up -d` 已包含，无需再单独执行**） |
 
 **结论**：单独传 `--profile X` 会**排除默认全栈**。要在已运行的全栈上追加可选组件，分两步：
 
 ```bash
-docker compose up -d                              # 先起全栈
+docker compose up -d                              # 先起全栈（已含沙箱）
 docker compose --profile ai up -d                 # 再追加 Higress（不动已在跑的服务）
-docker compose --profile sandbox up -d            # 再追加沙箱控制层
+docker compose up -d app-sandbox sandbox-tls opensandbox-server  # 仅单独补起沙箱（可选）
 ```
 
-或一次到底：`docker compose --profile full up -d`。注意加了 `--profile sandbox` 后 app-ts 仍需 `SANDBOX_ENABLED=true` 才会启用 `run_code`（见 §7）。
+或一次到底：`docker compose --profile full up -d`。**沙箱已随默认全栈启动**；app-ts 侧由 compose 设置 `SANDBOX_ENABLED=true`，因此 `run_code` 默认可用（见 §7）。
 
 ### 4.2 本地入口
 
@@ -287,7 +287,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # OpenResty → 前
 
 **MinIO 相关功能不可用。** `MINIO__ENDPOINT` 为空时 skills 关闭；云盘 / 壁纸 / 技能都需要 MinIO，且 app-cloud **缺 MinIO 凭证会直接拒启**。容器默认不映射 9000 到宿主，本地进程需要它时按 §3.2 加映射。
 
-**`run_code` 提示「代码没有实际运行」。** 沙箱默认关闭（`sandbox.enabled=false` 时走 `NoopCodeExecution` 诚实降级）。启用：`docker compose --profile sandbox up -d opensandbox-server app-sandbox`，再在 app-ts 侧设 `SANDBOX_ENABLED=true`（`SANDBOX__BASE_URL` 默认经 APISIX `/internal/sandbox/v1/*`）；本地无 OpenSandbox 时可给 app-sandbox 设 `SANDBOX__RUNTIME__TYPE=fake` 只做链路演示。细节见 [code-execution.md](code-execution.md)。
+**`run_code` 提示「代码没有实际运行」。** 沙箱容器已随默认 `docker compose up -d` 启动（app-sandbox + sandbox-tls + opensandbox-server），app-ts 侧 `SANDBOX_ENABLED=true` 也已由 compose 注入；若仍未生效，先 `docker compose ps` 确认三个沙箱容器的状态，再检查 app-ts 的 `sandbox.enabled`（`false` 时走 `NoopCodeExecution` 诚实降级）。本地无 OpenSandbox 时可给 app-sandbox 设 `SANDBOX__RUNTIME__TYPE=fake` 只做链路演示。细节见 [code-execution.md](code-execution.md)。
 
 **只用 `--profile ai` 结果全栈没起来。** profile 语义见 §4.1：单 profile 不含默认服务。先裸 `up -d`，再追加 profile；或一次 `--profile full up -d`。
 

@@ -24,9 +24,9 @@ export interface AgentInvokeInput {
   model?: import("ai").LanguageModel;
   /** Turn-level cancellation (client disconnect / aborted turn). Forwarded to
    * streamText (abortSignal) and to every tool via ToolRunContext.signal. */
-  /** Turn-level reasoning effort (composer slider). */
-  reasoningEffort?: "min" | "mid" | "high" | "max";
-  signal ?: AbortSignal;
+  signal?: AbortSignal;
+  /** Turn-level reasoning effort (composer slider, continuous 0–100). */
+  reasoningEffort?: number;
 }
 
 export interface Agent {

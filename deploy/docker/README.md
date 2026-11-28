@@ -20,7 +20,7 @@
 
 科研代码执行需要沙箱时，单机最小部署见 [opensandbox/README.md](opensandbox/README.md)：
 `docker compose -f deploy/docker/opensandbox/docker-compose.yml up -d`；或直接用 root
-`docker-compose.yml` 的 `--profile sandbox`（同时起 opensandbox-server + app-sandbox）。
+root compose 默认 `docker compose up -d`（同时起 opensandbox-server + app-sandbox + sandbox-tls）；`--profile sandbox` 仍可用于单独拉起沙箱。
 多机 split 部署不包含沙箱控制层；生产/多租户请用 K8s（`deploy/k8s/40-sandbox`）。
 
 ## 数据层配置

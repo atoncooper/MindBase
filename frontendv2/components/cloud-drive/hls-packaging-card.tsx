@@ -1,109 +1,74 @@
 "use client";
 
 /**
- * Status panels shown while the cloud-drive video is being packaged to HLS.
+ * Passive HLS status chip shown over an already-playing raw video.
  *
- * HLS packaging is asynchronous (ffmpeg on app-cloud): the file viewer polls
- * GET /cloud/video/:uuid/hls and swaps in the HLS player as soon as it is
- * ready. Until then we show the real state instead of silently falling back to
- * the heavy MP4 stream; a failed package offers a manual retry.
+ * Packaging is asynchronous and NEVER blocks playback: the viewer starts the
+ * original MP4 immediately and this chip only reports background progress.
+ * - queued/processing -> "转码中" (informational, no spinner blocking video)
+ * - ready             -> offers a switch to the HLS rendition
+ * - failed            -> offers a retry, without degrading raw playback
+ * There is deliberately no full-screen packaging card anymore.
  */
-import { AlertCircle, Loader2, Play, RotateCcw } from "lucide-react";
+import { AlertCircle, Loader2, RotateCcw, Sparkles } from "lucide-react";
 
-interface PackagingProps {
+interface Props {
+    /** Backend packaging status ("queued" | "processing" | "failed" | ...). */
+    status?: string;
     progress?: number;
-    attempts?: number;
-    onPlayRaw: () => void;
-}
-
-export function HlsPackagingCard({ progress, attempts, onPlayRaw }: PackagingProps) {
-    const pct = typeof progress === "number" ? Math.min(100, Math.max(0, progress)) : 0;
-    return (
-        <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-border-subtle bg-surface/60 px-6 py-16 text-center">
-            <span className="grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
-                <Loader2 className="h-6 w-6 animate-spin" />
-            </span>
-            <div>
-                <p className="text-[15px] font-medium text-foreground">视频正在转码</p>
-                <p className="mt-1 text-[13px] text-secondary">
-                    完成后会自动开始播放（通常 1–3 分钟，长视频更久）
-                    {attempts !== undefined && attempts > 1 ? ` · 第 ${attempts} 次尝试` : ""}
-                </p>
-            </div>
-            {pct > 0 && (
-                <div className="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-border-subtle">
-                    <div
-                        className="h-full rounded-full bg-accent transition-all"
-                        style={{ width: `${pct}%` }}
-                    />
-                </div>
-            )}
-            <button
-                type="button"
-                onClick={onPlayRaw}
-                className="btn-pill btn-ghost inline-flex h-9 items-center gap-1.5 px-5 text-[13px]"
-            >
-                <Play className="h-4 w-4" />
-                直接播放原视频
-            </button>
-        </div>
-    );
-}
-
-interface FailureProps {
-    message?: string | null;
-    attempts?: number;
-    retryable?: boolean;
+    /** A ready descriptor exists, so a switch to HLS is possible. */
+    ready: boolean;
     retrying: boolean;
+    /** Last manual retry error, if any. */
+    error?: string | null;
     onRetry: () => void;
-    onPlayRaw: () => void;
+    onSwitchToHls: () => void;
 }
 
-export function HlsFailureCard({
-    message,
-    attempts,
-    retryable = true,
-    retrying,
-    onRetry,
-    onPlayRaw,
-}: FailureProps) {
-    return (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border-subtle bg-surface/60 px-6 py-16 text-center">
-            <span className="grid h-12 w-12 place-items-center rounded-2xl bg-danger/5 text-danger">
-                <AlertCircle className="h-6 w-6" />
+const chipClass =
+    "pointer-events-auto inline-flex max-w-[min(92vw,26rem)] items-center gap-1.5 rounded-full " +
+    "bg-black/55 px-3 py-1.5 text-[12px] font-medium text-white/90 backdrop-blur-sm";
+
+export function HlsStatusChip({ status, progress, ready, retrying, error, onRetry, onSwitchToHls }: Props) {
+    if (ready) {
+        return (
+            <button type="button" onClick={onSwitchToHls} className={chipClass} title="切换到高清版本">
+                <Sparkles className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
+                高清版已就绪，切换
+            </button>
+        );
+    }
+    if (status === "queued" || status === "processing") {
+        const pct = typeof progress === "number" && progress > 0 ? ` ${Math.min(99, progress)}%` : "";
+        return (
+            <span className={chipClass} role="status" aria-live="polite">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                高清版转码中{pct} · 可直接观看原画
             </span>
-            <div>
-                <p className="text-[15px] font-medium text-foreground">视频转码失败</p>
-                <p className="mt-1 max-w-md break-words text-[13px] text-secondary">
-                    {message || "转码服务暂时不可用，可以重试或直接播放原视频。"}
-                    {attempts !== undefined && attempts > 1 ? `（已尝试 ${attempts} 次）` : ""}
-                </p>
-            </div>
-            <div className="flex flex-wrap items-center justify-center gap-2">
-                {retryable && (
-                    <button
-                        type="button"
-                        onClick={onRetry}
-                        disabled={retrying}
-                        className="btn-pill inline-flex h-9 items-center gap-1.5 px-5 text-[13px] disabled:opacity-60"
-                    >
-                        {retrying ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                            <RotateCcw className="h-4 w-4" />
-                        )}
-                        {retrying ? "正在重试…" : "重试转码"}
-                    </button>
-                )}
+        );
+    }
+    if (status === "failed") {
+        return (
+            <span className={chipClass} role="status">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+                {error || "高清版转码失败"}
                 <button
                     type="button"
-                    onClick={onPlayRaw}
-                    className="btn-pill btn-ghost inline-flex h-9 items-center gap-1.5 px-5 text-[13px]"
+                    onClick={onRetry}
+                    disabled={retrying}
+                    className="pointer-events-auto ml-1 inline-flex items-center gap-1 rounded-full bg-white/15 px-2 py-0.5 text-[11px] disabled:opacity-60"
                 >
-                    <Play className="h-4 w-4" />
-                    播放原视频
+                    {retrying ? (
+                        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                    ) : (
+                        <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    )}
+                    {retrying ? "重试中" : "重试"}
                 </button>
-            </div>
-        </div>
-    );
+            </span>
+        );
+    }
+    // ready/failed/queued/processing covered; disabled/unsupported/not_started/
+    // unknown need no chrome at all (the raw video plays normally).
+    return null;
 }

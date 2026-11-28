@@ -377,6 +377,10 @@ agent:
   # 整轮硬超时（毫秒）：LLM 流卡死时兜底中止，避免会话锁与请求永久挂起。
   # 30 分钟：普通问答远用不到，但给长任务（沙箱/长委托）留足余量。
   turnTimeoutMs: 1800000
+  # 流式空闲超时（毫秒）：连续 N 毫秒没有任何帧（正文/思考/工具/队列等）且
+  # 当前没有工具在执行时，中止本轮并下发 error 帧——避免上游卡死时前端
+  # 「思考中」无限等待。工具执行期间不计入空闲（长任务由 turnTimeoutMs 兜底）。
+  streamIdleTimeoutMs: 120000
   # Planner/Supervisor DAG（主 agent 产计划 → 拓扑执行 → 自定义 ReAct agent 节点）。
   plan:
     enabled: true

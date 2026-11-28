@@ -20,6 +20,7 @@ import { config } from "../../../config/index.js";
 import { hashClientKey } from "../../../services/quota.js";
 import { parseBoardContext } from "../../../services/board-context.js";
 import { parseAcademicContext } from "../../../services/research/academic-context.js";
+import { normalizeReasoningEffort } from "../../../agent/reasoning-effort.js";
 import {
   CHAT_MODEL_ID_MAX_CHARS,
   loadChatModels,
@@ -195,8 +196,8 @@ export function registerChatRoutes(
         model?: string;
         /** regenerate: the replaced turn's user msg id (deleted only on success) */
         regenerate_from_msg_id?: string;
-        /** composer reasoning-effort slider: min | mid | high | max */
-        reasoning_effort?: string;
+        /** composer reasoning-effort slider: continuous 0–100 (legacy min|mid|high|max also accepted) */
+        reasoning_effort?: number | string;
         /** board (mindmap/whiteboard) chat context — user input, sanitized below */
         board_uuid?: string;
         board_anchor_text?: string;
@@ -255,6 +256,9 @@ export function registerChatRoutes(
       // they never reach tool arguments. Absent/invalid → the turn proceeds unchanged.
       const board = parseBoardContext(body);
       const academic = parseAcademicContext(body);
+      // Continuous composer effort (0–100); legacy labels are normalized here so
+      // the agent layer only ever sees a number. Invalid values are dropped.
+      const reasoningEffort = normalizeReasoningEffort(body.reasoning_effort);
 
       // Declare takeover of the raw response (SSE writes directly to reply.raw, Fastify no longer intervenes)
       reply.hijack();
@@ -320,10 +324,7 @@ export function registerChatRoutes(
           ...(typeof body.regenerate_from_msg_id === "string" && body.regenerate_from_msg_id.trim()
             ? { regenerateFromMsgId: body.regenerate_from_msg_id.trim().slice(0, 100) }
             : {}),
-          ...(typeof body.reasoning_effort === "string" &&
-          ["min", "mid", "high", "max"].includes(body.reasoning_effort)
-            ? { reasoningEffort: body.reasoning_effort as "min" | "mid" | "high" | "max" }
-            : {}),
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
           ...(board ? { board } : {}),
           ...(academic ? { academicProjectId: academic.projectId } : {}),
           signal: cancel.signal,
