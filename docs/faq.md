@@ -108,6 +108,10 @@ MySQL 用 `mysqldump`（业务库 `mind_base`、`mind_base_ts` 相关集合在 M
 
 不是。app-pay 在 `--profile pay` / `--profile full` 才启动；不启动时会员能力缺失，配额按 free 档位处理，知识库主流程不受影响。
 
+**Q：对话一直显示「思考中」、长时间没有新输出是怎么回事？**
+
+后端空闲看门狗（`agent.streamIdleTimeoutMs`，默认 **120s**）与前端兜底（`STREAM_IDLE_TIMEOUT_MS`，130s）会检测：如果连续超过该时长**没有任何 SSE 帧**（正文 / 思考 / 工具 / 队列等），且当前**没有工具在执行**，本轮会被自动中止并返回明确错误「长时间无输出，已中止」，不会无限等待。工具执行期间（检索、`run_code` 等长任务）不计入空闲，仍由整轮超时 `agent.turnTimeoutMs` 兜底。若频繁出现，请检查 AI 网关 / 上游模型可用性与网络链路。
+
 **Q：桌面端和 Web 后端是什么关系？**
 
 相互独立。桌面端已拆分为独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)：完全本地（SQLite），不依赖 Web 后端；Web 端的学术 agent、科研工作台与桌面端同源演进，但运行形态与数据互不相通。

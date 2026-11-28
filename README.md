@@ -77,7 +77,7 @@ docker compose up -d      # 默认 profile 即全栈
 docker compose up -d                       # 已起全栈
 # AI 能力必须追加网关：供应商密钥在 Higress 控制台 http://127.0.0.1:18081 配置
 docker compose --profile ai up -d
-docker compose --profile sandbox up -d     # 科研代码执行：沙箱控制层 + OpenSandbox
+docker compose up -d                        # 默认已含沙箱（app-sandbox + sandbox-tls + opensandbox-server）；科研代码执行开箱可用
 docker compose --profile pay up -d         # 会员 / 支付
 # 或者一次起「全栈 + 全部可选组件」
 docker compose --profile full up -d

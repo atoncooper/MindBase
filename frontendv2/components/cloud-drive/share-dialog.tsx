@@ -1,9 +1,13 @@
 "use client";
 
 /**
- * Share dialog — create/copy/revoke Baidu-style share links for one file OR
- * one folder (plan/1.0.16 §6). Extraction code (optional), expiry (days),
- * download cap. The share URL is an anonymous route (/cloud/s/<token>).
+ * Share dialog — create/copy/revoke Baidu-style share links for one file, a
+ * folder, OR a multi-file selection (bulk share). Extraction code (optional),
+ * expiry (days), download cap. The share URL is an anonymous route (/cloud/s/<token>).
+ *
+ * 多选分享：后端没有「多文件分享行」，因此多选 = 对每个文件顺序创建一条相同设置的
+ * 分享（createShares 客户端编排，逐项隔离失败）；弹窗按文件展示链接与失败原因，
+ * 支持复制单个 / 复制全部 / 单项重试，合规确认闸门与单文件分享完全一致。
  *
  * 合规警告前置：首次打开时弹出《分享规范》+《内容审核说明》，合并为单一
  * 勾选确认（用户点击「同意并继续」后把确认状态写入 localStorage，按政策版本
@@ -25,31 +29,44 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, Check, Copy, Link2, Loader2, Lock, Scale, ShieldAlert, X } from "lucide-react";
-import { cloudApi, type CloudShareView } from "@/lib/api/cloud";
+import {
+    cloudApi,
+    type CloudShareCreateParams,
+    type CloudShareView,
+} from "@/lib/api/cloud";
 import { getShareBaseUrl } from "@/lib/api/share";
 import { SHARE_PATHS } from "@/lib/api/prefix";
 import { Select } from "@/components/ui/select";
 
+/** 单文件分享目标；多选时 files.length > 1（每个文件一条同配置分享）。 */
+export interface ShareFileTarget {
+    uploadUuid: string;
+    name: string;
+}
+
 export type ShareDialogTarget =
-    | { type: "file"; uploadUuid: string }
-    | { type: "folder"; folderId: number };
+    | { type: "file"; files: ShareFileTarget[] }
+    | { type: "folder"; folderId: number; name: string };
 
 interface ShareDialogProps {
     open: boolean;
-    /** 文件或文件夹分享目标（null = 不渲染） */
+    /** 文件 / 文件夹 / 多文件分享目标（null = 不渲染） */
     target: ShareDialogTarget | null;
-    fileName: string;
     onClose: () => void;
 }
 
-export function ShareDialog({ open, target, fileName, onClose }: ShareDialogProps) {
+export function ShareDialog({ open, target, onClose }: ShareDialogProps) {
     const targetKey =
-        target?.type === "file" ? `file-${target.uploadUuid}` : target ? `folder-${target.folderId}` : "";
+        target?.type === "file"
+            ? `files-${target.files.map((f) => f.uploadUuid).join(",")}`
+            : target
+              ? `folder-${target.folderId}`
+              : "";
     // portal 到 body：避开页面 transform 祖先（会让 fixed 失效）与父级 overflow 裁切。
     if (!open || !target || typeof document === "undefined") return null;
     return createPortal(
         <AnimatePresence>
-            <ShareDialogBody key={targetKey} target={target} fileName={fileName} onClose={onClose} />
+            <ShareDialogBody key={targetKey} target={target} onClose={onClose} />
         </AnimatePresence>,
         document.body,
     );
@@ -132,16 +149,33 @@ function AckRow({
     );
 }
 
+/** 多选分享的逐文件结果：token 非空 = 已创建；否则 detail 给出失败原因。 */
+interface BulkOutcome {
+    uploadUuid: string;
+    name: string;
+    token?: string;
+    detail?: string;
+}
+
 function ShareDialogBody({
     target,
-    fileName,
     onClose,
 }: {
     target: ShareDialogTarget;
-    fileName: string;
     onClose: () => void;
 }) {
-    const isFolder = target.type === "folder";
+    const files = target.type === "file" ? target.files : [];
+    const folderId = target.type === "folder" ? target.folderId : null;
+    const singleFile =
+        target.type === "file" && target.files.length === 1 ? target.files[0] : null;
+    const singleUuid = singleFile?.uploadUuid ?? null;
+    const isMulti = target.type === "file" && target.files.length > 1;
+    const titleName =
+        target.type === "folder"
+            ? target.name
+            : files.length === 1
+              ? (files[0]?.name ?? "文件")
+              : `${files.length} 个文件`;
     const [shares, setShares] = useState<CloudShareView[]>([]);
     // starts true: the mount effect kicks off the initial fetch
     const [loading, setLoading] = useState(true);
@@ -151,6 +185,9 @@ function ShareDialogBody({
     const [expiresInDays, setExpiresInDays] = useState(7);
     const [maxDownloads, setMaxDownloads] = useState("");
     const [copiedId, setCopiedId] = useState<number | string | null>(null);
+    // 多选分享：逐文件创建结果 + 进度（顺序创建，失败行可单独重试）
+    const [outcomes, setOutcomes] = useState<BulkOutcome[]>([]);
+    const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
     // ── 合规与审核告知：合并为一个确认项，首次打开时显示警告层 ──
     const alreadyAcked = hasAckedSharePolicy();
     const [policyAck, setPolicyAck] = useState(alreadyAcked);
@@ -172,18 +209,23 @@ function ShareDialogBody({
     const fullUrlFor = (token: string) => `${shareBase}${SHARE_PATHS.cloud}/${token}`;
 
     const refresh = useCallback(async () => {
+        // 多选不预取每个文件的既有分享（会打 N 次列表接口），只展示本次创建结果。
+        if (isMulti) return;
         setLoading(true);
         try {
-            const res = isFolder
-                ? await cloudApi.listFolderShares(target.folderId)
-                : await cloudApi.listShares(target.uploadUuid);
+            const res =
+                folderId != null
+                    ? await cloudApi.listFolderShares(folderId)
+                    : singleUuid
+                      ? await cloudApi.listShares(singleUuid)
+                      : { shares: [], total: 0 };
             setShares(res.shares);
         } catch {
             setShares([]);
         } finally {
             setLoading(false);
         }
-    }, [isFolder, target]);
+    }, [folderId, singleUuid, isMulti]);
 
     useEffect(() => {
         // mount fetch: async body so no setState runs synchronously in the effect
@@ -194,39 +236,117 @@ function ShareDialogBody({
         void run();
     }, [refresh]);
 
+    /** 校验并组装创建参数（单选 / 多选 / 文件夹共用同一套设置）。 */
+    const buildCreateParams = (): CloudShareCreateParams | null => {
+        const trimmed = code.trim();
+        if (useCode && trimmed.length < 3) {
+            setError("提取码至少 3 位");
+            return null;
+        }
+        const md = maxDownloads.trim();
+        if (md && (!Number.isFinite(Number(md)) || Number(md) < 1)) {
+            setError("下载次数上限需为正整数，或留空不限");
+            return null;
+        }
+        // 合规警告 + 内容审核告知均已前置确认，创建请求固定带两个 ack
+        return {
+            ...(useCode && trimmed ? { code: trimmed } : {}),
+            expiresInDays,
+            ...(md ? { maxDownloads: Number(md) } : {}),
+            legalAck: true,
+            contentReviewAck: true,
+        };
+    };
+
     const handleCreate = async () => {
-        setBusy(true);
         setError(null);
+        const params = buildCreateParams();
+        if (!params) return;
+        setBusy(true);
         try {
-            const trimmed = code.trim();
-            if (useCode && trimmed.length < 3) {
-                setError("提取码至少 3 位");
+            if (isMulti) {
+                setOutcomes(files.map((f) => ({ uploadUuid: f.uploadUuid, name: f.name })));
+                setProgress({ done: 0, total: files.length });
+                const res = await cloudApi.createShares(files, params, (done, total) =>
+                    setProgress({ done, total }),
+                );
+                setOutcomes((prev) =>
+                    prev.map((item) => {
+                        const created = res.created.find((c) => c.uploadUuid === item.uploadUuid);
+                        if (created) {
+                            const token = created.share.shareToken;
+                            return token
+                                ? { ...item, token, detail: undefined }
+                                : { ...item, detail: "链接生成失败，请重试" };
+                        }
+                        const failure = res.failed.find((f) => f.uploadUuid === item.uploadUuid);
+                        return { ...item, detail: failure?.detail ?? "创建失败" };
+                    }),
+                );
                 return;
             }
-            const md = maxDownloads.trim();
-            if (md && (!Number.isFinite(Number(md)) || Number(md) < 1)) {
-                setError("下载次数上限需为正整数，或留空不限");
-                return;
+            if (target.type === "folder") {
+                const res = await cloudApi.createFolderShare(target.folderId, params);
+                setCopiedId(res.id ?? null); // 新链接直接进入列表并高亮复制态
+            } else if (singleFile) {
+                const res = await cloudApi.createShare(singleFile.uploadUuid, params);
+                setCopiedId(res.id ?? null);
             }
-            // 合规警告 + 内容审核告知均已前置确认，创建请求固定带两个 ack
-            const params = {
-                ...(useCode && trimmed ? { code: trimmed } : {}),
-                expiresInDays,
-                ...(md ? { maxDownloads: Number(md) } : {}),
-                legalAck: true,
-                contentReviewAck: true,
-            };
-            const res = isFolder
-                ? await cloudApi.createFolderShare(target.folderId, params)
-                : await cloudApi.createShare(target.uploadUuid, params);
-            setCopiedId(res.id ?? null); // 新链接直接进入列表并高亮复制态
             await refresh();
         } catch (e) {
             setError(e instanceof Error ? e.message : "创建失败");
         } finally {
             setBusy(false);
+            setProgress(null);
         }
     };
+
+    /** 单独重试某个失败文件的分享创建（成功后清除该行错误）。 */
+    const retryOutcome = async (uploadUuid: string) => {
+        const file = files.find((f) => f.uploadUuid === uploadUuid);
+        if (!file) return;
+        setError(null);
+        const params = buildCreateParams();
+        if (!params) return;
+        setBusy(true);
+        try {
+            const share = await cloudApi.createShare(file.uploadUuid, params);
+            const token = share.shareToken;
+            setOutcomes((prev) =>
+                prev.map((item) =>
+                    item.uploadUuid === uploadUuid
+                        ? token
+                            ? { ...item, token, detail: undefined }
+                            : { ...item, detail: "链接生成失败，请重试" }
+                        : item,
+                ),
+            );
+        } catch (e) {
+            setOutcomes((prev) =>
+                prev.map((item) =>
+                    item.uploadUuid === uploadUuid
+                        ? { ...item, detail: e instanceof Error ? e.message : "创建失败" }
+                        : item,
+                ),
+            );
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    /** 复制全部已创建链接（每行「文件名: 链接」）。 */
+    const copyAllOutcomes = () => {
+        const lines: string[] = [];
+        for (const item of outcomes) {
+            if (item.token) lines.push(`${item.name}: ${fullUrlFor(item.token)}`);
+        }
+        if (lines.length === 0) return;
+        void navigator.clipboard.writeText(lines.join("\n"));
+        setCopiedId("all");
+        setTimeout(() => setCopiedId((cur) => (cur === "all" ? null : cur)), 1500);
+    };
+
+    const successCount = outcomes.filter((item) => item.token).length;
 
     const handleResetCode = async (id: number) => {
         if (resetCodeValue.trim().length < 3) return;
@@ -393,13 +513,15 @@ function ShareDialogBody({
                             <div className="min-w-0 flex-1 pt-0.5">
                                 <h2
                                     id="share-dialog-title"
-                                    title={fileName}
+                                    title={titleName}
                                     className="truncate text-[20px] font-normal leading-7 tracking-[-0.01em]"
                                 >
-                                    分享「{fileName}」
+                                    分享「{titleName}」
                                 </h2>
                                 <p className="mt-1 text-[13px] leading-5 text-[#444746]">
-                                    任何获得链接的人都可以查看
+                                    {isMulti
+                                        ? `将按相同设置分别为 ${files.length} 个文件创建分享链接`
+                                        : "任何获得链接的人都可以查看"}
                                 </p>
                             </div>
                             <button
@@ -413,6 +535,11 @@ function ShareDialogBody({
                         </header>
 
                         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6 pt-4">
+                            {isMulti && (
+                                <p className="mb-3 rounded-lg bg-[#f0f4f9] px-3 py-2 text-[12px] leading-5 text-[#444746]">
+                                    已选 {files.length} 个文件：以下设置将应用到每一个文件，逐个创建分享链接。
+                                </p>
+                            )}
                             {/* 创建表单 */}
                             <section className="space-y-3">
                                 <div className="flex items-center gap-3">
@@ -480,9 +607,122 @@ function ShareDialogBody({
                                 className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-full bg-[#0b57d0] text-[14px] font-medium text-white transition-all enabled:hover:bg-[#0a4cb5] enabled:hover:shadow-[0_1px_2px_rgba(60,64,67,0.3),0_1px_3px_1px_rgba(60,64,67,0.15)] disabled:cursor-not-allowed disabled:bg-[rgba(31,31,31,0.12)] disabled:text-[rgba(31,31,31,0.38)]"
                             >
                                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
-                                创建分享链接
+                                {isMulti ? `创建 ${files.length} 个分享链接` : "创建分享链接"}
                             </button>
+                            {progress && (
+                                <p className="mt-2 text-center text-[12px] leading-5 text-[#747775]">
+                                    正在创建 {progress.done}/{progress.total}…
+                                </p>
+                            )}
 
+                            {/* 多选：本次逐文件创建结果（复制每个 / 复制全部 / 单项重试） */}
+                            {isMulti ? (
+                                <div>
+                                    <div className="mt-6 h-px bg-[#e0e3e1]" />
+                                    <div className="mt-4 flex items-center justify-between gap-2">
+                                        <h3 className="text-[13px] font-medium text-[#1f1f1f]">
+                                            本次创建的链接
+                                        </h3>
+                                        <div className="flex shrink-0 items-center gap-1">
+                                            <span className="rounded-full bg-[#f0f4f9] px-2 py-0.5 text-[11px] font-medium text-[#444746]">
+                                                {successCount}/{files.length}
+                                            </span>
+                                            {successCount > 0 && (
+                                                <button
+                                                    type="button"
+                                                    onClick={copyAllOutcomes}
+                                                    className="flex h-8 items-center gap-1 rounded-full px-3 text-[12px] font-medium text-[#0b57d0] transition-colors hover:bg-[rgba(11,87,208,0.08)]"
+                                                >
+                                                    {copiedId === "all" ? (
+                                                        <Check className="h-3.5 w-3.5" />
+                                                    ) : (
+                                                        <Copy className="h-3.5 w-3.5" />
+                                                    )}
+                                                    {copiedId === "all" ? "已复制全部" : "复制全部"}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    {outcomes.length === 0 ? (
+                                        <div className="mt-3 flex flex-col items-center gap-1 rounded-2xl bg-[#f8fafd] px-4 py-7 text-center">
+                                            <Link2 className="h-5 w-5 text-[#9aa0a6]" strokeWidth={1.6} />
+                                            <p className="mt-1 text-[13px] text-[#444746]">
+                                                点击上方按钮为选中的文件创建链接
+                                            </p>
+                                            <p className="text-[12px] text-[#747775]">
+                                                每个文件一条独立分享链接，设置完全一致
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <ul className="mt-3 space-y-2">
+                                            {outcomes.map((item) => {
+                                                const url = item.token ? fullUrlFor(item.token) : "";
+                                                const copyKey = `bulk-${item.uploadUuid}`;
+                                                return (
+                                                    <li
+                                                        key={item.uploadUuid}
+                                                        className="rounded-2xl border border-[#e0e3e1] px-3.5 py-3"
+                                                    >
+                                                        <div className="flex items-start gap-2">
+                                                            <Link2
+                                                                className="mt-1 h-4 w-4 shrink-0 text-[#747775]"
+                                                                strokeWidth={1.8}
+                                                            />
+                                                            <div className="min-w-0 flex-1">
+                                                                <p
+                                                                    title={item.name}
+                                                                    className="truncate text-[13px] leading-5 text-[#1f1f1f]"
+                                                                >
+                                                                    {item.name}
+                                                                </p>
+                                                                {url ? (
+                                                                    <p
+                                                                        title={url}
+                                                                        className="mt-0.5 truncate text-[12px] leading-5 text-[#747775]"
+                                                                    >
+                                                                        {url}
+                                                                    </p>
+                                                                ) : item.detail ? (
+                                                                    <p className="mt-0.5 text-[12px] leading-5 text-[#d93025]">
+                                                                        {item.detail}
+                                                                    </p>
+                                                                ) : (
+                                                                    <p className="mt-0.5 text-[12px] leading-5 text-[#747775]">
+                                                                        待创建…
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                            {url ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => copyLink(copyKey, url)}
+                                                                    className="flex h-8 shrink-0 items-center gap-1 rounded-full px-3 text-[12px] font-medium text-[#0b57d0] transition-colors hover:bg-[rgba(11,87,208,0.08)]"
+                                                                >
+                                                                    {copiedId === copyKey ? (
+                                                                        <Check className="h-3.5 w-3.5" />
+                                                                    ) : (
+                                                                        <Copy className="h-3.5 w-3.5" />
+                                                                    )}
+                                                                    {copiedId === copyKey ? "已复制" : "复制"}
+                                                                </button>
+                                                            ) : !busy && item.detail ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void retryOutcome(item.uploadUuid)}
+                                                                    className="h-8 shrink-0 rounded-full px-3 text-[12px] font-medium text-[#b06000] transition-colors hover:bg-[rgba(176,96,0,0.08)]"
+                                                                >
+                                                                    重试
+                                                                </button>
+                                                            ) : null}
+                                                        </div>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
+                                </div>
+                            ) : (
+                                <>
                             {/* 生效中的链接 */}
                             <div className="mt-6 h-px bg-[#e0e3e1]" />
                             <div className="mt-4 flex items-center justify-between">
@@ -644,6 +884,8 @@ function ShareDialogBody({
                                     </ul>
                                 )}
                             </div>
+                                </>
+                            )}
                         </div>
                     </motion.div>
                 )}

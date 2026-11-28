@@ -144,10 +144,11 @@ func main() {
 	// migrate it. A failure degrades to "payment console disabled" (503 on
 	// /api/pay/**) instead of taking the whole admin console down.
 	var (
-		payQuery  *service.PayQueryService
-		payGrants *service.PayGrantService
-		payOps    *payops.Client
-		payAudit  *service.PayAudit
+		payQuery    *service.PayQueryService
+		payGrants   *service.PayGrantService
+		payProducts *service.PayProductService
+		payOps      *payops.Client
+		payAudit    *service.PayAudit
 	)
 	if payURL := strings.TrimSpace(cfg.PayRDBMS.URL); payURL != "" {
 		if err := db.PayInit(payURL, cfg.PayRDBMS.MaxOpenConns, cfg.PayRDBMS.MaxIdleConns,
@@ -159,6 +160,9 @@ func main() {
 			payAudit = service.NewPayAudit(cfg.Pay.AuditFile)
 			defer payAudit.Close()
 			payQuery = service.NewPayQueryService()
+			// Authoritative SKU catalog writes from the console (app-pay only
+			// reads the table behind its 5s active-product cache).
+			payProducts = service.NewPayProductService(payAudit)
 			payGrants = service.NewPayGrantService(payAudit, service.GrantCaps{
 				DailyMaxCount: cfg.Pay.Grant.DailyMaxCount,
 				DailyMaxDays:  cfg.Pay.Grant.DailyMaxDays,
@@ -208,16 +212,17 @@ func main() {
 	consoleUsers := service.NewConsoleUserService()
 
 	handler := router.New(cfg, router.Deps{
-		Auth:     auth,
-		Users:    users,
-		Shares:   shares,
-		Audits:   audits,
-		Sandbox:  sandboxSvc,
-		Pay:      payQuery,
-		Grants:   payGrants,
-		Console:  consoleUsers,
-		Ops:      payOps,
-		PayAudit: payAudit,
+		Auth:        auth,
+		Users:       users,
+		Shares:      shares,
+		Audits:      audits,
+		Sandbox:     sandboxSvc,
+		Pay:         payQuery,
+		Grants:      payGrants,
+		PayProducts: payProducts,
+		Console:     consoleUsers,
+		Ops:         payOps,
+		PayAudit:    payAudit,
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}

@@ -152,12 +152,15 @@ func TestOriginGateValidatesPreflight(t *testing.T) {
 	if rec := request("POST", "content-type"); rec.Code != http.StatusNoContent {
 		t.Fatalf("valid preflight should be accepted, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	// DELETE is allowed since the console account-management endpoints
-	// (DELETE /api/console/users/:id) were merged in; PUT stays unsupported.
+	// DELETE is allowed for console account management; PUT for the SKU catalog
+	// edits (PUT /api/pay/products/:id). PATCH stays unsupported.
 	if rec := request("DELETE", "content-type"); rec.Code != http.StatusNoContent {
 		t.Fatalf("DELETE preflight must be accepted for account management, got %d", rec.Code)
 	}
-	if rec := request("PUT", "content-type"); rec.Code != http.StatusForbidden {
+	if rec := request("PUT", "content-type"); rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT preflight must be accepted for SKU catalog edits, got %d", rec.Code)
+	}
+	if rec := request("PATCH", "content-type"); rec.Code != http.StatusForbidden {
 		t.Fatalf("unsupported preflight method must be rejected, got %d", rec.Code)
 	}
 	if rec := request("POST", "x-evil-header"); rec.Code != http.StatusForbidden {

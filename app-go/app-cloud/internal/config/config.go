@@ -228,10 +228,18 @@ type HLSConfig struct {
 	// objects to the edge's private network, so a leaked MinIO address cannot be
 	// used from outside the cluster. Set ["0.0.0.0/0"] for the legacy behaviour.
 	AllowedSourceCIDRs []string `yaml:"allowed_source_cidrs"`
+	// LazyEnqueue makes GET /cloud/video/:uuid/hls enqueue packaging for a video
+	// that has no status yet (older uploads, a webhook that never fired, a Redis
+	// status lost to TTL). Before this, such videos reported a fake "processing"
+	// state forever. A nil pointer keeps the recommended default (on).
+	LazyEnqueue *bool `yaml:"lazy_enqueue"`
 }
 
 // ABREnabled defaults to on unless explicitly disabled.
 func (h HLSConfig) ABREnabled() bool { return h.ABR == nil || *h.ABR }
+
+// LazyEnqueueOnView defaults to on unless explicitly disabled.
+func (h HLSConfig) LazyEnqueueOnView() bool { return h.LazyEnqueue == nil || *h.LazyEnqueue }
 
 // ThumbnailsEnabled defaults to on unless explicitly disabled.
 func (h HLSConfig) ThumbnailsEnabled() bool { return h.Thumbnails == nil || *h.Thumbnails }

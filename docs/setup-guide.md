@@ -107,9 +107,10 @@ docker compose ps
 
 ```bash
 docker compose --profile ai up -d          # AI 网关（AI 能力必须）
-docker compose --profile sandbox up -d     # 科研代码执行：沙箱控制层 + OpenSandbox
 docker compose --profile pay up -d         # 会员 / 支付（支付运营在默认管理台内）
 docker compose --profile tools up -d       # Redis / Mongo 网页管理工具
+# 科研代码执行的沙箱已随默认 up -d 启动，无需 --profile sandbox；
+# 仅单独补起：docker compose up -d app-sandbox sandbox-tls opensandbox-server
 ```
 
 也可以一次起「全栈 + 全部可选组件」（含支付测试实例与管理工具）：
@@ -170,7 +171,7 @@ curl -s http://127.0.0.1:8017/health      # 沙箱控制层（需先启 sandbox�
 1. 打开 `http://localhost`，用 **B 站 App 扫码**登录（也支持账号密码）。
 2. 导航「**收藏夹**」：选择收藏夹并同步；之后自动进入处理链路——下载音频 / 抓字幕 → 语音转写 → 切块向量化。耗时取决于视频数量（每篇通常几分钟），页面可见进度。
 3. 打开「**对话**」提问，回答带来源引用；也可以让 AI 帮你整理笔记、生成题目、操作思维导图。
-4. 「**科研**」：科研工作台（项目六阶段、文献检索与核验、稿件写作）。其中「在沙箱里跑分析脚本」需要 4.2 的 `--profile sandbox` 与 3.4 的 `SANDBOX_ENABLED=true`。
+4. 「**科研**」：科研工作台（项目六阶段、文献检索与核验、稿件写作）。其中「在沙箱里跑分析脚本」默认可用（沙箱随 `docker compose up -d` 启动，app-ts 侧 `SANDBOX_ENABLED=true`）。
 5. 「**题目练习**」生成 / 批改题目；「**定时出题**」设定时间后自动出题并发邮件（需 3.4 的邮件配置）。
 6. 其他入口：「更多」→ 知识图谱 / 知识盲区；「笔记」「思维导图」「云盘」「技能」；右上角「设置」改偏好与壁纸。
 7. 管理与运维：管理台 `http://127.0.0.1:3001`（分享审核、沙箱面板、支付运营、账户与审计；默认 `admin` / `app-admin`，首登改密）。支付运营读 `app-pay` 库（`--profile pay`），退款复核需 `PAY_OPS_KEY`。
@@ -185,7 +186,7 @@ curl -s http://127.0.0.1:8017/health      # 沙箱控制层（需先启 sandbox�
 
 **AI 调用失败（对话报错、转写失败、出题失败）。** 依次检查：①是否执行 `--profile ai`、`higress` 是否 healthy；②控制台供应商 key 是否有效、模型路由是否覆盖默认模型名（`z-ai/glm-5.3-flash`、`text-embedding-v4`、`gte-rerank-v2`）；③`.env` 的 `AI_GATEWAY__API_KEY` 是否与网关消费者 key 完全一致；④改完 `.env` 后执行 `docker compose up -d app-ts app-cloud app-user` 让服务重新读取。若换过 embedding 模型，检索会为空，需要重建向量库。
 
-**沙箱 / `run_code` 不可用。** 确认 `--profile sandbox` 已启动且 `app-sandbox`、`opensandbox-server` 均 healthy；`OPENSANDBOX_API_KEY` 非空且两边一致；`.env` 有 `SANDBOX_ENABLED=true` 并重启过 `app-ts`。只想演示控制层链路时可在 `.env` 设 `SANDBOX_RUNTIME_TYPE=fake`，它不会真实隔离执行代码。
+**沙箱 / `run_code` 不可用。** 沙箱三件套（`app-sandbox` / `sandbox-tls` / `opensandbox-server`）已随默认 `docker compose up -d` 启动，先 `docker compose ps` 确认均 healthy；`OPENSANDBOX_API_KEY` 非空且两边一致；app-ts 侧 `SANDBOX_ENABLED=true`（compose 已注入）并重启过 `app-ts`。只想演示控制层链路时可在 `.env` 设 `SANDBOX_RUNTIME_TYPE=fake`，它不会真实隔离执行代码。
 
 **管理台 502 / 登录不了。** 管理台页面（3001）把 `/api` 反代到 `app-admin-api`（8016）：先 `curl -s http://127.0.0.1:8016/health`，502 时看 `docker compose logs -f app-admin-api`（常见：数据库未就绪、8016 被占用）。默认 `admin` / `app-admin`，首登强制改密；沙箱面板还需 3.4 的 `SANDBOX_ADMIN_TOKEN`。
 

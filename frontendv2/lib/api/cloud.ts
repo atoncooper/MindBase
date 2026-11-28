@@ -295,6 +295,21 @@ export interface CloudTrashResponse {
     total: number;
 }
 
+/** 批量操作（移入回收站 / 恢复 / 彻底删除）中单个文件的结果 */
+export interface CloudBatchItemResult {
+    uploadUuid: string;
+    ok: boolean;
+    /** ok=false 时的中文原因（不存在 / 不属于当前账号 / 服务异常） */
+    detail?: string;
+}
+
+/** 三个批量端点的统一响应：成功/失败计数 + 逐项结果（顺序与请求一致） */
+export interface CloudBatchOperationResponse {
+    succeeded: number;
+    failed: number;
+    results: CloudBatchItemResult[];
+}
+
 export interface CloudShareCreateParams {
     code?: string;
     expiresInDays?: number;
@@ -447,6 +462,69 @@ export function formatBytes(bytes: number): string {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
+/** 批量创建分享的逐项结果（后端没有多文件分享行：多选分享 = 每文件一条同配置分享） */
+export interface CloudBulkShareCreated {
+    uploadUuid: string;
+    name: string;
+    share: CloudShareView;
+}
+
+export interface CloudBulkShareFailed {
+    uploadUuid: string;
+    name: string;
+    detail: string;
+}
+
+export interface CloudBulkShareResult {
+    created: CloudBulkShareCreated[];
+    failed: CloudBulkShareFailed[];
+}
+
+/** 单文件分享创建的共享实现（createShare / createShares 复用同一 snake→camel 映射）。 */
+async function createFileShare(
+    uploadUuid: string,
+    data: CloudShareCreateParams,
+): Promise<CloudShareView> {
+    // app-cloud 返回 snake_case（share_url/share_token），必须转换，
+    // 否则 share-dialog 拿到 undefined 生成无 token 的 /cloud/s/ 链接
+    // （已导致 301 循环 + 限流 503）。
+    const raw = await request<Record<string, unknown>>(`/cloud/video/${uploadUuid}/share`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify(data),
+    });
+    return snakeToCamel<CloudShareView>(raw);
+}
+
+/**
+ * 顺序为每个文件创建同配置分享（提取码/有效期/下载上限/合规确认一致）。
+ * 逐项隔离失败并返回明细，弹窗据此展示「复制每个链接」与逐文件重试。
+ * onProgress 用于展示「正在创建 i/n」。
+ */
+async function createFileShares(
+    files: { uploadUuid: string; name: string }[],
+    data: CloudShareCreateParams,
+    onProgress?: (done: number, total: number) => void,
+): Promise<CloudBulkShareResult> {
+    const created: CloudBulkShareCreated[] = [];
+    const failed: CloudBulkShareFailed[] = [];
+    for (let i = 0; i < files.length; i += 1) {
+        const file = files[i];
+        try {
+            const share = await createFileShare(file.uploadUuid, data);
+            created.push({ uploadUuid: file.uploadUuid, name: file.name, share });
+        } catch (err) {
+            failed.push({
+                uploadUuid: file.uploadUuid,
+                name: file.name,
+                detail: err instanceof Error ? err.message : "创建失败",
+            });
+        }
+        onProgress?.(i + 1, files.length);
+    }
+    return { created, failed };
+}
+
 export const cloudApi = {
     // ── Folders ──
     listFolders: async () => {
@@ -503,6 +581,16 @@ export const cloudApi = {
             method: "DELETE",
             headers: getAuthHeaders(),
         }),
+
+    /** 批量移入回收站（软删除；服务端逐项返回成功/失败，单文件端点保留） */
+    batchDeleteVideos: async (uploadUuids: string[]) => {
+        const raw = await request<CloudBatchOperationResponse>("/cloud/videos/batch-delete", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ uuids: uploadUuids }),
+        });
+        return snakeToCamel<CloudBatchOperationResponse>(raw);
+    },
 
     // ── Upload ──
     initUpload: (data: CloudUploadInitParams) =>
@@ -676,17 +764,30 @@ export const cloudApi = {
             headers: getAuthHeaders(),
         }),
 
-    createShare: async (uploadUuid: string, data: CloudShareCreateParams) => {
-        // app-cloud 返回 snake_case（share_url/share_token），必须转换，
-        // 否则 share-dialog 拿到 undefined 生成无 token 的 /cloud/s/ 链接
-        // （已导致 301 循环 + 限流 503）。
-        const raw = await request<Record<string, unknown>>(`/cloud/video/${uploadUuid}/share`, {
+    /** 批量恢复回收站文件（逐项返回成功/失败） */
+    batchRestoreTrash: async (uploadUuids: string[]) => {
+        const raw = await request<CloudBatchOperationResponse>("/cloud/trash/batch-restore", {
             method: "POST",
             headers: getAuthHeaders(),
-            body: JSON.stringify(data),
+            body: JSON.stringify({ uuids: uploadUuids }),
         });
-        return snakeToCamel<CloudShareView>(raw);
+        return snakeToCamel<CloudBatchOperationResponse>(raw);
     },
+
+    /** 批量彻底删除回收站文件（不可恢复；逐项返回成功/失败） */
+    batchPurgeTrash: async (uploadUuids: string[]) => {
+        const raw = await request<CloudBatchOperationResponse>("/cloud/trash/batch-purge", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ uuids: uploadUuids }),
+        });
+        return snakeToCamel<CloudBatchOperationResponse>(raw);
+    },
+
+    createShare: createFileShare,
+
+    /** 多选分享：逐文件创建同配置分享（顺序执行，部分失败可逐项重试）。 */
+    createShares: createFileShares,
 
     listShares: async (uploadUuid: string) => {
         const raw = await request<{ shares: CloudShareView[]; total: number }>(

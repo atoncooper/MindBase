@@ -84,23 +84,25 @@ chmod 600 secrets/api_key_encryption_key
 
 | 命令 | 启动内容 | 说明 |
 |---|---|---|
-| `docker compose up -d --build` | 默认全栈（实测 23 个服务）：frontend/openresty/APISIX/app-ts/app-go 各服务/app-content/app-content-mcp/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
+| `docker compose up -d --build` | 默认全栈（实测 28 个服务）：frontend / openresty / APISIX / app-ts / app-go 各服务 / app-content(-mcp) / app-task / app-pay / app-admin / **app-sandbox + sandbox-tls + opensandbox-server（沙箱已默认启动）** / 存储 / cert-gen | 首次必须 `--build` |
 | `--profile ai` | 追加 Higress AI 网关（追加后用于平台 LLM/embedding 出网） | 单独执行只起 5 个服务（higress+mysql/mongo/redis+cert-gen），**不含**主栈 |
-| `--profile sandbox` | 追加 opensandbox-server / app-sandbox | 单独执行只起 6 个服务；配合 `SANDBOX_ENABLED=true` |
+| `--profile sandbox` | 单独拉起沙箱三件套 | **已并入默认集合**，无需再追加；单独执行只起 8 个服务（含 mysql/mongo/redis/minio/cert-gen） |
 | `--profile pay-test` | 追加 app-pay-test（回环 18002）与测试库（回环 18306） | 仅测试，不用于生产 |
 | `--profile tools` | 追加 redis-commander / mongo-express | 仅内网调试 |
 | `--profile pay` / `--profile admin` | 默认集合已含 app-pay / app-admin；仅单域最小栈时显式指定 | 单独执行会排除默认全栈 |
-| `--profile full` | 一次启动全量（实测 30 个服务）：默认全栈 + higress + sandbox 两件 + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
+| `--profile full` | 一次启动全量（实测 34 个服务）：默认全栈（含沙箱）+ higress + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
 | `--profile note` / `quiz` / `board` / `content` | 内容域 `app-content`（+ 对应 `*-mcp`） | 单域最小栈；app-content profiles 是并集，旧 note/quiz/board 语义保留 |
 
 > **compose profile 语义（实测 `docker compose config --services`）**：服务带 `profiles: [""]` 属于默认集合；
 > **一旦传入 `--profile X`，默认集合不再自动启动**。因此上表「追加」应分两步：
 >
 > ```bash
-> docker compose up -d --build                 # ① 默认全栈
+> docker compose up -d --build                 # ① 默认全栈（已含沙箱）
 > docker compose --profile ai up -d            # ② 追加 Higress
-> docker compose --profile sandbox up -d       # ③ 需要时追加沙箱
 > ```
+>
+> 沙箱（app-sandbox / sandbox-tls / opensandbox-server）已在 ① 默认启动；仅需单独调试沙箱时执行
+> `docker compose up -d app-sandbox sandbox-tls opensandbox-server`。
 >
 > 或一次到底：`docker compose --profile full up -d`。单独 `--profile ai` 只会起 5 个服务，**不会**拉起主栈。
 
@@ -118,7 +120,7 @@ chmod 600 secrets/api_key_encryption_key
     --build-arg MINIO_BINARY_MIRROR=https://ghfast.top/https://github.com/minio/minio/releases/download
   ```
   构建层带 BuildKit cache mount（`/var/cache/minio`），同一 builder 只下载一次。
-- 生产建议：先 `docker compose up -d --build`，再 `docker compose --profile ai up -d`（需要沙箱再 `docker compose --profile sandbox up -d`，并保持 `SANDBOX_ENABLED=true`）。
+- 生产建议：先 `docker compose up -d --build`（默认已含沙箱），再 `docker compose --profile ai up -d` 追加 AI 网关；app-ts 侧保持 `SANDBOX_ENABLED=true`。
 
 ## 5. HTTPS / TLS
 
@@ -194,8 +196,8 @@ OPENSANDBOX_API_KEY=<openssl rand -hex 32>   # 两侧同值
 SANDBOX_ENABLED=true                        # app-ts 侧启用
 SANDBOX_ADMIN_TOKEN=<openssl rand -hex 32>  # 管理面板令牌（可空=面板禁用）
 
-docker compose up -d --build                 # 先起默认全栈（若尚未启动）
-docker compose --profile sandbox up -d       # 再追加沙箱；单独 --profile sandbox 不会带起主栈
+docker compose up -d --build                 # 默认全栈（含沙箱三件套）
+docker compose up -d app-sandbox sandbox-tls opensandbox-server  # 仅单独补起沙箱（可选）
 ```
 
 - 单机 compose 的 `opensandbox-server` 挂载宿主 Docker socket 创建 sibling sandbox 容器：**docker socket ≈ root**，只允许可信单机；多租户/生产用 K8s 隔离（[deploy/k8s/40-sandbox/README.md](../deploy/k8s/40-sandbox/README.md)）。
@@ -253,7 +255,7 @@ git checkout <last-good-commit> && docker compose build && docker compose up -d
 | 401 / 403 | 会话过期（app-user auth 路由 forward-auth 401）；服务间 `/internal/*` 需 `APISIX_CONSUMER_KEY`（key-auth）；直连应用端口绕过网关也会 401（只信任网关注入的 X-Uid） |
 | app-pay 起不来 | 证书缺失（`PAY_TLS_CERT` 路径错/未生成 → 启动自检拒绝）；Flyway 迁移失败；`app-pay-mysql` 未 healthy |
 | app-ts 功能降级 | Mongo/Milvus/Redis 不可用时启动日志出现 `memory fallback` / `[RAG] ... degraded`；服务仍可用但数据不落/检索受限，修复依赖后重启 |
-| 沙箱不可用 | 未开 `--profile sandbox` 或 `SANDBOX_ENABLED` 非 true；`/ready` 失败（MySQL ping）；`OPENSANDBOX_API_KEY` 两侧不一致；查 `logs app-sandbox opensandbox-server` |
+| 沙箱不可用 | 沙箱容器未启动（`docker compose ps` 查 app-sandbox / sandbox-tls / opensandbox-server）或 app-ts 侧 `SANDBOX_ENABLED` 非 true；`/ready` 失败（MySQL ping）；`OPENSANDBOX_API_KEY` 两侧不一致；查 `logs app-sandbox opensandbox-server` |
 | 管理台 3001 打不开 | 仅回环：`ssh -L 3001:127.0.0.1:3001 user@host` 后访问 http://127.0.0.1:3001；`APPADMIN__SECURITY__IP_ALLOWLIST` 会拦截来源 IP |
 | 端口冲突 | 改 `docker-compose.yml` 对应服务的 `ports:` 字面量（不再经 .env）；`docker compose ps` 查看占用 |
 | 内存/磁盘告警 | Milvus/Neo4j/MinIO 为大件：`docker stats`、`docker system df -v`；必要时迁数据卷到更大磁盘 |

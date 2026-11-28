@@ -9,19 +9,75 @@ import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
 import { ChatInput, type SelectedSkill } from "./chat-input";
-import type { ChatModelSelection } from "./chat-model-picker";
+import { ChatModelPickerProvider, type ChatModelPickerContextValue, type ChatModelSelection } from "./chat-model-picker";
+import {
+  clampReasoningEffort,
+  LEGACY_EFFORT_STOPS,
+  REASONING_EFFORT_DEFAULT,
+  type ReasoningEffort,
+} from "./effort-slider";
+import { ChatHistoryRail, type ChatHistoryItem } from "./chat-history-rail";
 import { QueuedMessages, type QueuedMessage } from "./queued-messages";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
-import { academicApi, chatApi, quotaApi, type AcademicProjectSummary, type ChatModel, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
+import { academicApi, chatApi, codingPlanApi, quotaApi, type AcademicProjectSummary, type ChatModel, type ChatSession, type ChatMessage as ApiChatMessage, type CodingPlan, type SessionDocument, type QuotaSummary } from "@/lib/api";
 import { STAGE_LABELS } from "@/components/research/research-ui";
 
-import { streamChat, artifactKey, type ChatSource, type ChatArtifact, type ChatPlan, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
+import { streamChat, artifactKey, STREAM_IDLE_TIMEOUT_MS, type ChatSource, type ChatArtifact, type ChatPlan, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
-// 用户自选的聊天模型（GET /chat/models 的 id）；"" / 无值 = 服务端默认模型。
-const CHAT_MODEL_STORAGE_KEY = "mindbase.chat.model";
+// 用户显式选择的聊天模型：kind + value 的 JSON。显式选择优先于 Coding Plan
+// 默认套餐（裁决逻辑见下方挂载时的选择计算）；旧版只存系统模型 id 的 key 会在读取时迁移。
+const CHAT_MODEL_SELECTION_STORAGE_KEY = "mindbase.chat.model.selection";
+const LEGACY_CHAT_MODEL_STORAGE_KEY = "mindbase.chat.model";
+
+/** 本地持久化的显式模型选择。 */
+type PersistedModelChoice =
+  | { kind: "default" }
+  | { kind: "system"; value: string }
+  | { kind: "coding-plan"; value: string };
+
+/** 读取显式选择；旧 key（纯系统模型 id）迁移为 system 选择后删除。 */
+function readPersistedModelChoice(): PersistedModelChoice | null {
+  try {
+    const raw = window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const record = parsed as Record<string, unknown>;
+        if (record.kind === "default") return { kind: "default" };
+        if (
+          (record.kind === "system" || record.kind === "coding-plan") &&
+          typeof record.value === "string" &&
+          record.value
+        ) {
+          return { kind: record.kind, value: record.value };
+        }
+      }
+      // 旧版/损坏数据：忽略，回落到默认选择（不抛错阻塞聊天）。
+      return null;
+    }
+    const legacy = window.localStorage.getItem(LEGACY_CHAT_MODEL_STORAGE_KEY);
+    if (!legacy) return null;
+    const migrated: PersistedModelChoice = { kind: "system", value: legacy };
+    writePersistedModelChoice(migrated);
+    window.localStorage.removeItem(LEGACY_CHAT_MODEL_STORAGE_KEY);
+    return migrated;
+  } catch {
+    // 存储不可用（隐私模式等）：本次会话按默认选择，不阻塞聊天。
+    return null;
+  }
+}
+
+function writePersistedModelChoice(choice: PersistedModelChoice): void {
+  try {
+    window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, JSON.stringify(choice));
+    window.localStorage.removeItem(LEGACY_CHAT_MODEL_STORAGE_KEY);
+  } catch {
+    // 存储不可用：仅本次会话生效。
+  }
+}
 
 /** /chat/history 单页条数（后端 page_size 上限 100，50 兼顾首屏与 DOM 体积）。 */
 const HISTORY_PAGE_SIZE = 50;
@@ -199,6 +255,8 @@ const MessageRow = memo(function MessageRow({
     <div
       className="mx-auto w-full max-w-[768px] px-3 pb-4 sm:px-5 sm:pb-5"
       data-message-id={message.id}
+      // 用户消息的稳定锚点：右侧历史轨迹条按它计算/跳转。
+      data-chat-anchor={message.role === "user" ? message.id : undefined}
     >
       <ChatMessage
         role={message.role}
@@ -307,22 +365,35 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [quizDialogOpen, setQuizDialogOpen] = useState(false);
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
-  // Chat-dialog selection from the user's Coding Plan model catalog (code agent).
-  const [codingPlanModel, setCodingPlanModel] = useState<string | undefined>();
-  const [reasoningEffort, setReasoningEffort] = useState<"min" | "mid" | "high" | "max">("mid");
+  // 推理强度：连续 0–100（旧版 min/mid/high/max 会在读取时迁移）。
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(REASONING_EFFORT_DEFAULT);
   // Persist the composer effort choice (device-local UI preference).
   useEffect(() => {
     const stored = window.localStorage.getItem("mindbase_reasoning_effort");
-    if (stored === "min" || stored === "mid" || stored === "high" || stored === "max") {
-      setReasoningEffort(stored);
+    if (stored === null) return;
+    const legacy = LEGACY_EFFORT_STOPS[stored.toLowerCase()];
+    if (legacy !== undefined) {
+      setReasoningEffort(legacy);
+      return;
     }
+    const parsed = Number(stored);
+    if (Number.isFinite(parsed)) setReasoningEffort(clampReasoningEffort(parsed));
   }, []);
   useEffect(() => {
-    window.localStorage.setItem("mindbase_reasoning_effort", reasoningEffort);
+    window.localStorage.setItem("mindbase_reasoning_effort", String(reasoningEffort));
   }, [reasoningEffort]);
-  // 聊天模型目录与用户选择（GET /chat/models）；空目录 = 不传 model，后端用默认模型。
+  // 聊天模型目录（GET /chat/models）与统一选择状态（默认 / 系统模型 / Coding Plan）。
   const [chatModels, setChatModels] = useState<ChatModel[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("");
+  // 平台默认模型目录 id（GET /chat/models 的 default）：仅用于「显式选择平台默认」时
+  // 覆盖账号的 Coding Plan 默认套餐（见发送请求处的注释）。
+  const [chatDefaultModel, setChatDefaultModel] = useState<string>("");
+  const [modelSelection, setModelSelection] = useState<ChatModelSelection>({ kind: "default" });
+  // 目录 + Coding Plan 未加载完成前为 false：选择器显示中性加载态，避免先显示平台默认再跳变。
+  const [modelSelectionReady, setModelSelectionReady] = useState(false);
+  // 用户当前套餐（is_default 优先，其次最早启用）与 is_default 套餐；供选择器展示默认徽标。
+  const [codingPlanActive, setCodingPlanActive] = useState<CodingPlan | null>(null);
+  const [codingPlanDefault, setCodingPlanDefault] = useState<CodingPlan | null>(null);
+  const [codingPlansForbidden, setCodingPlansForbidden] = useState(false);
   // Which user message is currently being edited inline (at most one).
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   // Stable wrappers for MessageRow: the underlying handlers change whenever
@@ -348,6 +419,14 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     }
     return map;
   }, [messages]);
+  // 右侧历史轨迹条的数据：每条用户消息一个锚点（正文只用于悬浮预览）。
+  const historyItems = useMemo<ChatHistoryItem[]>(() => {
+    const items: ChatHistoryItem[] = [];
+    for (const message of allMessages) {
+      if (message.role === "user") items.push({ id: message.id, text: message.content });
+    }
+    return items;
+  }, [allMessages]);
   // 草稿态（还没创建会话）选中的科研项目：第一条消息创建会话时写入绑定。
   const [draftAcademicProjectId, setDraftAcademicProjectId] = useState<string | undefined>(academicProjectId);
   // 已选会话以自身绑定为准；草稿态用选择器/入口参数。
@@ -373,30 +452,59 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     };
   }, []);
 
-  // ---- 聊天模型目录（GET /chat/models）----
-  // 挂载时拉一次；失败静默（不阻塞聊天：请求不带 model，后端用默认模型）。
-  // 本地记住的选择若不在目录里则回退 default（default 不在目录时按「默认模型」处理）。
+  // ---- 聊天模型目录 + Coding Plan（GET /chat/models、GET /settings/coding-plans）----
+  // 挂载时并行拉取；失败静默（不阻塞聊天）。默认选择优先级：
+  //   用户显式选择（localStorage）> 启用且 is_default 的套餐默认模型 > 平台默认模型。
+  // 两个请求都结束后才落选择，避免「先显示平台默认、套餐到位后再跳变」。
   useEffect(() => {
     let cancelled = false;
+    const persisted = readPersistedModelChoice();
     (async () => {
-      let stored: string | null = null;
-      try {
-        stored = window.localStorage.getItem(CHAT_MODEL_STORAGE_KEY);
-      } catch {
-        // 存储不可用：仅本次会话按默认模型
+      const [catalogResult, plansResult] = await Promise.allSettled([
+        chatApi.listModels(),
+        codingPlanApi.list(),
+      ]);
+      if (cancelled) return;
+
+      // 目录不可用时 models 为空：只能回退平台默认模型。
+      const models = catalogResult.status === "fulfilled" ? catalogResult.value.models ?? [] : [];
+      setChatModels(models);
+      setChatDefaultModel(catalogResult.status === "fulfilled" ? catalogResult.value.default ?? "" : "");
+
+      let activePlan: CodingPlan | null = null;
+      let defaultPlan: CodingPlan | null = null;
+      let forbidden = false;
+      if (plansResult.status === "fulfilled") {
+        const enabledPlans = (plansResult.value.plans ?? []).filter((plan) => plan.enabled);
+        defaultPlan = enabledPlans.find((plan) => plan.is_default) ?? null;
+        activePlan = defaultPlan ?? enabledPlans[0] ?? null;
+      } else if ((plansResult.reason as { status?: number } | null)?.status === 403) {
+        // 403 = 非 VIP：Coding Plan 分组整体静默隐藏，不提示错误。
+        forbidden = true;
       }
-      try {
-        const catalog = await chatApi.listModels();
-        if (cancelled) return;
-        const models = catalog.models ?? [];
-        setChatModels(models);
-        const hasModel = (id: string) => models.some((m) => m.id === id);
-        // 默认「默认模型」：不传 model，由后端 config.llm.model 决定；
-        // 只有用户上次显式选过的系统模型才恢复。
-        setSelectedModel(stored && hasModel(stored) ? stored : "");
-      } catch {
-        // 目录不可用：选择器隐藏，发送不带 model（后端默认）
+      setCodingPlanActive(activePlan);
+      setCodingPlanDefault(defaultPlan);
+      setCodingPlansForbidden(forbidden);
+
+      // 显式选择优先；失效的系统模型（目录已变更）回退平台默认，避免发送后端不认识的 id。
+      const hasModel = (id: string) => models.some((model) => model.id === id);
+      let nextSelection: ChatModelSelection;
+      if (persisted?.kind === "default") {
+        // 显式选择「平台默认模型」也持久化：后续加载不再被套餐默认覆盖。
+        nextSelection = { kind: "default" };
+      } else if (persisted?.kind === "system") {
+        nextSelection = hasModel(persisted.value)
+          ? { kind: "system", id: persisted.value }
+          : { kind: "default" };
+      } else if (persisted?.kind === "coding-plan" && activePlan) {
+        nextSelection = { kind: "coding-plan", model: persisted.value };
+      } else if (defaultPlan?.model) {
+        nextSelection = { kind: "coding-plan", model: defaultPlan.model };
+      } else {
+        nextSelection = { kind: "default" };
       }
+      setModelSelection(nextSelection);
+      setModelSelectionReady(true);
     })();
     return () => {
       cancelled = true;
@@ -404,28 +512,33 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   }, []);
 
   // 统一模型选择：默认 / 系统目录模型 / Coding Plan 模型三选一，互斥。
+  // 用户改选即视为显式选择并持久化（kind + value），后续加载优先于套餐默认。
   const handleModelChange = useCallback((selection: ChatModelSelection) => {
+    setModelSelection(selection);
     if (selection.kind === "coding-plan") {
-      // Coding Plan 模型由 coding_plan_model 携带，系统模型清空。
-      setCodingPlanModel(selection.model);
-      setSelectedModel("");
-      try {
-        window.localStorage.removeItem(CHAT_MODEL_STORAGE_KEY);
-      } catch {
-        // 存储不可用：仅本次会话生效
-      }
-      return;
-    }
-    setCodingPlanModel(undefined);
-    const modelId = selection.kind === "system" ? selection.id : "";
-    setSelectedModel(modelId);
-    try {
-      if (modelId) window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, modelId);
-      else window.localStorage.removeItem(CHAT_MODEL_STORAGE_KEY);
-    } catch {
-      // 存储不可用：仅本次会话生效
+      writePersistedModelChoice({ kind: "coding-plan", value: selection.model });
+    } else if (selection.kind === "system") {
+      writePersistedModelChoice({ kind: "system", value: selection.id });
+    } else {
+      writePersistedModelChoice({ kind: "default" });
     }
   }, []);
+
+  // 发送请求的互斥字段：Coding Plan 模型 -> coding_plan_model；系统模型 -> model；
+  // 平台默认 -> 两者都不传（后端按自身 config 决定）。
+  const codingPlanModel = modelSelection.kind === "coding-plan" ? modelSelection.model : undefined;
+  const selectedModel = modelSelection.kind === "system" ? modelSelection.id : "";
+
+  // 选择器上下文：目录/套餐的加载、默认选择裁决都在本组件完成，选择器只做展示。
+  const modelPickerContext = useMemo<ChatModelPickerContextValue>(
+    () => ({
+      loading: !modelSelectionReady,
+      plan: codingPlanActive,
+      defaultPlan: codingPlanDefault,
+      forbidden: codingPlansForbidden,
+    }),
+    [modelSelectionReady, codingPlanActive, codingPlanDefault, codingPlansForbidden]
+  );
 
   // Track which sessions have had their history fetched, so the load effect can
   // depend only on activeSessionId (not the whole sessions array, which changes
@@ -679,6 +792,23 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     });
   }, []);
 
+  // 历史轨迹条跳转：虚拟列表按绝对索引滚动（含 prepend 的 firstItemIndex 偏移）。
+  const handleHistoryJump = useCallback(
+    (messageId: string) => {
+      const index = allMessages.findIndex((message) => message.id === messageId);
+      if (index < 0) return;
+      // 滚动离开底部后 Virtuoso 的 atBottomStateChange 会关闭跟随底部，
+      // 因此这里无需直接改 stickToBottomRef（避免与 effect 依赖的 ref 互相干扰）。
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndex + index,
+        align: "start",
+        offset: -12,
+        behavior: "smooth",
+      });
+    },
+    [allMessages, firstItemIndex]
+  );
+
   // FIRST render of a session: initialTopMostItemIndex is not enough when the
   // last message is taller than the viewport (it can land at the item's top and
   // leave the tail clipped). Force one bottom alignment after data arrives.
@@ -822,6 +952,24 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       const controller = new AbortController();
       abortRef.current = controller;
 
+      // 空闲看门狗：超过 STREAM_IDLE_TIMEOUT_MS 没有任何 SSE 帧、且当前没有工具在
+      // 执行时，中止本轮并显式报错（上游卡死不能让「思考中」无限转圈）。工具执行
+      // 期间不计入空闲（与后端 agent.streamIdleTimeoutMs 语义一致）。
+      let lastStreamActivityAt = Date.now();
+      const activeToolSteps = new Set<string>();
+      let idleTimedOut = false;
+      const noteStreamActivity = () => {
+        lastStreamActivityAt = Date.now();
+      };
+      const idleTimeoutMessage = () =>
+        `长时间无输出（超过 ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)} 秒），已中止本轮生成。请重试。`;
+      const idleTimer = window.setInterval(() => {
+        if (Date.now() - lastStreamActivityAt < STREAM_IDLE_TIMEOUT_MS) return;
+        if (activeToolSteps.size > 0) return;
+        idleTimedOut = true;
+        controller.abort();
+      }, 5_000);
+
       // Throttled stream flush: SSE deltas arrive far faster than markdown
       // should be re-parsed, so the newest content/reasoning is held here and
       // committed to state at most every ~80ms (plus a final flush at the end
@@ -861,13 +1009,18 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
             question,
             chat_session_id: sessionId,
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
-            // 模型三选一：Coding Plan 模型优先走用户套餐；否则系统模型；
-            // 都不选则两个字段都不传，由后端 config.llm.model 决定。
+            // 模型三选一：Coding Plan 模型走用户套餐；系统模型显式指定；平台默认
+            // 通常两个字段都不传（后端 config.llm.model）。
+            // 例外：用户显式选了「平台默认模型」，但账号存在 Coding Plan 默认套餐时，
+            // 后端 resolveModel 会把「未指定模型」解释为套餐默认；此时显式发送平台
+            // 默认目录 id，让用户的显式选择真正生效（目录不可用则留空、按套餐兜底）。
             ...(codingPlanModel
               ? { coding_plan_model: codingPlanModel }
               : selectedModel
                 ? { model: selectedModel }
-                : {}),
+                : modelSelection.kind === "default" && codingPlanDefault && chatDefaultModel
+                  ? { model: chatDefaultModel }
+                  : {}),
             ...(images && images.length > 0 ? { images } : {}),
             // Regenerate replaces the previous turn only after this turn succeeds.
             ...(regenerate ? { regenerate_from_msg_id: regenerate.from } : {}),
@@ -885,6 +1038,10 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         await streamChat(
           stream,
           {
+            // 任意帧都算活动（心跳 ":" 与空帧不算），用于空闲看门狗。
+            onFrame: () => {
+              noteStreamActivity();
+            },
             onChunk: (accumulated) => {
               latestContent = accumulated;
               scheduleFlush();
@@ -958,6 +1115,10 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               }));
             },
             onReset: () => {
+              // A retried attempt re-streams from scratch: any tool start from the
+              // aborted attempt will never get a done frame — drop the stale set so
+              // the idle watchdog is not suppressed forever.
+              activeToolSteps.clear();
               // A retried LLM run begins: clear the buffered content (the
               // backend replays pre-run content as chunks) and flush
               // immediately so no stale text lingers for up to 80ms. The plan
@@ -978,6 +1139,10 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               scheduleFlush();
             },
             onStep: (step: StreamStep) => {
+              // 工具执行期间豁免空闲超时（长任务由后端整轮超时兜底）。
+              const toolKey = `${step.step}:${step.action}`;
+              if (step.status === "start") activeToolSteps.add(toolKey);
+              else if (step.status === "done") activeToolSteps.delete(toolKey);
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) => {
@@ -1063,9 +1228,33 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
           controller.signal
         );
 
+        if (idleTimedOut) {
+          const message = idleTimeoutMessage();
+          turnError = message;
+          flushStream();
+          updateActiveSession((s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantMsgId ? { ...m, status: "failed", error: message } : m
+            ),
+          }));
+        }
+
         // Refresh session list (title may be auto-generated by backend)
         refreshSessions();
       } catch (error) {
+        if (idleTimedOut) {
+          const message = idleTimeoutMessage();
+          turnError = message;
+          flushStream();
+          updateActiveSession((s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantMsgId ? { ...m, status: "failed", error: message } : m
+            ),
+          }));
+          return { ok: false, error: message, hasContent: latestContent.length > 0 };
+        }
         // Aborted by user (stop) - not an error; handleStop already finalized the msg.
         if (error instanceof DOMException && error.name === "AbortError") {
           return { ok: true, hasContent: latestContent.length > 0 };
@@ -1080,6 +1269,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
           ),
         }));
       } finally {
+        window.clearInterval(idleTimer);
         setIsStreaming(false);
         setStreamStartedAt(null);
         abortRef.current = null;
@@ -1088,7 +1278,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       }
       return { ok: !turnError, ...(turnError ? { error: turnError } : {}), hasContent: latestContent.length > 0 };
     },
-    [updateSession, refreshSessions, backfillMessageIds, effectiveAcademicProjectId, uploadUuid, codingPlanModel, selectedModel]
+    [updateSession, refreshSessions, backfillMessageIds, effectiveAcademicProjectId, uploadUuid, codingPlanModel, selectedModel, modelSelection, codingPlanDefault, chatDefaultModel]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
@@ -1660,81 +1850,91 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
             in the DOM. This replaces a content-visibility stopgap: layering
             content-visibility on top would fight Virtuoso's dynamic height
             measurement for no extra gain (offscreen rows are not mounted). */}
-        <div ref={listWrapRef} className="relative min-h-0 flex-1 overflow-hidden">
-          {messages.length === 0 ? (
-            <ChatEmpty onSuggestionClick={handleSend} />
-          ) : (
-            <Virtuoso
-              key={activeSessionId ?? "draft"}
-              ref={virtuosoRef}
-              scrollerRef={(ref) => {
-                scrollerRef.current = ref instanceof HTMLElement ? ref : null;
-              }}
-              className="chat-scrollbar h-full"
-              style={{ height: "100%" }}
-              data={messages}
-              firstItemIndex={firstItemIndex}
-              initialTopMostItemIndex={messages.length - 1}
-              computeItemKey={(_, message) => message.id}
-              followOutput={(atBottom) =>
-                atBottom ? (isStreaming ? "auto" : "smooth") : false
-              }
-              atBottomStateChange={handleAtBottom}
-              atBottomThreshold={80}
-              increaseViewportBy={{ top: 600, bottom: 600 }}
-              alignToBottom
-              components={{
-                Header: () => (
-                  <div className="mx-auto w-full max-w-[768px] px-3 pt-4 sm:px-5 sm:pt-6">
-                    {(activeSession?.historyPage ?? 1) > 1 && (
-                      <div className="mb-5 flex justify-center">
-                        <button
-                          type="button"
-                          onClick={() => void loadEarlier()}
-                          disabled={loadingEarlier}
-                          className="btn-pill btn-ghost inline-flex h-8 items-center gap-1.5 px-3 text-[11px] disabled:opacity-60"
-                        >
-                          {loadingEarlier && (
-                            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                          )}
-                          {loadingEarlier ? "加载中…" : "加载更早消息"}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ),
-              }}
-              itemContent={(_, message) => (
-                <MessageRow
-                  message={message}
-                  prev={prevMessageById.get(message.id)}
-                  isStreaming={isStreaming}
-                  streamStartedAt={
-                    message.status === "pending" ? streamStartedAt ?? undefined : undefined
-                  }
-                  editingMessageId={editingMessageId}
-                  onRegenerate={onRegenerateMessage}
-                  onEdit={onEditMessage}
-                  onEditSubmit={onEditSubmitMessage}
-                  onEditCancel={onEditCancel}
-                  onInteractionAnswer={onInteractionAnswerMessage}
-                  onImageOpen={setLightboxSrc}
-                />
-              )}
-            />
-          )}
+        <div ref={listWrapRef} className="relative flex min-h-0 flex-1 overflow-hidden">
+          {/* 历史轨迹条固定在滚动区右侧的独立窄列（lg 以下隐藏），不覆盖滚动条/正文；
+              列宽恒定，标记的出现/消失不会引起布局抖动。 */}
+          <div className="relative min-h-0 min-w-0 flex-1">
+            {messages.length === 0 ? (
+              <ChatEmpty onSuggestionClick={handleSend} />
+            ) : (
+              <Virtuoso
+                key={activeSessionId ?? "draft"}
+                ref={virtuosoRef}
+                scrollerRef={(ref) => {
+                  scrollerRef.current = ref instanceof HTMLElement ? ref : null;
+                }}
+                className="chat-scrollbar h-full"
+                style={{ height: "100%" }}
+                data={messages}
+                firstItemIndex={firstItemIndex}
+                initialTopMostItemIndex={messages.length - 1}
+                computeItemKey={(_, message) => message.id}
+                followOutput={(atBottom) =>
+                  atBottom ? (isStreaming ? "auto" : "smooth") : false
+                }
+                atBottomStateChange={handleAtBottom}
+                atBottomThreshold={80}
+                increaseViewportBy={{ top: 600, bottom: 600 }}
+                alignToBottom
+                components={{
+                  Header: () => (
+                    <div className="mx-auto w-full max-w-[768px] px-3 pt-4 sm:px-5 sm:pt-6">
+                      {(activeSession?.historyPage ?? 1) > 1 && (
+                        <div className="mb-5 flex justify-center">
+                          <button
+                            type="button"
+                            onClick={() => void loadEarlier()}
+                            disabled={loadingEarlier}
+                            className="btn-pill btn-ghost inline-flex h-8 items-center gap-1.5 px-3 text-[11px] disabled:opacity-60"
+                          >
+                            {loadingEarlier && (
+                              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                            )}
+                            {loadingEarlier ? "加载中…" : "加载更早消息"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ),
+                }}
+                itemContent={(_, message) => (
+                  <MessageRow
+                    message={message}
+                    prev={prevMessageById.get(message.id)}
+                    isStreaming={isStreaming}
+                    streamStartedAt={
+                      message.status === "pending" ? streamStartedAt ?? undefined : undefined
+                    }
+                    editingMessageId={editingMessageId}
+                    onRegenerate={onRegenerateMessage}
+                    onEdit={onEditMessage}
+                    onEditSubmit={onEditSubmitMessage}
+                    onEditCancel={onEditCancel}
+                    onInteractionAnswer={onInteractionAnswerMessage}
+                    onImageOpen={setLightboxSrc}
+                  />
+                )}
+              />
+            )}
 
-          {/* Jump back to the live bottom when the user scrolled up */}
-          {showJumpToBottom && (
-            <button
-              type="button"
-              onClick={() => scrollToBottom()}
-              className="absolute bottom-4 left-1/2 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-border-subtle bg-surface text-secondary shadow-sm transition-colors hover:text-foreground"
-              aria-label="回到底部"
-            >
-              <ChevronDown className="h-4 w-4" aria-hidden="true" />
-            </button>
-          )}
+            {/* Jump back to the live bottom when the user scrolled up */}
+            {showJumpToBottom && (
+              <button
+                type="button"
+                onClick={() => scrollToBottom()}
+                className="absolute bottom-4 left-1/2 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-border-subtle bg-surface text-secondary shadow-sm transition-colors hover:text-foreground"
+                aria-label="回到底部"
+              >
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+
+          <ChatHistoryRail
+            items={historyItems}
+            scrollerRef={scrollerRef}
+            onJump={handleHistoryJump}
+          />
         </div>
 
         {/* Input area - bottom padding keeps clear of the iOS home indicator */}
@@ -1800,27 +2000,29 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               </div>
             )}
             <QueuedMessages items={queuedMessages} onCancel={cancelQueued} />
-            <ChatInput
-              onSend={handleSubmit}
-              disabled={false}
-              queuedCount={queuedMessages.length}
-              isStreaming={isStreaming}
-              streamStartedAt={streamStartedAt ?? undefined}
-              onStop={handleStop}
-              selectedSkills={selectedSkills}
-              onToggleSkill={handleToggleSkill}
-              onOpenQuizWizard={() => setQuizDialogOpen(true)}
-              onAttachDocuments={handleAttachDocuments}
-              sessionFiles={sessionFiles}
-              onDeleteSessionFile={handleDeleteSessionFile}
-              onPreviewImage={setLightboxSrc}
-              models={chatModels}
-              selectedModel={selectedModel}
-              codingPlanModel={codingPlanModel}
-              onModelChange={handleModelChange}
-              reasoningEffort={reasoningEffort}
-              onReasoningEffortChange={setReasoningEffort}
-            />
+            <ChatModelPickerProvider value={modelPickerContext}>
+              <ChatInput
+                onSend={handleSubmit}
+                disabled={false}
+                queuedCount={queuedMessages.length}
+                isStreaming={isStreaming}
+                streamStartedAt={streamStartedAt ?? undefined}
+                onStop={handleStop}
+                selectedSkills={selectedSkills}
+                onToggleSkill={handleToggleSkill}
+                onOpenQuizWizard={() => setQuizDialogOpen(true)}
+                onAttachDocuments={handleAttachDocuments}
+                sessionFiles={sessionFiles}
+                onDeleteSessionFile={handleDeleteSessionFile}
+                onPreviewImage={setLightboxSrc}
+                models={chatModels}
+                selectedModel={selectedModel}
+                codingPlanModel={codingPlanModel}
+                onModelChange={handleModelChange}
+                reasoningEffort={reasoningEffort}
+                onReasoningEffortChange={setReasoningEffort}
+              />
+            </ChatModelPickerProvider>
           </div>
         </div>
       </main>

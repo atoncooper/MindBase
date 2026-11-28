@@ -100,8 +100,9 @@ app-sandbox 侧另有 `SANDBOX__RUNTIME__*`（运行时、镜像、资源上限�
 ## 六、部署
 
 ```bash
-# 单机最小链路（OpenSandbox lifecycle + app-sandbox）
-docker compose --profile sandbox up -d opensandbox-server app-sandbox
+# 沙箱三件套已随默认 `docker compose up -d` 启动（app-sandbox + sandbox-tls + opensandbox-server）
+# 只需单独补起/重启沙箱时：
+docker compose up -d app-sandbox sandbox-tls opensandbox-server
 
 # 生产 K8s
 kubectl apply -k deploy/k8s/40-sandbox     # OpenSandbox 控制面/运行时/热池（见该目录 README）

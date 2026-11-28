@@ -86,7 +86,7 @@ profile 汇总：
 
 （`standalone`/`storage`/`ts`/`user`/`content`/`cloud`/`note`/`quiz`/`board`/`kg`/`task` 等单域 profile 用于在最小集合上单独操作某个服务；`--profile note|quiz|board` 保留以联动对应 `*-mcp`，`--profile content` 为内容域单域；裸 `up` 已含全部默认服务。）
 
-另有一个历史 compose：`docker-compose.daytona.yml`（旧 Daytona 代码沙箱方案，已由 `app-sandbox` + OpenSandbox 取代，仅作存档；当前沙箱用 `--profile sandbox`）。
+另有一个历史 compose：`docker-compose.daytona.yml`（旧 Daytona 代码沙箱方案，已由 `app-sandbox` + OpenSandbox 取代，仅作存档；当前沙箱已纳入默认 compose：`app-sandbox` + `sandbox-tls` + `opensandbox-server`）。
 
 ---
 

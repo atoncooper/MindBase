@@ -74,6 +74,30 @@ export interface QuotaCostSummary {
   resetAt: number;
 }
 
+/** Coding Plan（用户自带第三方套餐）单模型用量。 */
+export interface QuotaCodingPlanModelUsage {
+    model: string;
+    /** 今日该模型实际消耗的 tokens */
+    tokens: number;
+}
+
+/**
+ * 用户自带 Coding Plan 的 token 用量（由第三方套餐支付，不计入平台 Credits）。
+ * 后端 /quota/summary 的 codingPlan 段；老版本后端可能没有该字段。
+ */
+export interface QuotaCodingPlanUsage {
+    /** 滚动 5 小时窗口内实际 token */
+    fiveHourTokens: number;
+    /** 今日实际 token */
+    dayTokens: number;
+    /** 本月实际 token */
+    monthTokens: number;
+    /** 今日按模型拆分（仅含后端见过的模型） */
+    byModel?: QuotaCodingPlanModelUsage[];
+    /** 今日已计量的轮次 */
+    turns?: number;
+}
+
 export interface QuotaSummary {
   enabled: boolean;
   tier: QuotaTier;
@@ -90,6 +114,11 @@ export interface QuotaSummary {
   /** 各档位套餐额度（升级对比用） */
   planCatalog: QuotaPlanOption[];
   cost: QuotaCostSummary;
+  /**
+   * 用户自带 Coding Plan 的 token 用量（今日 / 本月 + 按模型）；
+   * 由套餐支付，不占平台 Credits。老版本后端缺省该字段。
+   */
+  codingPlan?: QuotaCodingPlanUsage;
   /** 计数存储不可用 → 本次按 fail-open 展示 */
   storeUnavailable: boolean;
 }

@@ -30,6 +30,12 @@ interface FileGridProps {
     onDeleteRef?: (id: number) => void;
     /** 卡片重命名（文件，不含引用） */
     onRenameFile?: (uuid: string, name: string) => void;
+    /** 多选：已选 uploadUuid 集合（缺省 = 不渲染复选框） */
+    selectedUuids?: ReadonlySet<string>;
+    /** 复选框切换（不打开预览） */
+    onToggleSelect?: (uuid: string) => void;
+    /** ctrl/cmd 或 shift 点击：交给上层做切换 / 连选（不打开预览） */
+    onMultiSelect?: (uuid: string, mods: { meta?: boolean; shift?: boolean }) => void;
 }
 
 export function FileGrid({
@@ -44,18 +50,33 @@ export function FileGrid({
     onSelectRef,
     onDeleteRef,
     onRenameFile,
+    selectedUuids,
+    onToggleSelect,
+    onMultiSelect,
 }: FileGridProps) {
     return (
         <div className="p-4">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                 {videos.map((v) => {
                     const active = selectedUuid === v.uploadUuid;
+                    const selected = selectedUuids?.has(v.uploadUuid) ?? false;
                     return (
                         <div
                             key={v.uploadUuid}
                             role="button"
                             tabIndex={0}
-                            onClick={() => onSelect(v.uploadUuid)}
+                            onClick={(e) => {
+                                // ctrl/cmd = 切换选中，shift = 连选；其余照旧打开预览。
+                                if ((e.metaKey || e.ctrlKey || e.shiftKey) && onMultiSelect) {
+                                    e.preventDefault();
+                                    onMultiSelect(v.uploadUuid, {
+                                        meta: e.metaKey || e.ctrlKey,
+                                        shift: e.shiftKey,
+                                    });
+                                    return;
+                                }
+                                onSelect(v.uploadUuid);
+                            }}
                             onKeyDown={(e) => {
                                 if (e.key === "Enter" || e.key === " ") {
                                     e.preventDefault();
@@ -66,9 +87,22 @@ export function FileGrid({
                                 "group relative flex cursor-pointer flex-col items-center rounded-2xl border p-4 text-center transition-all",
                                 active
                                     ? "border-accent/40 bg-accent-soft"
-                                    : "border-transparent bg-surface hover:border-border hover:bg-border-subtle/40"
+                                    : selected
+                                      ? "border-accent/30 bg-accent-soft/60"
+                                      : "border-transparent bg-surface hover:border-border hover:bg-border-subtle/40"
                             )}
                         >
+                            {onToggleSelect && (
+                                <input
+                                    type="checkbox"
+                                    checked={selected}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onKeyDown={(e) => e.stopPropagation()}
+                                    onChange={() => onToggleSelect(v.uploadUuid)}
+                                    aria-label={`选择 ${v.title || v.originalName}`}
+                                    className="absolute left-2 top-2 h-3.5 w-3.5 cursor-pointer rounded border-border-subtle accent-[var(--color-accent)]"
+                                />
+                            )}
                             {onRenameFile && (
                                 <button
                                     type="button"

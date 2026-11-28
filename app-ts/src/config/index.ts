@@ -388,6 +388,8 @@ export interface AppConfig {
     toolRepeatLimit: number;
     /** whole-turn deadline (ms): a stalled LLM stream can never keep a turn alive forever */
     turnTimeoutMs: number;
+    /** idle-stream deadline (ms): no frames for this long with no tool in flight aborts the turn */
+    streamIdleTimeoutMs: number;
     /** planner/supervisor DAG execution (custom ReAct agents + topological scheduling) */
     plan: {
       enabled: boolean;
@@ -471,7 +473,8 @@ export interface AppConfig {
     /**
      * 旧版按次限额，仅保留两类非 token 语义：
      *  - task_quiz_active：活跃任务存量上限（不是用量）
-     *  - coding_plan：用户自带第三方套餐的每日轮次上限（不消耗平台 token）
+     *  - coding_plan：用户自带第三方套餐的每日轮次上限（不消耗平台 token；
+     *    实际 token 用量另由 QuotaService.recordExternalTurn 独立计量）
      */
     limits: Record<string, { free: number; vip: number; svip: number; promax: number }>;
     /** L1 省流的单轮输出 token 预算（0 = 不设限） */
@@ -491,7 +494,10 @@ export interface AppConfig {
     modelWeights: Record<string, { input?: number; output?: number }>;
     /** 非聊天 AI 操作的估算标准 token 消耗（一次操作扣多少） */
     kindTokenCost: Record<string, number>;
-    /** 平台代付之外的模型（Coding Plan）→ 不消耗平台 token 额度 */
+    /**
+     * 平台代付之外的模型（Coding Plan）：不消耗平台 token 额度 / 成本，但
+     * 实际 token 用量仍计入 external 独立计数（/quota/summary 的 codingPlan 段）。
+     */
     externalModels: string[];
     usageDailyCollection: string;
     gatewayUsageCollection: string;

@@ -170,24 +170,16 @@ func (s *PayQueryService) Events(uid *int64, typ string, page, pageSize int) (*d
 	return payEventPage(rows, total, page, pageSize), nil
 }
 
-// Products returns the SKU catalog ordered for display (sort ASC, id ASC).
+// Products returns the authoritative SKU catalog ordered for display
+// (sort ASC, id ASC). Writes live in service.PayProductService.
 func (s *PayQueryService) Products() (*dto.PayProductList, error) {
 	rows, err := repo.ListProducts()
 	if err != nil {
 		return nil, err
 	}
 	items := make([]dto.PayProductItem, 0, len(rows))
-	for _, p := range rows {
-		items = append(items, dto.PayProductItem{
-			Code:         p.Code,
-			Title:        p.Title,
-			DurationDays: p.DurationDays,
-			PriceCents:   p.PriceCents,
-			Status:       p.Status,
-			Sort:         p.Sort,
-			CreatedAt:    rfc3339Time(p.CreatedAt),
-			UpdatedAt:    rfc3339Time(p.UpdatedAt),
-		})
+	for i := range rows {
+		items = append(items, payProductItem(&rows[i]))
 	}
 	return &dto.PayProductList{Items: items}, nil
 }

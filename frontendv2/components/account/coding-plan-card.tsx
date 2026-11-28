@@ -42,7 +42,10 @@ import {
     type CodingPlanProviderInfo,
     type CodingPlanProtocol,
     type PayMembership,
+    type QuotaSummary,
 } from "@/lib/api";
+import { formatTokens } from "./account-utils";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 
 /** Google 账户色板（与 components/quota/quota-view.tsx 保持一致）。 */
@@ -115,10 +118,12 @@ function defaultBaseUrl(
 
 interface Props {
     membership: PayMembership | null;
+    /** /quota/summary：Coding Plan 段用于展示「已用 token（今日/本月）」；缺省时整段隐藏 */
+    quota?: QuotaSummary | null;
     onToast: (msg: string, type: "success" | "error") => void;
 }
 
-export function CodingPlanCard({ membership, onToast }: Props) {
+export function CodingPlanCard({ membership, quota, onToast }: Props) {
     const tier = (membership?.tier ?? "").toUpperCase();
     const isVip = Boolean(membership?.active) && (tier === "VIP" || tier === "SVIP" || tier === "PROMAX");
 
@@ -132,6 +137,7 @@ export function CodingPlanCard({ membership, onToast }: Props) {
     >(null);
     const [saving, setSaving] = useState(false);
     const [deletingId, setDeletingId] = useState<number | null>(null);
+    const [deleteTarget, setDeleteTarget] = useState<CodingPlan | null>(null);
     const [testingId, setTestingId] = useState<number | null>(null);
     const [refreshingId, setRefreshingId] = useState<number | null>(null);
     const [testResults, setTestResults] = useState<
@@ -260,17 +266,21 @@ export function CodingPlanCard({ membership, onToast }: Props) {
         }
     }
 
-    async function remove(plan: CodingPlan) {
-        const name = plan.label || providerLabel(plan.provider, providers);
-        if (typeof window !== "undefined" && !window.confirm(`确定删除「${name}」？`)) {
-            return;
-        }
+    function remove(plan: CodingPlan) {
+        if (deletingId !== null) return;
+        setDeleteTarget(plan);
+    }
+
+    async function performRemove() {
+        const plan = deleteTarget;
+        if (!plan) return;
         setDeletingId(plan.id);
         try {
             await codingPlanApi.remove(plan.id);
             setPlans((prev) => prev.filter((p) => p.id !== plan.id));
             clearTestResult(plan.id);
             if (editor?.mode === "edit" && editor.plan.id === plan.id) setEditor(null);
+            setDeleteTarget(null);
             onToast("Coding Plan 已删除", "success");
         } catch (e) {
             onToast(e instanceof Error ? e.message : "删除失败", "error");
@@ -329,6 +339,11 @@ export function CodingPlanCard({ membership, onToast }: Props) {
 
     const enabledCount = plans.filter((p) => p.enabled).length;
     const atLimit = plans.length >= MAX_PLANS;
+    // 用户自付套餐的 token 用量：只统计、不占平台 Credits；老后端没有该段。
+    const codingPlan = quota?.codingPlan;
+    const hasCodingPlanUsage = Boolean(
+        codingPlan && (codingPlan.dayTokens > 0 || codingPlan.monthTokens > 0),
+    );
 
     return (
         <GoogleCard>
@@ -346,6 +361,38 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                     ) : undefined
                 }
             />
+
+            {hasCodingPlanUsage && codingPlan && (
+                <div
+                    className="px-5 py-3"
+                    style={{ borderTop: `1px solid ${C.line}`, background: C.pageBg }}
+                >
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                        <span className="text-[12px]" style={{ color: C.text2 }}>
+                            Coding Plan 已用 token（今日 / 本月）
+                        </span>
+                        <span
+                            className="text-[13px] font-medium tabular-nums"
+                            style={{ color: C.text }}
+                        >
+                            {formatTokens(codingPlan.dayTokens)} / {formatTokens(codingPlan.monthTokens)}
+                            {typeof codingPlan.turns === "number" && codingPlan.turns > 0
+                                ? ` · 今日 ${codingPlan.turns} 轮`
+                                : ""}
+                        </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed" style={{ color: C.text2 }}>
+                        由你自己的套餐支付，不计入平台 Credits。
+                        {codingPlan.byModel?.length
+                            ? " 今日模型：" +
+                              codingPlan.byModel
+                                  .slice(0, 3)
+                                  .map((m) => `${m.model} ${formatTokens(m.tokens)}`)
+                                  .join(" · ")
+                            : ""}
+                    </p>
+                </div>
+            )}
 
             {loading ? (
                 <div
@@ -541,7 +588,7 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                                             </TextAction>
                                             <TextAction
                                                 tone="danger"
-                                                onClick={() => void remove(plan)}
+                                                onClick={() => remove(plan)}
                                                 disabled={busy}
                                             >
                                                 {deletingId === plan.id ? (
@@ -613,6 +660,24 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                             onSave={(input) => void save(input)}
                         />
                     )}
+
+                    <ConfirmDialog
+                        open={deleteTarget !== null}
+                        title="删除这个 Coding Plan？"
+                        message={
+                            deleteTarget
+                                ? `「${deleteTarget.label || providerLabel(deleteTarget.provider, providers)}」将从账户移除；之后对话会回落到平台默认模型。`
+                                : ""
+                        }
+                        confirmLabel="删除"
+                        danger
+                        busy={deletingId !== null}
+                        onConfirm={() => void performRemove()}
+                        onCancel={() => {
+                            if (deletingId !== null) return;
+                            setDeleteTarget(null);
+                        }}
+                    />
                 </>
             )}
         </GoogleCard>

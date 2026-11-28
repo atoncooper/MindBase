@@ -118,6 +118,30 @@ export interface QuotaModelRate {
   price?: { input: number; output: number };
 }
 
+/** Coding Plan（用户自带第三方套餐）单模型用量。 */
+export interface QuotaCodingPlanModelUsage {
+  model: string;
+  /** 今日该模型实际消耗的 tokens */
+  tokens: number;
+}
+
+/**
+ * 用户自带 Coding Plan 的 token 用量：由第三方套餐支付，不计入平台 Credits。
+ * 独立计数，与平台额度窗口/成本完全隔离——只统计、不限额。
+ */
+export interface QuotaCodingPlanUsage {
+  /** 滚动 5 小时窗口内实际 token */
+  fiveHourTokens: number;
+  /** 自然日实际 token */
+  dayTokens: number;
+  /** 自然月实际 token */
+  monthTokens: number;
+  /** 今日按模型拆分（只含进程内见过的模型；token 总量不受影响） */
+  byModel?: QuotaCodingPlanModelUsage[];
+  /** 今日已计量的 Coding Plan 轮次 */
+  turns: number;
+}
+
 export interface QuotaSummary {
   enabled: boolean;
   tier: QuotaTier;
@@ -144,6 +168,11 @@ export interface QuotaSummary {
     level: DegradeLevel;
     resetAt: number;
   };
+  /**
+   * 用户自带 Coding Plan 的 token 用量（5h/日/月 + 今日按模型 + 轮次）：
+   * 由套餐支付，不占平台 Credits；老版本客户端忽略该字段即可。
+   */
+  codingPlan: QuotaCodingPlanUsage;
   storeUnavailable: boolean;
 }
 
@@ -157,6 +186,8 @@ export function quotaPercent(used: number, limit: number): number | null {
 const DAY_TTL_SECONDS = 48 * 3600;
 /** Monthly keys carry YYYYMM; 40 days covers the longest month. */
 const MONTH_TTL_SECONDS = 40 * 86_400;
+/** FIFO bound on the in-process Coding Plan model-id index used for byModel keys. */
+const MAX_EXTERNAL_MODEL_IDS = 64;
 
 /** sha256(ip) prefix — the anon bucket must not be reversible to an IP. */
 export function hashClientKey(ip: string): string {
@@ -312,6 +343,22 @@ export function quotaTokensFor(model: string, usage: TurnUsage | undefined): num
   return Math.ceil(raw - 1e-9);
 }
 
+/**
+ * 原始 provider token 总量（input + output，不乘平台权重）：用于用户自带
+ * Coding Plan 的「实际消耗」统计。容忍只上报 total 的实现，非法值按 0 处理。
+ */
+export function rawTokensFor(usage: TurnUsage | undefined): number {
+  if (!usage) return 0;
+  const count = (value: number | undefined): number =>
+    value != null && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  const input = count(usage.inputTokens);
+  let output = count(usage.outputTokens);
+  const total = count(usage.totalTokens);
+  if (output === 0 && total > input) output = total - input;
+  if (input === 0 && output === 0 && total > 0) output = total;
+  return input + output;
+}
+
 /** Kinds shown in the per-kind breakdown. */
 const TRACKED_KINDS: QuotaKind[] = [
   "chat",
@@ -353,6 +400,8 @@ export class QuotaService {
   private readonly tierOf: (uid: string | undefined) => Promise<string>;
   private readonly nowFn: () => Date;
   private readonly tierDetailOf: (uid: string | undefined) => Promise<ResolvedTier>;
+  /** 进程内见过的 Coding Plan 模型 id（Redis 计数键无法枚举，仅作 byModel 的键名候选）。 */
+  private readonly externalModelsSeen = new Set<string>();
 
   constructor(opts: {
     counter: QuotaCounterStore;
@@ -405,15 +454,19 @@ export class QuotaService {
     return "mind-base:quota:tokens:" + id;
   }
 
-  private fiveHourKeys(id: string, now: Date): string[] {
+  /** Rolling-window bucket keys: platform token and external (Coding Plan) counters share the scheme. */
+  private rollingKeys(prefix: string, now: Date): string[] {
     const bucketMinutes = Math.max(1, config.quota.bucketMinutes || 5);
     const windowMinutes = Math.max(bucketMinutes, config.quota.fiveHourMinutes || 300);
     const bucketCount = Math.max(1, Math.ceil(windowMinutes / bucketMinutes));
     const bucket = Math.floor(now.getTime() / (bucketMinutes * 60_000));
-    const base = this.tokenBase(id);
     const keys: string[] = [];
-    for (let i = 0; i < bucketCount; i += 1) keys.push(base + ":5h:" + String(bucket - i));
+    for (let i = 0; i < bucketCount; i += 1) keys.push(prefix + ":" + String(bucket - i));
     return keys;
+  }
+
+  private fiveHourKeys(id: string, now: Date): string[] {
+    return this.rollingKeys(this.tokenBase(id) + ":5h", now);
   }
 
   private fiveHourTtlSeconds(): number {
@@ -432,6 +485,34 @@ export class QuotaService {
 
   private monthKey(id: string, now: Date): string {
     return this.tokenBase(id) + ":month:" + monthCompact(now);
+  }
+
+  /**
+   * 平台代付之外（Coding Plan）的独立计数键：与平台 token / cost / kind 键完全
+   * 隔离，因此统计 Coding Plan 用量绝不会移动平台额度窗口。
+   */
+  private externalBase(id: string): string {
+    return "mind-base:quota:external:" + id;
+  }
+
+  private externalFiveHourKeys(id: string, now: Date): string[] {
+    return this.rollingKeys(this.externalBase(id) + ":5h", now);
+  }
+
+  private externalDayKey(id: string, now: Date): string {
+    return this.externalBase(id) + ":day:" + dayCompact(now);
+  }
+
+  private externalMonthKey(id: string, now: Date): string {
+    return this.externalBase(id) + ":month:" + monthCompact(now);
+  }
+
+  private externalTurnsKey(id: string, now: Date): string {
+    return this.externalBase(id) + ":turns:" + dayCompact(now);
+  }
+
+  private externalModelDayKey(id: string, now: Date, model: string): string {
+    return this.externalBase(id) + ":model:" + dayCompact(now) + ":" + model;
   }
 
   private kindKey(kind: QuotaKind, id: string, now: Date): string {
@@ -597,6 +678,95 @@ export class QuotaService {
   }
 
   /**
+   * 记录一次平台代付之外（用户自带 Coding Plan）的成功轮次：只写独立计数
+   * （5h / 日 / 月 + 今日轮次 + 今日按模型），不写平台窗口、不写成本、不动
+   * kind 明细。token 为 provider 实际上报的 input + output（缺失时调用方用与
+   * 平台轮次相同的估算兜底），不做平台权重归一。
+   *
+   * 不受 quota.enabled 门禁影响：这是「用户自付套餐」的用量账本，只统计、不限额。
+   */
+  async recordExternalTurn(
+    uid: string | undefined,
+    clientKey: string | undefined,
+    usage: TurnUsage | undefined,
+    model: string,
+    source = "coding_plan",
+  ): Promise<number> {
+    const identity = this.identity(uid, clientKey);
+    if (!identity) return 0;
+    const tokens = rawTokensFor(usage);
+    if (tokens <= 0) return 0;
+    const now = this.nowFn();
+    const fiveKey = this.externalFiveHourKeys(identity.id, now)[0];
+    if (!fiveKey) return 0;
+    const modelId = model.trim() || "unknown";
+    this.noteExternalModel(modelId);
+    const ok = await this.counter.addMany([
+      { key: fiveKey, delta: tokens, ttlSeconds: this.fiveHourTtlSeconds() },
+      { key: this.externalDayKey(identity.id, now), delta: tokens, ttlSeconds: DAY_TTL_SECONDS },
+      { key: this.externalMonthKey(identity.id, now), delta: tokens, ttlSeconds: MONTH_TTL_SECONDS },
+      { key: this.externalTurnsKey(identity.id, now), delta: 1, ttlSeconds: DAY_TTL_SECONDS },
+      {
+        key: this.externalModelDayKey(identity.id, now, modelId),
+        delta: tokens,
+        ttlSeconds: DAY_TTL_SECONDS,
+      },
+    ]);
+    if (ok === null) {
+      log.warn(
+        "[QUOTA] external usage write failed (fail-open) source=" + source + " model=" + modelId + " tokens=" + tokens,
+      );
+    }
+    return tokens;
+  }
+
+  /** byModel 的键名候选 = 本进程见过的模型 ∪ 配置里的 externalModels。 */
+  private externalModelCandidates(): string[] {
+    const models = new Set<string>(this.externalModelsSeen);
+    for (const model of config.quota.externalModels ?? []) {
+      if (model) models.add(model);
+    }
+    return [...models];
+  }
+
+  /** 记录见过的 Coding Plan 模型（仅用于 byModel 的键名，FIFO 上限 64）。 */
+  private noteExternalModel(model: string): void {
+    if (!model || this.externalModelsSeen.has(model)) return;
+    if (this.externalModelsSeen.size >= MAX_EXTERNAL_MODEL_IDS) {
+      const oldest = this.externalModelsSeen.values().next().value;
+      if (oldest !== undefined) this.externalModelsSeen.delete(oldest);
+    }
+    this.externalModelsSeen.add(model);
+  }
+
+  /**
+   * Coding Plan（平台代付之外）用量：5h / 日 / 月实际 token + 今日轮次 +
+   * 今日按模型拆分。只读独立计数键；计数存储不可用时按 0 返回（fail-open）。
+   */
+  private async readCodingPlanUsage(id: string | undefined, now: Date): Promise<QuotaCodingPlanUsage> {
+    if (!id) return { fiveHourTokens: 0, dayTokens: 0, monthTokens: 0, turns: 0 };
+    const [five, day, month, turns] = await Promise.all([
+      this.counter.sum(this.externalFiveHourKeys(id, now)),
+      this.counter.count(this.externalDayKey(id, now)),
+      this.counter.count(this.externalMonthKey(id, now)),
+      this.counter.count(this.externalTurnsKey(id, now)),
+    ]);
+    const byModel: QuotaCodingPlanModelUsage[] = [];
+    for (const model of this.externalModelCandidates()) {
+      const tokens = (await this.counter.count(this.externalModelDayKey(id, now, model))) ?? 0;
+      if (tokens > 0) byModel.push({ model, tokens });
+    }
+    byModel.sort((a, b) => b.tokens - a.tokens);
+    return {
+      fiveHourTokens: five ?? 0,
+      dayTokens: day ?? 0,
+      monthTokens: month ?? 0,
+      ...(byModel.length > 0 ? { byModel } : {}),
+      turns: turns ?? 0,
+    };
+  }
+
+  /**
    * Check-only estimate for an upcoming operation (e.g. chat image attachments).
    * The actual charge comes from the turn's provider usage, so images are not
    * double-charged and failed turns stay free. Over budget → false; nothing written.
@@ -714,7 +884,10 @@ export class QuotaService {
     return this.limitFor(kind, tier);
   }
 
-  /** GET /quota/summary payload: three token windows + per-kind breakdown + cost. */
+  /**
+   * GET /quota/summary payload: three token windows + per-kind breakdown + cost,
+   * plus the Coding Plan (user-paid external) token usage in its own section.
+   */
   async summary(uid: string | undefined, clientKey?: string): Promise<QuotaSummary> {
     const now = this.nowFn();
     const detail = await this.tierDetailOf(uid);
@@ -726,6 +899,8 @@ export class QuotaService {
       ...this.planSummary(this.planFor(t)),
     }));
     const identity = this.identity(uid, clientKey);
+    // Coding Plan 用量是「用户自付」的独立账：不受 quota.enabled 门禁影响。
+    const codingPlan = await this.readCodingPlanUsage(identity?.id, now);
     const resetAt = nextMidnight(now);
     const costBase = {
       microYuan: 0,
@@ -748,6 +923,7 @@ export class QuotaService {
         models: this.modelRates(),
         planCatalog,
         cost: costBase,
+        codingPlan,
         storeUnavailable: false,
       };
     }
@@ -784,6 +960,7 @@ export class QuotaService {
         microYuan: costVal,
         level: day ? this.degradeLevel(tier, day.used, day.limit) : "L0",
       },
+      codingPlan,
       storeUnavailable: unavailable,
     };
   }

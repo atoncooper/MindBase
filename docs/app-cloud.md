@@ -250,3 +250,86 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 ### Redis 持久化
 
 - `--appendonly yes --appendfsync everysec` + `--maxmemory 1gb --maxmemory-policy noeviction`：deadline 队列、上传会话、pending 台账重启不丢（实测 set→restart→get 保持）。
+
+## 批量多选（批量删除 / 批量分享 / 回收站批量恢复与彻底删除，2026-11）
+
+云盘多选（列表 / 网格 / 回收站）的选择状态由前端 `frontendv2/components/cloud-drive/` 维护；
+后端新增三个**有界批量端点**（与单文件端点同 `/cloud` 组、同 X-Uid 网关鉴权；
+APISIX/nginx 已按 `/cloud/*` 前缀转发，**无需网关改动**）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/cloud/videos/batch-delete` | 批量移入回收站（软删除；语义 = `DELETE /cloud/video/{uuid}`） |
+| POST | `/cloud/trash/batch-restore` | 批量恢复（语义 = `POST /cloud/trash/{uuid}/restore`） |
+| POST | `/cloud/trash/batch-purge` | 批量彻底删除（语义 = `DELETE /cloud/trash/{uuid}`：MinIO+HLS+Mongo+Milvus+DB 行） |
+
+- 请求体 `{"uuids":["<upload_uuid>", ...]}`：去空白 / 去重（保序）后 1–200 项（`service.MaxBatchItems`），
+  单个标识 ≤ 64 字符；空 / 超限 / 非法标识 → **422 + 中文 detail**（校验在任何存储访问之前完成）。
+- 响应统一 `{succeeded, failed, results:[{upload_uuid, ok, detail?}]}`：逐项隔离失败，`results` 顺序与请求
+  一致；「文件不存在 / 不属于当前账号」合并为同一中文原因（归属校验由 uid 作用域仓储查询保证）。
+- 批量删除成功后与单文件删除一致：撤销该文件全部 HLS 播放令牌与全部分享；批量恢复回补配额；批量彻底删除
+  走 `PurgeService`（三存储物理清理 + 硬删行，单项失败保留行由 sweeper 重试）。
+- 逐项为 N 次受 uid 约束的仓储调用（上限 200，避免单个大事务），**不做静默截断**；单文件端点全部保留。
+
+- **多选分享不新增后端端点**：`cloud_shares` 仍是「每文件一行」，前端 `cloudApi.createShares` 顺序调用
+  `POST /cloud/video/{uuid}/share`（同一提取码 / 有效期 / 下载上限 / 两个合规 ack），弹窗逐文件展示链接与
+  失败原因，支持复制单个、复制全部、单项重试；合规闸门与单文件分享完全一致。
+
+前端行为：列表行 / 网格卡片复选框（点击不打开预览）、ctrl/cmd 切换、shift 在**当前可见有序项**上连选、
+工具栏「全选 / 取消全选 + 已选 N 项 + 清空」；行点击仍打开预览/详情（引用条目 `cloud_refs` 的预览行为
+不受影响）；换文件夹、排序、搜索模式或关键词、进入/退出回收站、列表刷新都会清空选择；回收站同样支持
+多选恢复 / 多选彻底删除（均有确认弹窗）。守护测试：`app-go/app-cloud/tests/batch_test.go`。
+
+## 播放语义与性能（2026-11-28）
+
+> 本节由播放性能专项补充，说明 HLS 从「播放前置条件」降级为「渐进增强」后的
+> 后端契约；原有 HLS 可靠性章节仍然有效。
+
+### 状态语义（GET /cloud/video/{uuid}/hls）
+
+| status | 含义 | 客户端应做 |
+|------|------|-----------|
+| `ready` | 产物已发布，返回 `playlistUrl`/`posterUrl` | 可切 HLS（原画仍可播） |
+| `queued` | 已入队或正在排队 | 先播原画，轮询等待 |
+| `processing` | ffmpeg 打包中 | 先播原画，轮询等待 |
+| `failed` | 终态失败（可 `POST .../hls/retry` 手动重试） | 继续播原画 + 重试入口 |
+| `unsupported` | 源不可打包（无视频流/损坏/图片） | 播原画，不再轮询 |
+| `not_started` | **从未入队**且懒入队被关闭 | 播原画（不是转码中） |
+| `unknown` | Redis 读失败，状态不可知 | 播原画，稍后可重试 |
+| `disabled` | `hls.enabled: false` | 播原画 |
+
+### 懒入队（`hls.lazy_enqueue`，默认 true）
+
+- 旧问题：入队只发生在客户端 complete / MinIO 事件 webhook；HLS 上线前的老文件、
+  webhook 未触发的上传、状态 TTL 过期的文件在 Redis 里**没有任何状态**，而旧代码
+  把空状态当成 `processing`，前端因此显示永久「转码中」阻塞页（实测线上库 10001
+  个有效视频只有 9 个有 HLS 状态 → 99.9% 的视频打开即无限转圈）。
+- 现在 GET /hls 对「无状态」视频懒入队一次（`SET NX cloud:hls:job:{uuid}` 去重，
+  重复 GET 不会重复转码），并返回 `queued`；`failed` 只在 retryable、尝试次数未耗尽
+  且距上次尝试超过 10 分钟时自动重试（防坏文件转码风暴）。关闭开关后返回
+  `not_started`，绝不伪造 `processing`。
+- `/cloud/video/{uuid}/hls/retry` 语义不变（强制重试，清空尝试计数）。
+
+### 状态 TTL 与重打包
+
+- `cloud:hls:status:*` TTL 由 7 天改为 **30 天**，并在每次成功签发播放描述符时
+  `EXPIRE` 续期（滑动过期）：常用视频不会被反复重新转码；长期无人观看的文件状态
+  过期后，下次打开按懒入队重新打包（产物对象仍在 MinIO，但需要一次重转码）。
+
+### 前端配合（frontendv2/components/cloud-drive/）
+
+- `file-viewer.tsx`：视频立即播原画（MP4 progressive/Range），HLS 就绪只在
+  播放尚未真正开始（<3s）时自动切换；已开始播放则显示非阻塞 chip「高清版已就绪，
+  切换」并从当前位置续播。转码中/失败只显示小 chip，永不阻塞、永不降级原画。
+- `use-hls-playback.ts`：仅对 `queued`/`processing` 轮询（退避至 15s），终态停止。
+- `media-url.ts`：仅当页面 origin 与预签名 URL 一致时转相对路径；本地 `next dev`
+  （:3000）没有媒体 rewrite，保持绝对 edge URL 直连（避免 Next 代理慢/404）。
+
+### 实测（2026-11-28，本机 docker 栈）
+
+- 无状态视频 `GET /hls`：修复前返回 `processing` + progress=10（永久等待）；修复后
+  返回 `queued` 并真实入队，响应 25–45 ms。
+- HLS（已 ready 的 1.1 GB 视频）：修复令牌库后 master playlist 200 ~30–100 ms、
+  媒体 playlist 42 ms、首个 360p 分片 46 ms（≈0.14 s 到首帧）。
+- 原画 Range 播放吞吐见 `docs/openresty-edge.md` §10（edge 0.9–5.2 MB/s → 38–94 MB/s）。
+- 后台转码耗时与小节无关：长视频仍是分钟级，但不再阻塞首帧。

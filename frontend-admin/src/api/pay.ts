@@ -61,16 +61,42 @@ export interface PayMembershipEventItem {
   createdAt: string;
 }
 
-/** SKU 目录（只读）。 */
+/** 会员档位（与 app-pay 的 pay_product.tier 一致）。 */
+export type ProductTier = "VIP" | "SVIP" | "PROMAX";
+
+/** SKU 状态（app-pay 的真实枚举；本控制台为权威写入口）。 */
+export type ProductStatus = "ACTIVE" | "DISABLED";
+
+/** SKU 目录行（pay_product 权威表；id 为 CRUD 句柄，code 创建后不可改）。 */
 export interface PayProductItem {
+  id: number;
   code: string;
   title: string;
   durationDays: number;
   priceCents: number;
-  status: string;
+  tier: ProductTier;
+  status: ProductStatus;
   sort: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 商品写入请求（POST 新建 / PUT 全量更新；金额整数分，code 更新时必须等于原编码）。 */
+export interface PayProductWrite {
+  code: string;
+  title: string;
+  durationDays: number;
+  priceCents: number;
+  tier: ProductTier;
+  /** 新建时缺省 ACTIVE；更新时缺省保留原状态 */
+  status?: ProductStatus;
+  sort: number;
+}
+
+/** DELETE /api/pay/products/:id 结果：deleted = 物理删除；disabled = 有订单引用改为下架。 */
+export interface PayProductDeleteResult {
+  result: "deleted" | "disabled";
+  product?: PayProductItem;
 }
 
 /** 补偿开通请求（uid 允许 number|string，后端按 bigint 解析）。 */
@@ -174,8 +200,23 @@ export const payApi = {
   events: (params: PayEventQuery) =>
     request<Paged<PayMembershipEventItem>>(`/api/pay/events${qs({ ...params })}`),
 
-  /** SKU 目录（sort ASC, id ASC；只读） */
+  /** SKU 目录（权威表，sort ASC, id ASC；viewer 可读） */
   products: () => request<{ items: PayProductItem[] }>("/api/pay/products"),
+
+  /** 新建 SKU（admin；编码重复 409，校验失败 400） */
+  createProduct: (body: PayProductWrite) =>
+    post<{ product: PayProductItem }>("/api/pay/products", body),
+
+  /** 全量更新 SKU（admin；code 不可改、最后一个在售商品不可下架 → 409） */
+  updateProduct: (id: number, body: PayProductWrite) =>
+    request<{ product: PayProductItem }>(`/api/pay/products/${enc(String(id))}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  /** 删除 SKU（admin）：无订单引用物理删除，有引用则自动下架为 DISABLED */
+  deleteProduct: (id: number) =>
+    request<PayProductDeleteResult>(`/api/pay/products/${enc(String(id))}`, { method: "DELETE" }),
 
   /** 运营补偿开通（admin；日额度超限 429） */
   grant: (body: PayGrantRequest) => post<PayGrantResult>("/api/pay/grants", body),

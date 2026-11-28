@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { ArrowUp, Square, X, FileUp, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
 import { ChatModelPicker, type ChatModelSelection } from "./chat-model-picker";
-import type { ReasoningEffort } from "./effort-slider";
+import { REASONING_EFFORT_DEFAULT, type ReasoningEffort } from "./effort-slider";
 import { ChatAttachmentsDrawer } from "./chat-attachments-drawer";
 import { StreamElapsed } from "./streaming-elapsed";
 import {
@@ -45,7 +45,7 @@ interface ChatInputProps {
   selectedModel?: string;
   codingPlanModel?: string;
   onModelChange?: (selection: ChatModelSelection) => void;
-  /** 推理强度（min/mid/high/max）：模型弹层底部的滑动变阻器 */
+  /** 推理强度（连续 0–100）：模型弹层底部的滑动变阻器 */
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (value: ReasoningEffort) => void;
   // 生成中已排队、等待本轮结束后自动发送的消息数量（仅用于提示文案）
@@ -137,7 +137,7 @@ export function ChatInput({
   selectedModel = "",
   codingPlanModel,
   onModelChange,
-  reasoningEffort = "mid",
+  reasoningEffort = REASONING_EFFORT_DEFAULT,
   onReasoningEffortChange,
   queuedCount = 0,
 }: ChatInputProps) {

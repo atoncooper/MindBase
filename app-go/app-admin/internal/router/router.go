@@ -45,6 +45,10 @@ type Deps struct {
 	// 503 {"detail":"支付管理未配置"} after login.
 	Pay    *service.PayQueryService
 	Grants *service.PayGrantService
+	// PayProducts is the authoritative SKU catalog write service (console
+	// CRUD). nil while the pay module is disabled; New() falls back to a
+	// default instance when Pay is wired so tests need no extra field.
+	PayProducts *service.PayProductService
 	// Console is the admin_user account-management service (always available —
 	// it does not touch the payment database).
 	Console *service.ConsoleUserService
@@ -68,6 +72,7 @@ type Router struct {
 	sandbox        *service.SandboxService
 	pay            *service.PayQueryService
 	grants         *service.PayGrantService
+	products       *service.PayProductService
 	console        *service.ConsoleUserService
 	ops            *payops.Client
 	payAudit       *service.PayAudit
@@ -103,6 +108,11 @@ func New(cfg *config.Config, deps Deps) *gin.Engine {
 	if deps.Console == nil {
 		deps.Console = service.NewConsoleUserService()
 	}
+	// The SKU catalog write plane rides on the pay module: when its queries are
+	// wired the product service is always available (shared JSONL sink).
+	if deps.PayProducts == nil && deps.Pay != nil {
+		deps.PayProducts = service.NewPayProductService(deps.PayAudit)
+	}
 
 	// Proxy trust is explicit: gin's default (trust everything) would let a
 	// client spoof X-Forwarded-For to sidestep the login throttle / logging.
@@ -132,6 +142,7 @@ func New(cfg *config.Config, deps Deps) *gin.Engine {
 		sandbox:        deps.Sandbox,
 		pay:            deps.Pay,
 		grants:         deps.Grants,
+		products:       deps.PayProducts,
 		console:        deps.Console,
 		ops:            deps.Ops,
 		payAudit:       deps.PayAudit,

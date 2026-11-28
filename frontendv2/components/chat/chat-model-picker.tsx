@@ -6,27 +6,72 @@
  * 弹层分两个互斥分组：
  *   - 系统模型：config/model.json（GET /chat/models），全部经平台 AI 网关；
  *     「默认模型」不传 model，由后端 config.llm.model 决定。
- *   - Coding Plan：当前用户最早启用的第三方套餐（VIP/SVIP），模型列表在
- *     首次切到该分组时按需探测（GET /settings/coding-plans/{id}/models），
- *     走用户自己的套餐额度。
+ *   - Coding Plan：用户启用的第三方套餐（VIP/SVIP）。套餐目录由 ChatView 在
+ *     挂载时统一加载，并通过 ChatModelPickerProvider 注入（避免选择器重复请求、
+ *     也避免「先显示平台默认、套餐到了再跳变」）；套餐模型列表在首次切到该
+ *     分组时按需探测（GET /settings/coding-plans/{id}/models）。
  *
- * 选中 Coding Plan 模型时请求携带 coding_plan_model 且不携带 model；选中
- * 系统模型/默认模型时清空 coding_plan_model。二者不会同时发送。
+ * 默认选择优先级（由 ChatView 计算）：用户显式选择 > is_default 的 Coding Plan
+ * 套餐默认模型 > 平台默认模型。选中 Coding Plan 模型时请求携带 coding_plan_model
+ * 且不携带 model；平台默认两者都不传；二者不会同时发送。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Boxes, Check, ChevronDown, Loader2 } from "lucide-react";
-import { EffortSlider, type ReasoningEffort } from "./effort-slider";
 import {
-    codingPlanApi,
-    type ChatModel,
-    type CodingPlan,
-} from "@/lib/api";
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
+import { Boxes, Check, ChevronDown, Loader2 } from "lucide-react";
+import { EffortSlider, REASONING_EFFORT_DEFAULT, reasoningEffortLabel, type ReasoningEffort } from "./effort-slider";
+import { codingPlanApi, type ChatModel, type CodingPlan } from "@/lib/api";
 
 /** 一次模型选择：默认 / 系统目录模型 / Coding Plan 模型。 */
 export type ChatModelSelection =
     | { kind: "default" }
     | { kind: "system"; id: string }
     | { kind: "coding-plan"; model: string };
+
+/**
+ * ChatView 统一加载的模型/套餐上下文。选择器只负责展示与切换：
+ * 目录/套餐的加载、默认选择的裁决、请求字段的互斥都在 ChatView 完成。
+ */
+export interface ChatModelPickerContextValue {
+    /** 目录/套餐尚未加载完成：触发器显示中性加载态，避免先显示平台默认再跳变。 */
+    loading: boolean;
+    /** 当前展示的套餐（is_default 优先，其次最早启用）；null = 没有可用套餐。 */
+    plan: CodingPlan | null;
+    /** is_default 的启用套餐：决定聊天默认模型与「Coding Plan 默认」标记。 */
+    defaultPlan: CodingPlan | null;
+    /** 403（非 VIP）：整个 Coding Plan 分组静默隐藏。 */
+    forbidden: boolean;
+}
+
+const ChatModelPickerContext = createContext<ChatModelPickerContextValue | null>(null);
+
+/** 由 ChatView 渲染在 ChatInput 外层：选择器在 ChatInput 内部，无法透传 props。 */
+export function ChatModelPickerProvider({
+    value,
+    children,
+}: {
+    value: ChatModelPickerContextValue;
+    children: ReactNode;
+}) {
+    return (
+        <ChatModelPickerContext.Provider value={value}>{children}</ChatModelPickerContext.Provider>
+    );
+}
+
+function useChatModelPickerContext(): ChatModelPickerContextValue {
+    const value = useContext(ChatModelPickerContext);
+    if (!value) {
+        throw new Error("ChatModelPicker 必须在 ChatModelPickerProvider 内渲染");
+    }
+    return value;
+}
 
 type Tab = "system" | "coding";
 
@@ -35,7 +80,7 @@ export function ChatModelPicker({
     value,
     codingPlanValue,
     onChange,
-    reasoningEffort = "mid",
+    reasoningEffort = REASONING_EFFORT_DEFAULT,
     onReasoningEffortChange,
     disabled = false,
 }: {
@@ -50,17 +95,15 @@ export function ChatModelPicker({
     onReasoningEffortChange?: (value: ReasoningEffort) => void;
     disabled?: boolean;
 }) {
+    const { loading, plan, defaultPlan, forbidden } = useChatModelPickerContext();
     const [open, setOpen] = useState(false);
     const [tab, setTab] = useState<Tab>("system");
-    const [loading, setLoading] = useState(false);
-    const [loaded, setLoaded] = useState(false);
-    const [plan, setPlan] = useState<CodingPlan | null>(null);
-    const [codingModels, setCodingModels] = useState<string[]>([]);
-    const [error, setError] = useState<string | null>(null);
+    // 套餐模型列表：null = 还未探测（首次打开 Coding Plan 分组时才回源）。
+    const [probedModels, setProbedModels] = useState<string[] | null>(null);
+    const [probeLoading, setProbeLoading] = useState(false);
+    const [probeError, setProbeError] = useState<string | null>(null);
     // 厂商不提供 /models 时：保留配置的默认模型，只给一条弱提示，不报红。
-    const [modelsNotice, setModelsNotice] = useState<string | null>(null);
-    // 403 = 非 VIP：整个 Coding Plan 分组隐藏，避免每次打开都提示"不可用"。
-    const [forbidden, setForbidden] = useState(false);
+    const [probeNotice, setProbeNotice] = useState<string | null>(null);
     const rootRef = useRef<HTMLDivElement>(null);
 
     // Esc / 点击外部关闭。
@@ -82,96 +125,112 @@ export function ChatModelPicker({
         };
     }, [open]);
 
-    const loadCodingPlan = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-        setModelsNotice(null);
-        setForbidden(false);
-        try {
-            const { plans } = await codingPlanApi.list();
-            // 与后端 FirstEnabled 一致：最早创建的启用套餐。
-            const active = plans.find((p) => p.enabled) ?? null;
-            setPlan(active);
-            if (!active) {
-                setCodingModels([]);
-                return;
-            }
-            let probed: string[] = [];
-            try {
-                const catalog = await codingPlanApi.models(active.id);
-                probed = catalog.models ?? [];
-            } catch (e) {
-                // 探测失败仍保留配置里的默认模型，用户可以先试；
-                // 有默认模型时用弱提示，不把"厂商没有 /models"渲染成红色错误。
-                if (active.model) {
-                    setModelsNotice("该套餐未返回模型列表，使用默认模型");
-                } else {
-                    setError(e instanceof Error ? e.message : "模型列表加载失败");
-                }
-            }
-            const merged = Array.from(
-                new Set([active.model, ...probed].map((m) => m.trim()).filter(Boolean)),
-            );
-            setCodingModels(merged);
-        } catch (e) {
-            const status = (e as { status?: number })?.status;
-            // 403 = 非 VIP：静默隐藏 Coding Plan 分组，不影响系统模型。
-            if (status === 403) {
-                setForbidden(true);
-            } else {
-                setError(e instanceof Error ? e.message : "Coding Plan 加载失败");
-            }
-            setPlan(null);
-            setCodingModels([]);
-        } finally {
-            setLoading(false);
-            setLoaded(true);
+    const loadCodingModels = useCallback(async () => {
+        if (!plan) {
+            setProbedModels([]);
+            return;
         }
-    }, []);
+        setProbeLoading(true);
+        setProbeError(null);
+        setProbeNotice(null);
+        try {
+            const catalog = await codingPlanApi.models(plan.id);
+            const merged = Array.from(
+                new Set([plan.model, ...(catalog.models ?? [])].map((m) => m.trim()).filter(Boolean)),
+            );
+            setProbedModels(merged);
+        } catch (e) {
+            // 探测失败仍保留套餐配置的默认模型，用户可以先试；
+            // 有默认模型时用弱提示，不把「厂商没有 /models」渲染成红色错误。
+            if (plan.model) {
+                setProbeNotice("该套餐未返回模型列表，使用套餐默认模型");
+                setProbedModels([plan.model]);
+            } else {
+                setProbeError(e instanceof Error ? e.message : "模型列表加载失败");
+                setProbedModels([]);
+            }
+        } finally {
+            setProbeLoading(false);
+        }
+    }, [plan]);
+
+    const ensureCodingModels = useCallback(() => {
+        if (probedModels !== null || probeLoading) return;
+        void loadCodingModels();
+    }, [probedModels, probeLoading, loadCodingModels]);
 
     const toggle = () => {
-        if (disabled) return;
+        if (disabled || loading) return;
         const next = !open;
         setOpen(next);
         if (next) {
             setTab(codingPlanValue ? "coding" : "system");
-            if (!loaded && !loading) void loadCodingPlan();
+            if (codingPlanValue) ensureCodingModels();
         }
     };
 
     const selectTab = (next: Tab) => {
         setTab(next);
-        if (next === "coding" && !loaded && !loading) void loadCodingPlan();
+        if (next === "coding") ensureCodingModels();
     };
 
     const selectedSystem = models.find((m) => m.id === value);
-    // 触发按钮只显示模型 id（套餐名在弹层里），避免长标签挤爆输入栏。
-    const label = codingPlanValue ?? selectedSystem?.label ?? "默认模型";
     const activeTab: Tab = forbidden ? "system" : tab;
+    // is_default 套餐的默认模型：触发器后缀与弹层徽标都以它为准。
+    const isDefaultPlanModel =
+        !!codingPlanValue && !!defaultPlan?.model && codingPlanValue === defaultPlan.model;
+    const planModelLabel = codingPlanValue
+        ? isDefaultPlanModel
+            ? `${codingPlanValue} · Coding Plan 默认`
+            : codingPlanValue
+        : selectedSystem?.label ?? "默认模型";
+    const codingModels = useMemo(
+        () => probedModels ?? (plan?.model ? [plan.model] : []),
+        [probedModels, plan],
+    );
+    const otherCodingModels = plan?.model
+        ? codingModels.filter((model) => model !== plan.model)
+        : codingModels;
 
     return (
         <div ref={rootRef} className="relative min-w-0 shrink">
             <button
                 type="button"
                 onClick={toggle}
-                disabled={disabled}
+                disabled={disabled || loading}
                 aria-expanded={open}
                 aria-haspopup="true"
-                aria-label={`选择聊天模型（当前：${label}）`}
-                title="选择聊天模型：系统默认模型或 Coding Plan 模型"
-                className="flex h-9 w-full min-w-0 max-w-[42vw] items-center gap-1 rounded-md px-2 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 sm:h-8 sm:max-w-[220px] sm:text-[11px]"
+                aria-busy={loading}
+                aria-label={loading ? "聊天模型加载中" : `选择聊天模型（当前：${planModelLabel}）`}
+                title={
+                    loading
+                        ? "正在读取聊天模型与 Coding Plan 配置"
+                        : isDefaultPlanModel
+                            ? `Coding Plan 默认模型：${codingPlanValue}`
+                            : "选择聊天模型：系统默认模型或 Coding Plan 模型"
+                }
+                className="flex h-9 w-full min-w-0 max-w-[42vw] items-center gap-1 rounded-md px-2 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-60 sm:h-8 sm:max-w-[220px] sm:text-[11px]"
             >
-                {codingPlanValue && (
-                    <Boxes className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+                {loading ? (
+                    <>
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-tertiary" aria-hidden="true" />
+                        <span className="truncate text-tertiary">模型加载中…</span>
+                    </>
+                ) : (
+                    <>
+                        {codingPlanValue && (
+                            <Boxes className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+                        )}
+                        <span className="hidden shrink-0 sm:inline">
+                            {codingPlanValue ? "套餐" : "模型"}
+                        </span>
+                        <span className="truncate">{planModelLabel}</span>
+                        <ChevronDown
+                            className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+                            aria-hidden="true"
+                        />
+                    </>
                 )}
-                <span className="hidden shrink-0 sm:inline">
-                    {codingPlanValue ? "套餐" : "模型"}
-                </span>
-                <span className="truncate">{label}</span>
-                <ChevronDown
-                    className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
-                    aria-hidden="true"
-                />
             </button>
 
             {open && (
@@ -294,23 +353,62 @@ export function ChatModelPicker({
                                         Coding Plan
                                     </span>
                                     <span className="min-w-0 truncate text-[10px] text-tertiary">
-                                        {plan?.label || (loaded && !loading ? "未配置" : "")}
+                                        {plan ? `${plan.label} · ${plan.provider}` : "未配置"}
                                     </span>
                                 </div>
 
-                                {loading && (
+                                {plan && (
+                                    <button
+                                        type="button"
+                                        disabled={!plan.model}
+                                        aria-pressed={codingPlanValue === plan.model}
+                                        onClick={() => {
+                                            if (!plan.model) return;
+                                            onChange({ kind: "coding-plan", model: plan.model });
+                                            setOpen(false);
+                                        }}
+                                        className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-border-subtle/60 ${
+                                            codingPlanValue === plan.model ? "bg-accent-soft/60" : ""
+                                        }`}
+                                    >
+                                        <span className="min-w-0 flex-1">
+                                            <span className="flex flex-wrap items-center gap-1.5">
+                                                {plan.is_default ? (
+                                                    <span className="shrink-0 rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                                                        Coding Plan 默认模型
+                                                    </span>
+                                                ) : (
+                                                    <span className="shrink-0 rounded-sm bg-border-subtle px-1.5 py-0.5 text-[10px] text-secondary">
+                                                        套餐默认模型
+                                                    </span>
+                                                )}
+                                            </span>
+                                            <span className="mt-0.5 block truncate font-mono text-[11px] text-foreground">
+                                                {plan.model || "（套餐未配置模型）"}
+                                            </span>
+                                            <span className="mt-0.5 block text-[10px] leading-relaxed text-tertiary">
+                                                {plan.label} · {plan.provider}
+                                            </span>
+                                        </span>
+                                        {codingPlanValue === plan.model && (
+                                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+                                        )}
+                                    </button>
+                                )}
+
+                                {probeLoading && (
                                     <div className="flex items-center gap-2 px-3 py-2.5 text-[11px] text-tertiary">
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                                         正在读取套餐模型…
                                     </div>
                                 )}
 
-                                {!loading && error && (
+                                {!probeLoading && probeError && (
                                     <div className="px-3 py-2 text-[11px] leading-relaxed text-danger">
-                                        {error}
+                                        {probeError}
                                         <button
                                             type="button"
-                                            onClick={() => void loadCodingPlan()}
+                                            onClick={() => void loadCodingModels()}
                                             className="ml-1 font-medium underline underline-offset-2"
                                         >
                                             重试
@@ -318,20 +416,20 @@ export function ChatModelPicker({
                                     </div>
                                 )}
 
-                                {!loading && modelsNotice && (
+                                {!probeLoading && probeNotice && (
                                     <div className="px-3 py-2 text-[11px] leading-relaxed text-tertiary">
-                                        {modelsNotice}
+                                        {probeNotice}
                                     </div>
                                 )}
 
-                                {!loading && plan && codingModels.length === 0 && (
-                                    <div className="px-3 py-2 text-[11px] text-tertiary">
-                                        该套餐没有返回可用模型
+                                {!probeLoading && plan && otherCodingModels.length > 0 && (
+                                    <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium text-tertiary">
+                                        其他套餐模型
                                     </div>
                                 )}
 
-                                {!loading &&
-                                    codingModels.map((model) => {
+                                {!probeLoading &&
+                                    otherCodingModels.map((model) => {
                                         const active = codingPlanValue === model;
                                         return (
                                             <button
@@ -359,7 +457,7 @@ export function ChatModelPicker({
                                         );
                                     })}
 
-                                {!loading && loaded && !plan && !error && (
+                                {!probeLoading && !plan && (
                                     <div className="px-3 py-2 text-[11px] leading-relaxed text-tertiary">
                                         未检测到可用 Coding Plan
                                     </div>
@@ -370,7 +468,9 @@ export function ChatModelPicker({
 
                     {activeTab === "coding" && !forbidden && (
                         <div className="border-t border-border-subtle px-3 py-2 text-[11px] leading-relaxed text-tertiary">
-                            选择 Coding Plan 模型会消耗套餐额度；套餐不可用时自动回退平台模型。
+                            {plan?.is_default
+                                ? "聊天默认使用该套餐模型；套餐不可用时自动回退平台模型。"
+                                : "选择套餐模型会消耗套餐额度；未设为默认套餐时聊天默认使用平台模型。"}
                         </div>
                     )}
 
@@ -380,8 +480,8 @@ export function ChatModelPicker({
                                 <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-tertiary">
                                     推理强度
                                 </span>
-                                <span className="text-[10px] font-medium uppercase tracking-wide text-secondary">
-                                    {reasoningEffort}
+                                <span className="text-[10px] font-medium tracking-wide text-secondary">
+                                    {reasoningEffortLabel(reasoningEffort)} · {Math.round(reasoningEffort)}
                                 </span>
                             </div>
                             <EffortSlider

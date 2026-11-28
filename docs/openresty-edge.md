@@ -131,3 +131,36 @@
 - 完全直连 MinIO 的脚本使用 S3 全权凭据，**不受配额/审计/网关限流约束**，只建议 CI/运维在私有网络内用，并按 bucket/key 前缀隔离；不要把 MinIO 端口暴露公网。
 - 预签名 URL 有时效（默认 3600s，`minio.presign_expire`）且只对指定 key 生效。
 - 若要把**整个云盘 API** 也绕开 APISIX：把 `^~ /mindbase/api/v1/cloud/` 的 target 从 `apisix_backend` 换成 `$appcloud_upstream` + `auth_request`（一行配置），代价是失去 APISIX 的路由级限流/观测插件。
+
+## 10. 媒体播放限速与 HLS 令牌（2026-11-28 播放性能修复）
+
+### 10.1 播放与整文件下载分开限速
+
+- 旧行为：`/mindbase/api/v1/media/` 与旧 `/minio-proxy/` 对**所有** GET 逐请求
+  `limit_rate 8m`。`<video>` 播放是 Range 分片流，每个分片都被限速：实测 8 MiB
+  Range 从直连 MinIO 的 **36 ms** 恶化到 **1.6–9.6 s**（首帧/拖动直接卡住）。
+- 现行为（`nginx.conf` `map $http_range $minio_playback_rate`）：
+  - 带 `Range` 的 GET（分片播放/拖动）→ **不限速**（`0`）；
+  - 无 `Range` 的 GET（整文件下载）→ 仍受 `$minio_dl_rate`（默认 8m）限制，并加
+    `limit_rate_after 1m` 让下载先快速出前 1 MiB；PUT（分块上传）保持不限速。
+- 滥用保护未移除：`limit_conn conn_per_ip 8`、`limit_req`、预签名 URL 时效仍在。
+  `limit_rate` 本来就是**每请求**上限（8 并发 × 8m 一直是聚合上限），因此 Range
+  不限速不降低聚合带宽保护。
+- 实测（同一 1.1 GB MP4，8 MiB Range，经 `https://localhost`）：
+
+  | 路径 | TTFB | 吞吐 |
+  |---|---|---|
+  | 修复前（edge，逐请求 8m） | 2.0–8.4 s | 0.9–5.2 MB/s |
+  | 修复后（edge，Range 不限速） | 0.03–0.07 s | 38–94 MB/s |
+  | 直连 MinIO（无 edge 限速，基线） | 0.019 s | ~220 MB/s |
+
+### 10.2 HLS 令牌改读双 Redis 库
+
+- app-cloud 把 `cloud:hls:token:*` 写在其 `REDIS__URL` 指向的库（本部署 **db0**），
+  而 `compose/gateway.yml` 给边缘的 `HLS_REDIS_DB` 是 **db1**。结果：刚签发的
+  token 在边缘一律 unknown/expired → `/hls/*` **永远 403**，播放器重试一次后回退到
+  限速原画（"慢"的另一半原因）。
+- `lua/hls_token.lua` 现在先读 `HLS_REDIS_DB`，未命中再回退读 db0（token 隔离到
+  db1 的部署仍可用，只多一次 GET）。实测修复后：master playlist 200、首个媒体
+  playlist 42 ms、首个 TS 分片 46 ms（≈0.14 s 到首帧）。
+- 后续可把两处 DB 配置对齐后删掉回退分支（保持向后兼容一个周期）。

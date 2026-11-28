@@ -7,6 +7,12 @@ import { hashClientKey, type QuotaService } from "../../../services/quota.js";
  * usage: rolling 5-hour + day + month windows, per-kind breakdown, model
  * weights and the cost block. Consumed by the chat badge, the quota page and
  * the membership center.
+ *
+ * Also returns the codingPlan section: actual provider tokens burned by the
+ * user's own Coding Plan (5h/day/month + today's per-model split + turn count).
+ * Those tokens are paid by the user's third-party plan, so they never move the
+ * platform windows above — the section is additive/backwards compatible and
+ * stays zero for anonymous callers or when quota counting is disabled.
  */
 export function registerQuotaRoutes(app: FastifyInstance, deps: { quota: QuotaService }): void {
   app.get("/quota/summary", async (req: FastifyRequest) => {

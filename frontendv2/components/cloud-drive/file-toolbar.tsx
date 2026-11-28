@@ -18,8 +18,10 @@ import {
     Check,
     Folder,
     Loader2,
+    RotateCcw,
     Search,
     Share2,
+    Trash2,
     X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -29,6 +31,20 @@ export type SortField = "original_name" | "file_size" | "created_at";
 export type SortOrder = "asc" | "desc";
 /** 搜索模式：文件名匹配 / 语义检索 */
 export type SearchMode = "name" | "semantic";
+
+/** 多选工具条（列表 / 网格 / 回收站共用）：全选、已选计数、批量动作。 */
+export interface ToolbarSelection {
+    count: number;
+    selectableCount: number;
+    allSelected: boolean;
+    /** 回收站模式：删除 = 彻底删除，并显示「恢复」 */
+    trashMode?: boolean;
+    busy?: boolean;
+    onToggleAll: () => void;
+    onClear: () => void;
+    onDelete: () => void;
+    onRestore?: () => void;
+}
 
 interface FileToolbarProps {
     title: string;
@@ -54,6 +70,8 @@ interface FileToolbarProps {
     semanticFolderDisabled?: boolean;
     canShare?: boolean;
     onShareClick?: () => void;
+    /** 多选工具条；缺省不渲染（如语义检索等无多选能力的视图） */
+    selection?: ToolbarSelection;
 }
 
 const SORT_LABELS: Record<SortField, string> = {
@@ -81,6 +99,7 @@ export function FileToolbar({
     semanticFolderDisabled,
     canShare,
     onShareClick,
+    selection,
 }: FileToolbarProps) {
     const [sortOpen, setSortOpen] = useState(false);
     const sortRef = useRef<HTMLDivElement>(null);
@@ -181,6 +200,62 @@ export function FileToolbar({
 
             {/* Actions */}
             <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
+                {selection && selection.selectableCount > 0 && (
+                    <div className="flex items-center gap-0.5">
+                        <label className="flex cursor-pointer items-center gap-1.5 rounded-full px-2 py-1.5 text-[11.5px] text-secondary transition-colors hover:bg-border-subtle">
+                            <input
+                                type="checkbox"
+                                checked={selection.allSelected}
+                                onChange={selection.onToggleAll}
+                                aria-label={selection.allSelected ? "取消全选" : "全选"}
+                                className="h-3.5 w-3.5 cursor-pointer rounded border-border-subtle accent-[var(--color-accent)]"
+                            />
+                            <span className="hidden whitespace-nowrap sm:inline">
+                                {selection.allSelected ? "取消全选" : "全选"}
+                            </span>
+                        </label>
+                        {selection.count > 0 && (
+                            <>
+                                <span className="whitespace-nowrap text-[11.5px] tabular-nums text-secondary">
+                                    已选 {selection.count} 项
+                                </span>
+                                {selection.trashMode && selection.onRestore && (
+                                    <button
+                                        type="button"
+                                        onClick={selection.onRestore}
+                                        disabled={selection.busy}
+                                        title="恢复选中文件"
+                                        className="flex items-center gap-1 rounded-full px-2 py-1.5 text-[11.5px] text-accent transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        <RotateCcw className="h-3.5 w-3.5" />
+                                        <span className="hidden sm:inline">恢复</span>
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={selection.onDelete}
+                                    disabled={selection.busy}
+                                    title={selection.trashMode ? "彻底删除选中文件" : "删除选中文件"}
+                                    className="flex items-center gap-1 rounded-full px-2 py-1.5 text-[11.5px] text-red-500 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">
+                                        {selection.trashMode ? "彻底删除" : "删除"}
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={selection.onClear}
+                                    title="清空选择"
+                                    aria-label="清空选择"
+                                    className="grid h-7 w-7 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </>
+                        )}
+                    </div>
+                )}
                 {onShareClick && (
                     <button
                         type="button"

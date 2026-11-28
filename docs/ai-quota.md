@@ -152,7 +152,10 @@ valueYuan     = monthlyTokens × referencePricePerMTok / 1_000_000
 
 例外（不是用量额度）：
 
-- **coding_plan**：用户自带第三方套餐，不消耗平台 token；仍保留每日轮次上限（free 0 / vip 100 / svip 300），防止绕过会员档位滥用。
+- **coding_plan**：用户自带第三方套餐，不消耗平台 token / 不计平台成本；仍保留每日轮次上限（free 0 / vip 100 / svip 300），防止绕过会员档位滥用。
+  **但 token 用量仍统计**：每轮按 provider 实际上报的 input + output 写入独立的 external 计数（5h / 日 / 月 + 今日按模型 + 轮次），
+  在 `GET /quota/summary` 的 `codingPlan` 段返回，供账户页展示「Coding Plan 已用 token（今日 / 本月）」。
+  这套计数与平台窗口完全隔离——只记账，不限额、不扣成本、不影响 Credits。
 - **task_quiz_active**：活跃定时任务「存量」上限，不是消耗；仍按档位 2/10/30。
 
 ## 6. API 契约
@@ -183,9 +186,21 @@ valueYuan     = monthlyTokens × referencePricePerMTok / 1_000_000
   "kinds": [ { "kind": "chat", "used": 8000, "limit": -1, "resetAt": 1760000000000, "usedPercent": 1, "remainingPercent": 99 } ],
   "models": [ { "model": "z-ai/glm-5.3-flash", "inputWeight": 0.0188, "outputWeight": 0.648, "price": { "input": 0.188, "output": 6.48 } } ],
   "cost": { "microYuan": 0, "softMicroYuan": 0, "guardMicroYuan": 480000000, "guardEnabled": false, "level": "L0", "resetAt": 1760000000000 },
+  "codingPlan": {
+    "fiveHourTokens": 12000,
+    "dayTokens": 36000,
+    "monthTokens": 210000,
+    "byModel": [ { "model": "opencode/zen-pro", "tokens": 30000 }, { "model": "kimi/k2-coding", "tokens": 6000 } ],
+    "turns": 12
+  },
   "storeUnavailable": false
 }
 ```
+
+`codingPlan` 为**追加字段**（向后兼容，老客户端忽略即可）：token 由用户自带第三方套餐支付，
+不占平台 Credits；`byModel` 是今日按模型拆分（仅含后端进程见过的模型，token 总量不受影响），
+`turns` 是今日已计量的 Coding Plan 轮次。匿名调用 / 未配置套餐 / `quota.enabled=false` 时该段为 0，
+但**不受 `quota.enabled` 门禁影响**——只要用户走过 Coding Plan 就会记账。
 
 聊天超额 SSE：
 
@@ -276,8 +291,17 @@ mind-base:quota:tokens:{id}:day:{YYYYMMDD}
 mind-base:quota:tokens:{id}:month:{YYYYMM}
 mind-base:quota:kind:{kind}:{id}:{YYYYMMDD}
 mind-base:quota:cost:{id}:{YYYYMMDD}
-mind-base:quota:coding_plan:{id}:{YYYYMMDD}
+mind-base:quota:coding_plan:{id}:{YYYYMMDD}          # 每日轮次上限（按次）
+mind-base:quota:external:{id}:5h:{epochBucket}       # Coding Plan 实际 token：滚动 5h
+mind-base:quota:external:{id}:day:{YYYYMMDD}         # Coding Plan 实际 token：自然日
+mind-base:quota:external:{id}:month:{YYYYMM}         # Coding Plan 实际 token：自然月
+mind-base:quota:external:{id}:turns:{YYYYMMDD}       # Coding Plan 今日已计量轮次
+mind-base:quota:external:{id}:model:{YYYYMMDD}:{model}  # Coding Plan 今日按模型 token
 ```
+
+`external:*` 是平台代付之外（Coding Plan）的独立账本：与 `tokens:*` / `cost:*` 完全隔离，
+写入走 `QuotaService.recordExternalTurn`（provider 实际 usage，缺失时用与平台轮次同一套估算兜底），
+因此统计 Coding Plan 用量不会移动任何平台额度窗口。
 
 - `id` = uid，或匿名场景的 `sha256(ip)[:24]`。
 - 旧版 `mind-base:quota:{kind}:{uid}:{day}` 计数键**不再读取**；新键从 0 开始，上线首日没有历史额度。
@@ -291,14 +315,15 @@ mind-base:quota:coding_plan:{id}:{YYYYMMDD}
 - 入口判定允许最后一轮超支；极端并发下多轮可能同时通过 gate。要严格封顶需在 gate 做预估预留（当前选择可用性优先）。
 - 模型价格表是配置，不是自动同步；网关调价后必须人工更新 `quota.prices`，否则成本/权重会漂移。
 - 额度不结转：日/月窗口过期即清零（与 Kimi 一致）。
+- Coding Plan 的 `byModel` 拆分依赖进程内见过的模型 id（Redis 计数键无法枚举）：进程重启后、下个 Coding Plan 轮次之前该数组可能暂时为空；5h/日/月/轮次总量始终来自计数键，不受影响。
 
 ## 11. 测试
 
 ```bash
 cd app-ts
 npm run typecheck
-npx vitest run test/quota.test.ts test/quota-chat.test.ts
+npx vitest run test/quota.test.ts test/quota-chat.test.ts test/quota-coding-plan.test.ts
 npm test
 ```
 
-覆盖：三层窗口与重置边界、5h 滚动、模型权重、成本整数运算、fail-open/fail-closed、匿名桶、图片批量、非聊天估算、coding_plan 次数例外、stock cap、summary 契约。
+覆盖：三层窗口与重置边界、5h 滚动、模型权重、成本整数运算、fail-open/fail-closed、匿名桶、图片批量、非聊天估算、coding_plan 次数例外、stock cap、summary 契约，以及 Coding Plan 实际 token 独立计量（不占平台窗口/成本、估算兜底、零/非法 usage、5h 滚动、按模型拆分、quota 关闭仍统计）。

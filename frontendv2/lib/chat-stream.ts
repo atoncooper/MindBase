@@ -322,7 +322,18 @@ export interface StreamCallbacks {
   // Task plan snapshot (`plan` SSE frame): the plan tool advances it at each
   // mutating step boundary, so the panel updates live while the turn streams.
   onPlan?: (plan: ChatPlan) => void;
+  // Fired for every parsed SSE frame before dispatch. Used by the chat view's
+  // idle watchdog (a stream that goes silent while no tool runs must error out).
+  onFrame?: (frame: { type?: string }) => void;
 }
+
+/**
+ * Client-side idle-stream budget (ms). Slightly above the backend's
+ * `agent.streamIdleTimeoutMs` (120s) so the server's structured error frame
+ * normally wins; this is only a safety net when the server sends nothing at all.
+ * Tool execution time is exempt (see chat-view's active-tool tracking).
+ */
+export const STREAM_IDLE_TIMEOUT_MS = 130_000;
 
 /**
  * Consume a ReadableStream of SSE `data: {...}` frames and dispatch typed
@@ -376,6 +387,7 @@ export async function streamChat(
 
         try {
           const data = JSON.parse(dataStr);
+          callbacks.onFrame?.(data as { type?: string });
           if (data.type === "chunk") {
             const delta = typeof data.content === "string" ? data.content : "";
             accumulated += delta;

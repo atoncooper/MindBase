@@ -6,7 +6,8 @@
 //     connection is absent (pay_rdbms.url unset or app_pay unreachable);
 //  3. refundGate — the refund review group is INVISIBLE (404) unless
 //     pay.ops.base_url + pay.ops.key are wired AND the master switch is on;
-//  4. requireAdmin — grant + refund decisions are fund operations.
+//  4. requireAdmin — grant + refund decisions are fund operations, and the
+//     SKU catalog writes now change prices, so they are admin-only too.
 package router
 
 import (
@@ -46,6 +47,13 @@ func (r *Router) registerPayRoutes(api *gin.RouterGroup) {
 	pay.GET("/memberships/:uid/events", r.apiPayMemberEvents)
 	pay.GET("/events", r.apiPayEvents)
 	pay.GET("/products", r.apiPayProducts)
+
+	// SKU catalog writes: pay_product is the AUTHORITATIVE catalog (app-pay
+	// only reads it behind a 5s cache), so the console edits it directly.
+	// Admin-only because a price change is fund-adjacent.
+	pay.POST("/products", requireAdmin(), r.apiPayProductCreate)
+	pay.PUT("/products/:id", requireAdmin(), r.apiPayProductUpdate)
+	pay.DELETE("/products/:id", requireAdmin(), r.apiPayProductDelete)
 
 	// Fund write: compensation grant (admin only).
 	pay.POST("/grants", requireAdmin(), r.apiPayGrant)
@@ -245,7 +253,8 @@ func (r *Router) apiPayEvents(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// apiPayProducts GET /api/pay/products (read-only SKU catalog).
+// apiPayProducts GET /api/pay/products — the authoritative SKU catalog
+// (sort ASC, id ASC), viewer+.
 func (r *Router) apiPayProducts(c *gin.Context) {
 	result, err := r.pay.Products()
 	if err != nil {
@@ -253,6 +262,129 @@ func (r *Router) apiPayProducts(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ── SKU catalog writes (authoritative pay_product, admin only) ──────────
+
+// apiPayProductCreate POST /api/pay/products
+//
+// body {code,title,durationDays,priceCents,tier,status?,sort}. 409 = duplicate
+// code; 400 = validation. Every success writes admin_audit + a JSONL
+// PRODUCT_CREATED line.
+func (r *Router) apiPayProductCreate(c *gin.Context) {
+	if r.products == nil {
+		detail(c, http.StatusServiceUnavailable, "支付管理未配置")
+		return
+	}
+	req, ok := bindProductWrite(c)
+	if !ok {
+		return
+	}
+	operator := productOperator(c)
+	if operator == "" {
+		return
+	}
+	item, err := r.products.Create(operator, req)
+	if err != nil {
+		productError(c, err, "pay product create")
+		return
+	}
+	c.JSON(http.StatusOK, dto.PayProductDetail{Product: *item})
+}
+
+// apiPayProductUpdate PUT /api/pay/products/:id — full replacement of the
+// editable columns (code must equal the stored code; it is immutable).
+func (r *Router) apiPayProductUpdate(c *gin.Context) {
+	if r.products == nil {
+		detail(c, http.StatusServiceUnavailable, "支付管理未配置")
+		return
+	}
+	id, ok := parseProductID(c)
+	if !ok {
+		return
+	}
+	req, ok := bindProductWrite(c)
+	if !ok {
+		return
+	}
+	operator := productOperator(c)
+	if operator == "" {
+		return
+	}
+	item, err := r.products.Update(operator, id, req)
+	if err != nil {
+		productError(c, err, "pay product update")
+		return
+	}
+	c.JSON(http.StatusOK, dto.PayProductDetail{Product: *item})
+}
+
+// apiPayProductDelete DELETE /api/pay/products/:id
+//
+// Hard delete only when no pay_order references the SKU; otherwise the row is
+// kept and marked DISABLED ({"result":"disabled"}) so order history stays
+// resolvable. 409 = the last ACTIVE SKU cannot be removed.
+func (r *Router) apiPayProductDelete(c *gin.Context) {
+	if r.products == nil {
+		detail(c, http.StatusServiceUnavailable, "支付管理未配置")
+		return
+	}
+	id, ok := parseProductID(c)
+	if !ok {
+		return
+	}
+	operator := productOperator(c)
+	if operator == "" {
+		return
+	}
+	res, err := r.products.Delete(operator, id)
+	if err != nil {
+		productError(c, err, "pay product delete")
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// bindProductWrite parses the JSON body of a catalog write; on failure it has
+// already answered 400.
+func bindProductWrite(c *gin.Context) (dto.PayProductWriteRequest, bool) {
+	var req dto.PayProductWriteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		detail(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return req, false
+	}
+	return req, true
+}
+
+// parseProductID parses the :id path parameter (>0).
+func parseProductID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		detail(c, http.StatusBadRequest, "invalid product id")
+		return 0, false
+	}
+	return id, true
+}
+
+// productOperator resolves the authenticated console username (the ledger
+// needs a real operator; the session gate always sets one).
+func productOperator(c *gin.Context) string {
+	operator := operatorOf(c)
+	if operator == "" {
+		detail(c, http.StatusUnauthorized, "operator identity missing")
+	}
+	return operator
+}
+
+// productError maps a service business error onto its HTTP status; unknown
+// errors stay opaque 500s.
+func productError(c *gin.Context, err error, what string) {
+	var pe *service.PayProductError
+	if errors.As(err, &pe) {
+		detail(c, pe.Status, pe.Msg)
+		return
+	}
+	serverError(c, err, what)
 }
 
 // ── compensation grant (fund write, admin only) ─────────────────────────

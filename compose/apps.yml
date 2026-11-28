@@ -53,7 +53,7 @@ services:
   sandbox-tls:
     image: openresty/openresty:1.27.1.2-alpine
     container_name: mind-base-sandbox-tls
-    profiles: ["sandbox", "full"]
+    profiles: ["", "sandbox", "full"]
     network_mode: "service:app-sandbox"
     depends_on:
       app-sandbox:
@@ -227,7 +227,7 @@ services:
       context: ../app-go/app-sandbox
       dockerfile: Dockerfile
     container_name: mind-base-app-sandbox
-    profiles: ["sandbox", "full"]
+    profiles: ["", "sandbox", "full"]
     depends_on:
       mysql:
         condition: service_healthy

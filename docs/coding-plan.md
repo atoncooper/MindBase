@@ -4,7 +4,8 @@
 
 ## 1. 定位与边界
 
-- Coding Plan 是**用户自带的第三方套餐凭证**，调用不经过 Higress 平台网关，因此不计平台 token 成本；仅按次计入 `coding_plan` 日额度（free=0，vip/svip 限次）。
+- Coding Plan 是**用户自带的第三方套餐凭证**，调用不经过 Higress 平台网关，因此**不计平台 token 成本**、不消耗平台额度；仅按次计入 `coding_plan` 日额度（free=0，vip/svip 限次）。
+- **但仍统计 token 用量**：每轮按 provider 实际上报的 input + output（缺失时用与平台轮次相同的估算兜底）写入独立的 `external` 计数（5h / 日 / 月 + 今日按模型 + 轮次），在 `GET /quota/summary` 的 `codingPlan` 段返回。这些 token 由用户套餐支付，**不计入平台 Credits**、不移动平台额度窗口，只用于账户页展示「Coding Plan 已用 token（今日 / 本月）」。
 - 这是 BYOK 退役后的**唯一例外**：用户把某个套餐**设为默认**后，聊天默认模型就是该套餐（模型优先级：聊天框显式选择 > 该套餐的默认 model > 套餐模型列表第一个 > 平台网关默认）；未设默认时只有显式选择套餐模型才会走第三方。所选模型作用于该轮 main/note/code/quiz/board/academic 等所有 agent。
 - 密钥 AES-GCM 加密存 auth 库；接口只返回掩码；日志只记 `plan_id/provider/model`，不记 key。
 
@@ -67,13 +68,15 @@ GET /settings/coding-plans/{id}/models（VIP/SVIP；聊天对话框按需探测�
 - 无 plan / 非 VIP / 会员服务不可用 / 额度耗尽 / 解析失败时回退平台网关，不阻断聊天；
 - 协议：OpenAI 兼容（`@ai-sdk/openai-compatible`）、Anthropic Messages（`@ai-sdk/anthropic`）；
 - OpenCode 路由要求：请求带 `x-opencode-session`（聊天会话 id，稳定复用）和产品 User-Agent；app-ts 在创建 OpenCode 模型时注入，app-user 的模型列表/测试探测使用稳定的 plan 级测试 session。旧 `/zen/*` 地址由 app-user 的 YAML provider 目录自动映射到 `/inference/*`（app-ts 不再硬编码厂商地址）；
-- 审计：每次使用打 `[CODING_PLAN]` 结构化日志；`coding_plan` quota 按次消耗。
+- 审计：每次使用打 `[CODING_PLAN]` 结构化日志；`coding_plan` quota 按次消耗；
+- 计量：成功轮次（`!hadError`）由 `QuotaService.recordExternalTurn(uid, clientKey, usage, modelId, "coding_plan")` 写入独立 external 计数；`ai_usage_daily` 仍保留一行（`purpose="chat_coding_plan"`，`costMicroYuan=0`）便于对账/分析；失败/重试轮次不计量。
 
 ## 6. 前端
 
 账户页「Coding Plan」卡：
 
 - free：展示「VIP/SVIP 可用」+ 升级按钮；
+- VIP/SVIP：卡片顶部展示「Coding Plan 已用 token（今日 / 本月）」+ 今日按模型拆分，并注明「由你自己的套餐支付，不计入平台 Credits」；数据来自账户页已拉取的 `/quota/summary.codingPlan`（老后端缺省该段时整块隐藏）；
 - VIP/SVIP：列表（掩码 key）、添加/编辑/删除/测试连接/启用开关；
 - provider 预置 OpenCode Zen/Go、Kimi、GLM、MiniMax、Qwen、DeepSeek、custom，protocol openai / anthropic；
 - **厂商目录唯一来源**：`app-go/app-user/default.yaml → settings.coding_plan.providers`（YAML list，含 openai/anthropic/models URL、model_hint、legacy_base_urls）。`GET /settings/coding-plans` 同时返回 `providers`，前端不再硬编码任何厂商地址；
